@@ -6,11 +6,23 @@ module Legion
       def self.default
         {
           vault:            vault,
+          jwt:              jwt,
           cs_encrypt_ready: false,
           dynamic_keys:     true,
           cluster_secret:   nil,
           save_private_key: true,
           read_private_key: true
+        }
+      end
+
+      def self.jwt
+        {
+          enabled:           true,
+          default_algorithm: 'HS256',
+          default_ttl:       3600,
+          issuer:            'legion',
+          verify_expiration: true,
+          verify_issuer:     true
         }
       end
 

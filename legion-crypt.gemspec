@@ -25,5 +25,6 @@ Gem::Specification.new do |spec|
     'rubygems_mfa_required' => 'true'
   }
 
+  spec.add_dependency 'jwt', '>= 2.7'
   spec.add_dependency 'vault', '>= 0.17'
 end

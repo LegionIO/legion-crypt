@@ -80,7 +80,7 @@ RSpec.describe Legion::Crypt::Settings do
     end
 
     it 'reads VAULT_DEV_ROOT_TOKEN_ID from env' do
-      original = ENV['VAULT_DEV_ROOT_TOKEN_ID']
+      original = ENV.fetch('VAULT_DEV_ROOT_TOKEN_ID', nil)
       ENV['VAULT_DEV_ROOT_TOKEN_ID'] = 'dev-test-token'
       expect(described_class.vault[:token]).to eq('dev-test-token')
       ENV['VAULT_DEV_ROOT_TOKEN_ID'] = original
@@ -88,7 +88,7 @@ RSpec.describe Legion::Crypt::Settings do
 
     it 'falls back to VAULT_TOKEN_ID env' do
       original_dev = ENV.delete('VAULT_DEV_ROOT_TOKEN_ID')
-      original = ENV['VAULT_TOKEN_ID']
+      original = ENV.fetch('VAULT_TOKEN_ID', nil)
       ENV['VAULT_TOKEN_ID'] = 'fallback-token'
       expect(described_class.vault[:token]).to eq('fallback-token')
       ENV['VAULT_TOKEN_ID'] = original
@@ -96,7 +96,7 @@ RSpec.describe Legion::Crypt::Settings do
     end
 
     it 'reads LEGION_VAULT_KV_PATH from env' do
-      original = ENV['LEGION_VAULT_KV_PATH']
+      original = ENV.fetch('LEGION_VAULT_KV_PATH', nil)
       ENV['LEGION_VAULT_KV_PATH'] = 'custom/path'
       expect(described_class.vault[:kv_path]).to eq('custom/path')
       ENV['LEGION_VAULT_KV_PATH'] = original

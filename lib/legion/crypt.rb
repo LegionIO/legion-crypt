@@ -5,6 +5,7 @@ require 'base64'
 require 'legion/crypt/version'
 require 'legion/crypt/settings'
 require 'legion/crypt/cipher'
+require 'legion/crypt/jwt'
 
 module Legion
   module Crypt
@@ -31,6 +32,33 @@ module Legion
         else
           Legion::Crypt::Settings.default
         end
+      end
+
+      def jwt_settings
+        settings[:jwt] || Legion::Crypt::Settings.jwt
+      end
+
+      def issue_token(payload = {}, ttl: nil, algorithm: nil)
+        jwt = jwt_settings
+        algo = algorithm || jwt[:default_algorithm]
+        token_ttl = ttl || jwt[:default_ttl]
+
+        signing_key = algo == 'RS256' ? private_key : settings[:cluster_secret]
+
+        Legion::Crypt::JWT.issue(payload, signing_key: signing_key, algorithm: algo, ttl: token_ttl,
+                                          issuer: jwt[:issuer])
+      end
+
+      def verify_token(token, algorithm: nil)
+        jwt = jwt_settings
+        algo = algorithm || jwt[:default_algorithm]
+
+        verification_key = algo == 'RS256' ? OpenSSL::PKey::RSA.new(public_key) : settings[:cluster_secret]
+
+        Legion::Crypt::JWT.verify(token, verification_key: verification_key, algorithm: algo,
+                                         verify_expiration: jwt[:verify_expiration],
+                                         verify_issuer: jwt[:verify_issuer],
+                                         issuer: jwt[:issuer])
       end
 
       def shutdown
