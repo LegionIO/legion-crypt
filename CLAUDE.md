@@ -1,14 +1,13 @@
 # legion-crypt: Encryption and Vault Integration for LegionIO
 
 **Repository Level 3 Documentation**
-- **Category**: `/Users/miverso2/rubymine/arc/CLAUDE.md`
-- **Workspace**: `/Users/miverso2/rubymine/CLAUDE.md`
+- **Parent**: `/Users/miverso2/rubymine/legion/CLAUDE.md`
 
 ## Purpose
 
 Handles encryption, decryption, secrets management, and HashiCorp Vault connectivity for the LegionIO framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, and Vault token lifecycle management.
 
-**GitHub**: https://github.com/Optum/legion-crypt
+**GitHub**: https://github.com/LegionIO/legion-crypt
 **License**: Apache-2.0
 
 ## Architecture
