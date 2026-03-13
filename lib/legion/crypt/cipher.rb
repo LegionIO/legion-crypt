@@ -16,7 +16,7 @@ module Legion
         { enciphered_message: Base64.encode64(cipher.update(message) + cipher.final), iv: Base64.encode64(iv) }
       end
 
-      def decrypt(message, iv)
+      def decrypt(message, init_vector)
         until cs.is_a?(String) || Legion::Settings[:client][:shutting_down]
           Legion::Logging.debug('sleeping Legion::Crypt.decrypt due to CS not being set')
           sleep(0.5)
@@ -25,7 +25,7 @@ module Legion
         decipher = OpenSSL::Cipher.new('aes-256-cbc')
         decipher.decrypt
         decipher.key = cs
-        decipher.iv = Base64.decode64(iv)
+        decipher.iv = Base64.decode64(init_vector)
         message = Base64.decode64(message)
         decipher.update(message) + decipher.final
       end

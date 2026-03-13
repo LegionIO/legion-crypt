@@ -10,3 +10,5 @@ group :test do
   gem 'rubocop'
   gem 'simplecov'
 end
+gem 'legion-logging'
+gem 'legion-settings'

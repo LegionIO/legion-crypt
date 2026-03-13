@@ -26,7 +26,4 @@ Gem::Specification.new do |spec|
   }
 
   spec.add_dependency 'vault', '>= 0.17'
-
-  spec.add_development_dependency 'legion-logging'
-  spec.add_development_dependency 'legion-settings'
 end
