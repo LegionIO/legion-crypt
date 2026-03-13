@@ -14,15 +14,15 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
   spec.required_ruby_version = '>= 3.4'
   spec.files = `git ls-files -z`.split("\x0").reject { |f| f.match(%r{^(test|spec|features)/}) }
-  spec.test_files        = spec.files.select { |p| p =~ %r{^test/.*_test.rb} }
-  spec.extra_rdoc_files  = %w[README.md LICENSE CHANGELOG.md]
+  spec.extra_rdoc_files = %w[README.md LICENSE CHANGELOG.md]
   spec.metadata = {
-    'bug_tracker_uri' => 'https://github.com/LegionIO/legion-crypt/issues',
-    'changelog_uri' => 'https://github.com/LegionIO/legion-crypt/blob/main/CHANGELOG.md',
-    'documentation_uri' => 'https://github.com/LegionIO/legion-crypt',
-    'homepage_uri' => 'https://github.com/LegionIO/LegionIO',
-    'source_code_uri' => 'https://github.com/LegionIO/legion-crypt',
-    'wiki_uri' => 'https://github.com/LegionIO/legion-crypt/wiki'
+    'bug_tracker_uri'       => 'https://github.com/LegionIO/legion-crypt/issues',
+    'changelog_uri'         => 'https://github.com/LegionIO/legion-crypt/blob/main/CHANGELOG.md',
+    'documentation_uri'     => 'https://github.com/LegionIO/legion-crypt',
+    'homepage_uri'          => 'https://github.com/LegionIO/LegionIO',
+    'source_code_uri'       => 'https://github.com/LegionIO/legion-crypt',
+    'wiki_uri'              => 'https://github.com/LegionIO/legion-crypt/wiki',
+    'rubygems_mfa_required' => 'true'
   }
 
   spec.add_dependency 'vault', '>= 0.17'

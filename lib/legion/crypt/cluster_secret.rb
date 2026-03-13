@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'securerandom'
 
 module Legion
@@ -39,7 +41,7 @@ module Legion
       end
       alias cluster_secret from_settings
 
-      def from_transport # rubocop:disable Metrics/AbcSize
+      def from_transport
         return nil unless Legion::Settings[:transport][:connected]
 
         require 'legion/transport/messages/request_cluster_secret'

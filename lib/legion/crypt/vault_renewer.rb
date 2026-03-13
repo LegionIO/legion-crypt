@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'legion/extensions/actors/every'
 
 module Legion

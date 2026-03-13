@@ -1,25 +1,20 @@
-Legion::Crypt
-=====
+# legion-crypt
 
-Legion::Crypt is the class responsible for encryption, managing secrets and connecting with Vault
+Encryption, secrets management, and HashiCorp Vault integration for the [LegionIO](https://github.com/LegionIO/LegionIO) framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, and Vault token lifecycle management.
 
-Supported Ruby versions and implementations
-------------------------------------------------
-
-Legion::Crypt should work identically on:
-
-* JRuby 9.2+
-* Ruby 2.4+
-
-
-Installation and Usage
-------------------------
-
-You can verify your installation using this piece of code:
+## Installation
 
 ```bash
 gem install legion-crypt
 ```
+
+Or add to your Gemfile:
+
+```ruby
+gem 'legion-crypt'
+```
+
+## Usage
 
 ```ruby
 require 'legion/crypt'
@@ -29,8 +24,7 @@ Legion::Crypt.encrypt('this is my string')
 Legion::Crypt.decrypt(message)
 ```
 
-Settings
-----------
+## Configuration
 
 ```json
 {
@@ -50,7 +44,12 @@ Settings
 }
 ```
 
-Authors
-----------
+## Requirements
 
-* [Matthew Iverson](https://github.com/Esity) - current maintainer
+- Ruby >= 3.4
+- `vault` gem (>= 0.15.0)
+- HashiCorp Vault (optional, for secrets management)
+
+## License
+
+Apache-2.0

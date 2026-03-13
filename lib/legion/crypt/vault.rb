@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'vault'
 
 module Legion
@@ -9,7 +11,7 @@ module Legion
         Legion::Settings[:crypt][:vault]
       end
 
-      def connect_vault # rubocop:disable Metrics/AbcSize
+      def connect_vault
         @sessions = []
         ::Vault.address = "#{Legion::Settings[:crypt][:vault][:protocol]}://#{Legion::Settings[:crypt][:vault][:address]}:#{Legion::Settings[:crypt][:vault][:port]}" # rubocop:disable Layout/LineLength
 
