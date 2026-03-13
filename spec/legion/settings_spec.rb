@@ -4,12 +4,102 @@ require 'spec_helper'
 require 'legion/crypt/settings'
 
 RSpec.describe Legion::Crypt::Settings do
-  it 'has default settings' do
-    expect(Legion::Crypt::Settings.default[:vault]).to be_a Hash
-    expect(Legion::Crypt::Settings.default[:cs_encrypt_ready]).to eq false
-    expect(Legion::Crypt::Settings.default[:dynamic_keys]).to eq true
-    expect(Legion::Crypt::Settings.default[:vault][:protocol]).to eq 'http'
-    expect(Legion::Crypt::Settings.default[:vault][:address]).to eq 'localhost'
-    expect(Legion::Crypt::Settings.vault).to be_a Hash
+  describe '.default' do
+    subject(:defaults) { described_class.default }
+
+    it 'returns a hash' do
+      expect(defaults).to be_a(Hash)
+    end
+
+    it 'has vault settings as a hash' do
+      expect(defaults[:vault]).to be_a(Hash)
+    end
+
+    it 'has cs_encrypt_ready set to false' do
+      expect(defaults[:cs_encrypt_ready]).to eq(false)
+    end
+
+    it 'has dynamic_keys set to true' do
+      expect(defaults[:dynamic_keys]).to eq(true)
+    end
+
+    it 'has cluster_secret as nil' do
+      expect(defaults[:cluster_secret]).to be_nil
+    end
+
+    it 'has save_private_key' do
+      expect(defaults).to have_key(:save_private_key)
+    end
+
+    it 'has read_private_key' do
+      expect(defaults).to have_key(:read_private_key)
+    end
+  end
+
+  describe '.vault' do
+    subject(:vault) { described_class.vault }
+
+    it 'returns a hash' do
+      expect(vault).to be_a(Hash)
+    end
+
+    it 'defaults protocol to http' do
+      expect(vault[:protocol]).to eq('http')
+    end
+
+    it 'defaults address to localhost' do
+      expect(vault[:address]).to eq('localhost')
+    end
+
+    it 'defaults port to 8200' do
+      expect(vault[:port]).to eq(8200)
+    end
+
+    it 'defaults connected to false' do
+      expect(vault[:connected]).to eq(false)
+    end
+
+    it 'has renewer_time of 5' do
+      expect(vault[:renewer_time]).to eq(5)
+    end
+
+    it 'has renewer enabled' do
+      expect(vault[:renewer]).to eq(true)
+    end
+
+    it 'has push_cluster_secret enabled' do
+      expect(vault[:push_cluster_secret]).to eq(true)
+    end
+
+    it 'has read_cluster_secret enabled' do
+      expect(vault[:read_cluster_secret]).to eq(true)
+    end
+
+    it 'has kv_path' do
+      expect(vault[:kv_path]).to be_a(String)
+    end
+
+    it 'reads VAULT_DEV_ROOT_TOKEN_ID from env' do
+      original = ENV['VAULT_DEV_ROOT_TOKEN_ID']
+      ENV['VAULT_DEV_ROOT_TOKEN_ID'] = 'dev-test-token'
+      expect(described_class.vault[:token]).to eq('dev-test-token')
+      ENV['VAULT_DEV_ROOT_TOKEN_ID'] = original
+    end
+
+    it 'falls back to VAULT_TOKEN_ID env' do
+      original_dev = ENV.delete('VAULT_DEV_ROOT_TOKEN_ID')
+      original = ENV['VAULT_TOKEN_ID']
+      ENV['VAULT_TOKEN_ID'] = 'fallback-token'
+      expect(described_class.vault[:token]).to eq('fallback-token')
+      ENV['VAULT_TOKEN_ID'] = original
+      ENV['VAULT_DEV_ROOT_TOKEN_ID'] = original_dev if original_dev
+    end
+
+    it 'reads LEGION_VAULT_KV_PATH from env' do
+      original = ENV['LEGION_VAULT_KV_PATH']
+      ENV['LEGION_VAULT_KV_PATH'] = 'custom/path'
+      expect(described_class.vault[:kv_path]).to eq('custom/path')
+      ENV['LEGION_VAULT_KV_PATH'] = original
+    end
   end
 end
