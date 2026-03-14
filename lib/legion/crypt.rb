@@ -6,6 +6,7 @@ require 'legion/crypt/version'
 require 'legion/crypt/settings'
 require 'legion/crypt/cipher'
 require 'legion/crypt/jwt'
+require 'legion/crypt/vault_jwt_auth'
 
 module Legion
   module Crypt

@@ -57,10 +57,11 @@ module Legion
 
         unless from_settings.nil?
           Legion::Logging.info "Received cluster secret in #{((Time.new - start) * 1000.0).round}ms"
-          from_settings
+          return from_settings
         end
 
         Legion::Logging.error 'Cluster secret is still unknown!'
+        nil
       rescue StandardError => e
         Legion::Logging.error e.message
         Legion::Logging.error e.backtrace[0..10]
@@ -116,6 +117,8 @@ module Legion
       end
 
       def validate_hex(value, length = secret_length)
+        return false unless value.is_a?(String)
+
         value.to_i(length).to_s(length) == value.downcase
       end
     end

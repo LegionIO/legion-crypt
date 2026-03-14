@@ -39,6 +39,11 @@ Legion::Crypt (singleton module)
 ├── ClusterSecret      # Cluster-wide shared secret management
 │   └── .cs            # Generate/distribute cluster secret
 │
+├── VaultJwtAuth       # Vault JWT auth backend integration
+│   ├── .login         # Authenticate to Vault using a JWT token, returns Vault token hash
+│   ├── .login!        # Authenticate and set ::Vault.token for subsequent operations
+│   └── .worker_login  # Issue a Legion JWT and authenticate to Vault in one step
+│
 ├── VaultRenewer       # Background Vault token renewal thread
 ├── Settings           # Default crypt config
 └── Version
@@ -91,6 +96,7 @@ Dev dependencies: `legion-logging`, `legion-settings`
 | `lib/legion/crypt/jwt.rb` | JWT issue/verify/decode operations |
 | `lib/legion/crypt/vault.rb` | Vault read/write/connect/renew operations |
 | `lib/legion/crypt/cluster_secret.rb` | Cluster-wide shared secret management |
+| `lib/legion/crypt/vault_jwt_auth.rb` | Vault JWT auth backend: `.login`, `.login!`, `.worker_login`; raises `AuthError` on failure |
 | `lib/legion/crypt/vault_renewer.rb` | Background Vault token renewal |
 | `lib/legion/crypt/settings.rb` | Default configuration |
 | `lib/legion/crypt/version.rb` | VERSION constant |
@@ -102,6 +108,22 @@ First service-level module initialized during `Legion::Service` startup (before 
 2. Message encryption for `legion-transport` (optional `transport.messages.encrypt`)
 3. Cluster secret for inter-node encrypted communication
 4. JWT tokens for node authentication and task authorization
+
+### Vault JWT Auth Usage
+
+```ruby
+# Authenticate to Vault using a JWT (Vault must have JWT auth method enabled)
+result = Legion::Crypt::VaultJwtAuth.login(jwt: token, role: 'legion-worker')
+# => { token: '...', lease_duration: 3600, renewable: true, policies: [...], metadata: {} }
+
+# Authenticate and set Vault client token in one step
+Legion::Crypt::VaultJwtAuth.login!(jwt: token)
+
+# Issue a Legion JWT and use it to authenticate to Vault (convenience for workers)
+result = Legion::Crypt::VaultJwtAuth.worker_login(worker_id: 'abc', owner_msid: 'user@example.com')
+```
+
+Vault prerequisites: `vault auth enable jwt` + configure `auth/jwt/config` with JWKS URL or bound issuer.
 
 ### JWT Usage
 
