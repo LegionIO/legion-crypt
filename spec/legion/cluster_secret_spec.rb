@@ -14,6 +14,12 @@ RSpec.describe Legion::Crypt::ClusterSecret do
         { cluster_secret: SecureRandom.hex(32) }
       end
     end
+
+    @original_cluster_secret = Legion::Settings[:crypt][:cluster_secret]
+  end
+
+  after do
+    Legion::Settings[:crypt][:cluster_secret] = @original_cluster_secret
   end
 
   it '.find_cluster_secret' do

@@ -1,4 +1,21 @@
 # Legion::Crypt
 
+## [Unreleased]
+
+## v1.2.1
+
+### Fixed
+- `validate_hex` and `set_cluster_secret` now handle leading zeros correctly by padding the
+  base-32 round-trip result back to the original string length. Previously, secrets whose
+  hex representation started with one or more zero bytes would fail validation and cause
+  `find_cluster_secret` to return nil non-deterministically.
+
+### Added
+- Comprehensive spec coverage for `Legion::Crypt::VaultJwtAuth` (`.login`, `.login!`,
+  `.worker_login`, `AuthError`, constants).
+- `after` hook in `cluster_secret_spec` to restore `Legion::Settings[:crypt][:cluster_secret]`
+  between examples, eliminating ordering-dependent state pollution.
+- TODO comments in `vault_spec` for tests that require live Vault connectivity.
+
 ## v1.2.0
 Moving from BitBucket to GitHub. All git history is reset from this point on

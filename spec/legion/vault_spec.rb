@@ -22,16 +22,15 @@ RSpec.describe Legion::Crypt::Vault do
   end
 
   it '.write' do
-    # expect { @vault.write('test', 'key', 'value') }.not_to raise_exception
+    # TODO: requires live Vault connectivity (::Vault.kv#write) - skipped in unit tests
   end
 
   it '.read' do
-    # expect(@vault.read('creds/legion', 'rabbitmq')).to be_a Hash
+    # TODO: requires live Vault connectivity (::Vault.logical#read) - skipped in unit tests
   end
 
   it '.get' do
-    # expect(@vault.get('test')).to be_a Hash
-    # expect(@vault.get('test')).to eq({ key: 'value' })
+    # TODO: requires live Vault connectivity (::Vault.kv#read) - skipped in unit tests
   end
 
   it '.add_session' do
@@ -39,7 +38,7 @@ RSpec.describe Legion::Crypt::Vault do
   end
 
   it 'exist?' do
-    # expect(@vault.exist?('test')).to eq true
+    # TODO: requires live Vault connectivity (::Vault.kv#read_metadata) - skipped in unit tests
   end
 
   it '.close_sessions' do
@@ -55,7 +54,7 @@ RSpec.describe Legion::Crypt::Vault do
   end
 
   it '.renew_session' do
-    # empty block
+    # TODO: requires live Vault connectivity (::Vault.sys#renew) - skipped in unit tests
   end
 
   it '.renew_sessions' do

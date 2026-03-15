@@ -82,7 +82,7 @@ module Legion
       end
 
       def set_cluster_secret(value, push_to_vault = true) # rubocop:disable Style/OptionalBooleanParameter
-        raise TypeError unless value.to_i(32).to_s(32) == value.downcase
+        raise TypeError unless value.to_i(32).to_s(32).rjust(value.length, '0') == value.downcase
 
         Legion::Settings[:crypt][:cs_encrypt_ready] = true
         push_cs_to_vault if push_to_vault && settings_push_vault
@@ -118,8 +118,9 @@ module Legion
 
       def validate_hex(value, length = secret_length)
         return false unless value.is_a?(String)
+        return false if value.empty?
 
-        value.to_i(length).to_s(length) == value.downcase
+        value.to_i(length).to_s(length).rjust(value.length, '0') == value.downcase
       end
     end
   end
