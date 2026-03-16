@@ -7,6 +7,7 @@ require 'legion/crypt/settings'
 require 'legion/crypt/cipher'
 require 'legion/crypt/jwt'
 require 'legion/crypt/vault_jwt_auth'
+require 'legion/crypt/lease_manager'
 
 module Legion
   module Crypt
@@ -25,6 +26,7 @@ module Legion
         ::File.write('./legionio.key', private_key) if settings[:save_private_key]
 
         connect_vault unless settings[:vault][:token].nil?
+        start_lease_manager
       end
 
       def settings
@@ -63,8 +65,24 @@ module Legion
       end
 
       def shutdown
+        Legion::Crypt::LeaseManager.instance.shutdown
         shutdown_renewer
         close_sessions
+      end
+
+      private
+
+      def start_lease_manager
+        leases = settings.dig(:vault, :leases) || {}
+        return if leases.empty?
+        return unless settings.dig(:vault, :connected)
+
+        lease_manager = Legion::Crypt::LeaseManager.instance
+        lease_manager.start(leases)
+        lease_manager.start_renewal_thread
+        Legion::Logging.info "LeaseManager: #{leases.size} lease(s) initialized"
+      rescue StandardError => e
+        Legion::Logging.warn "LeaseManager startup failed: #{e.message}"
       end
     end
   end
