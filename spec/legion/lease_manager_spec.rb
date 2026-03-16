@@ -157,6 +157,62 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
   end
 
+  describe '#start_renewal_thread' do
+    let(:vault_response) do
+      double('Vault::Secret',
+             data:           { username: 'user1', password: 'pass1' },
+             lease_id:       'rabbitmq/creds/role/abc',
+             lease_duration: 10,
+             renewable:      true)
+    end
+
+    before do
+      allow(Vault).to receive_message_chain(:logical, :read).and_return(vault_response)
+    end
+
+    it 'starts a background thread' do
+      manager.start({ 'rabbitmq' => { 'path' => 'rabbitmq/creds/legion-role' } })
+      manager.start_renewal_thread
+      expect(manager.renewal_thread_alive?).to eq(true)
+      manager.shutdown
+    end
+
+    it 'is stopped by shutdown' do
+      manager.start({ 'rabbitmq' => { 'path' => 'rabbitmq/creds/legion-role' } })
+      manager.start_renewal_thread
+      manager.shutdown
+      sleep(0.1) # give thread time to stop
+      expect(manager.renewal_thread_alive?).to eq(false)
+    end
+
+    it 'is idempotent — second call is a no-op' do
+      manager.start({ 'rabbitmq' => { 'path' => 'rabbitmq/creds/legion-role' } })
+      manager.start_renewal_thread
+      thread1 = manager.instance_variable_get(:@renewal_thread)
+      manager.start_renewal_thread
+      thread2 = manager.instance_variable_get(:@renewal_thread)
+      expect(thread1).to be(thread2)
+      manager.shutdown
+    end
+  end
+
+  describe '#approaching_expiry?' do
+    it 'returns true when past 50% of lease TTL' do
+      lease = { expires_at: Time.now + 10, lease_duration: 100 }
+      expect(manager.send(:approaching_expiry?, lease)).to eq(true)
+    end
+
+    it 'returns false when before 50% of lease TTL' do
+      lease = { expires_at: Time.now + 80, lease_duration: 100 }
+      expect(manager.send(:approaching_expiry?, lease)).to eq(false)
+    end
+
+    it 'returns true when expires_at is nil' do
+      lease = { expires_at: nil, lease_duration: 100 }
+      expect(manager.send(:approaching_expiry?, lease)).to eq(true)
+    end
+  end
+
   describe '#shutdown' do
     before { manager.start(lease_definitions) }
 

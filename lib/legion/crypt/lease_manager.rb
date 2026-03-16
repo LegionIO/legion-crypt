@@ -7,10 +7,14 @@ module Legion
     class LeaseManager
       include Singleton
 
+      RENEWAL_CHECK_INTERVAL = 5
+
       def initialize
         @lease_cache = {}
         @active_leases = {}
         @refs = {}
+        @running = false
+        @renewal_thread = nil
       end
 
       def start(definitions)
@@ -72,7 +76,20 @@ module Legion
         log_debug("Lease '#{name}' rotated — updated #{refs.size} settings reference(s)")
       end
 
+      def start_renewal_thread
+        return if renewal_thread_alive?
+
+        @running = true
+        @renewal_thread = Thread.new { renewal_loop }
+      end
+
+      def renewal_thread_alive?
+        @renewal_thread&.alive? || false
+      end
+
       def shutdown
+        stop_renewal_thread
+
         @active_leases.each do |name, meta|
           lease_id = meta[:lease_id]
           next if lease_id.nil? || lease_id.empty?
@@ -91,12 +108,63 @@ module Legion
       end
 
       def reset!
+        @running = false
         @lease_cache.clear
         @active_leases.clear
         @refs.clear
       end
 
       private
+
+      def stop_renewal_thread
+        @running = false
+        if @renewal_thread&.alive?
+          @renewal_thread.kill
+          @renewal_thread.join(2)
+        end
+        @renewal_thread = nil
+      end
+
+      def renewal_loop
+        while @running
+          sleep(RENEWAL_CHECK_INTERVAL)
+          renew_approaching_leases if @running
+        end
+      rescue StandardError => e
+        log_warn("LeaseManager: renewal loop error: #{e.message}")
+        retry if @running
+      end
+
+      def renew_approaching_leases
+        @active_leases.each do |name, lease|
+          next unless lease[:renewable]
+          next unless approaching_expiry?(lease)
+
+          renew_lease(name, lease)
+        end
+      end
+
+      def renew_lease(name, lease)
+        response = ::Vault.sys.renew(lease[:lease_id])
+        lease[:expires_at] = Time.now + (response.lease_duration || 0)
+
+        if response.data && response.data != @lease_cache[name]
+          @lease_cache[name] = response.data
+          push_to_settings(name)
+        end
+      rescue StandardError => e
+        log_warn("LeaseManager: failed to renew lease '#{name}': #{e.message}")
+      end
+
+      def approaching_expiry?(lease)
+        expires_at = lease[:expires_at]
+        lease_duration = lease[:lease_duration]
+
+        return true if expires_at.nil? || lease_duration.nil?
+
+        remaining = expires_at - Time.now
+        remaining < (lease_duration * 0.5)
+      end
 
       def write_setting(path, value)
         return if path.nil? || path.empty?
