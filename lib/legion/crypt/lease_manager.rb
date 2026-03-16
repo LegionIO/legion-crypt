@@ -57,6 +57,21 @@ module Legion
         @refs[name][key] = path
       end
 
+      def push_to_settings(name)
+        refs = @refs[name]
+        return if refs.nil? || refs.empty?
+
+        data = @lease_cache[name]
+        return unless data
+
+        refs.each do |key, path|
+          value = data[key.to_sym] || data[key.to_s]
+          write_setting(path, value)
+        end
+
+        log_debug("Lease '#{name}' rotated — updated #{refs.size} settings reference(s)")
+      end
+
       def shutdown
         @active_leases.each do |name, meta|
           lease_id = meta[:lease_id]
@@ -82,6 +97,19 @@ module Legion
       end
 
       private
+
+      def write_setting(path, value)
+        return if path.nil? || path.empty?
+
+        target = path[1..-2].reduce(Legion::Settings[path[0]]) do |node, segment|
+          break nil unless node.is_a?(Hash)
+
+          node[segment]
+        end
+        target[path.last] = value if target.is_a?(Hash)
+      rescue StandardError => e
+        log_warn("LeaseManager: failed to write setting at #{path.join('.')}: #{e.message}")
+      end
 
       def log_debug(message)
         if defined?(Legion::Logging)

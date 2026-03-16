@@ -121,6 +121,42 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
   end
 
+  describe '#push_to_settings' do
+    let(:vault_response) do
+      double('Vault::Secret',
+             data:           { username: 'new_user', password: 'new_pass' },
+             lease_id:       'rabbitmq/creds/legion-role/def456',
+             lease_duration: 3600,
+             renewable:      true)
+    end
+
+    before do
+      allow(Vault).to receive_message_chain(:logical, :read).and_return(vault_response)
+      manager.start({ 'rabbitmq' => { 'path' => 'rabbitmq/creds/legion-role' } })
+    end
+
+    it 'updates settings values at registered paths' do
+      connection_hash = { username: 'old_user', password: 'old_pass' }
+      transport_hash = { connection: connection_hash }
+      allow(Legion::Settings).to receive(:[]).with(:transport).and_return(transport_hash)
+
+      manager.register_ref('rabbitmq', 'username', %i[transport connection username])
+      manager.register_ref('rabbitmq', 'password', %i[transport connection password])
+      manager.push_to_settings('rabbitmq')
+
+      expect(connection_hash[:username]).to eq('new_user')
+      expect(connection_hash[:password]).to eq('new_pass')
+    end
+
+    it 'does nothing when no refs are registered for the lease' do
+      expect { manager.push_to_settings('rabbitmq') }.not_to raise_error
+    end
+
+    it 'does nothing for an unknown lease name' do
+      expect { manager.push_to_settings('unknown') }.not_to raise_error
+    end
+  end
+
   describe '#shutdown' do
     before { manager.start(lease_definitions) }
 
