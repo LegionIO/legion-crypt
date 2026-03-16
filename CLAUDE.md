@@ -52,6 +52,7 @@ Legion::Crypt (singleton module)
 │
 ├── VaultRenewer       # Background Vault token renewal thread
 ├── LeaseManager       # Dynamic Vault lease lifecycle: fetch, cache, renew, rotate, push-back
+├── MockVault          # In-memory Vault mock for local development mode
 ├── Settings           # Default crypt config
 └── Version
 ```

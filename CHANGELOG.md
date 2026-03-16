@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-03-16
+
+### Added
+- `Legion::Crypt::MockVault` in-memory Vault mock for local development mode
+
 ## [1.4.0] - 2026-03-16
 
 ### Added
