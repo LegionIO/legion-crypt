@@ -56,7 +56,8 @@ decoded = Legion::Crypt::JWT.decode(token)
     "renewer": true,
     "push_cluster_secret": true,
     "read_cluster_secret": true,
-    "kv_path": "legion"
+    "kv_path": "legion",
+    "leases": {}
   },
   "jwt": {
     "enabled": true,
@@ -84,6 +85,47 @@ decoded = Legion::Crypt::JWT.decode(token)
 ### Vault Integration
 
 When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. The background `VaultRenewer` thread keeps the token alive. Vault is an optional runtime dependency — the Vault module is only included if the `vault` gem is available.
+
+### Dynamic Vault Leases
+
+The `LeaseManager` handles dynamic secrets from any Vault secrets engine (database, RabbitMQ, AWS, PKI, etc.). Define named leases in crypt settings — each lease maps a stable name to a Vault path:
+
+```json
+{
+  "crypt": {
+    "vault": {
+      "leases": {
+        "rabbitmq": { "path": "rabbitmq/creds/legion-role" },
+        "bedrock":  { "path": "aws/creds/bedrock-role" },
+        "postgres": { "path": "database/creds/apollo-rw" }
+      }
+    }
+  }
+}
+```
+
+Other settings files reference lease data using `lease://name#key`:
+
+```json
+{
+  "transport": {
+    "connection": {
+      "username": "lease://rabbitmq#username",
+      "password": "lease://rabbitmq#password"
+    }
+  }
+}
+```
+
+Both `username` and `password` come from a single Vault read — one lease, one credential pair. The `LeaseManager`:
+
+- Fetches all leases at boot (during `Crypt.start`, before `resolve_secrets!`)
+- Caches response data and lease metadata
+- Renews leases in the background at 50% TTL
+- Detects credential rotation and pushes new values into `Legion::Settings` in-place
+- Revokes all leases on `Crypt.shutdown`
+
+Lease names are stable across environments. The actual Vault paths are deployment-specific config.
 
 ## Requirements
 
