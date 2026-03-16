@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-03-16
+
+### Added
+- `JwksClient` module: fetch, parse, and cache public keys from JWKS endpoints (TTL 3600s, thread-safe)
+- `JWT.verify_with_jwks` for RS256 token verification against external identity providers (Entra ID, Bot Framework)
+- Multi-issuer support via `issuers:` array parameter
+- Audience validation via `audience:` parameter
+- `Crypt.verify_external_token` convenience method
+
 ## [1.3.0] - 2026-03-16
 
 ### Added

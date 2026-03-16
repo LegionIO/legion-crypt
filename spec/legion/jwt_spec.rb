@@ -174,6 +174,104 @@ RSpec.describe Legion::Crypt::JWT do
     end
   end
 
+  describe '.verify_with_jwks' do
+    let(:rsa_key) { OpenSSL::PKey::RSA.generate(2048) }
+    let(:kid) { 'test-kid-1' }
+    let(:jwks_url) { 'https://login.microsoftonline.com/test/discovery/v2.0/keys' }
+
+    let(:token) do
+      payload = { sub: 'worker-1', iss: 'https://login.microsoftonline.com/test/v2.0',
+                  aud: 'app-client-id', iat: Time.now.to_i, exp: Time.now.to_i + 3600 }
+      header = { kid: kid, alg: 'RS256' }
+      JWT.encode(payload, rsa_key, 'RS256', header)
+    end
+
+    before do
+      allow(Legion::Crypt::JwksClient).to receive(:find_key)
+        .with(jwks_url, kid).and_return(rsa_key.public_key)
+    end
+
+    it 'verifies a valid token' do
+      result = described_class.verify_with_jwks(token, jwks_url: jwks_url)
+      expect(result[:sub]).to eq('worker-1')
+    end
+
+    it 'validates issuer when issuers provided' do
+      result = described_class.verify_with_jwks(
+        token,
+        jwks_url: jwks_url,
+        issuers:  ['https://login.microsoftonline.com/test/v2.0']
+      )
+      expect(result[:sub]).to eq('worker-1')
+    end
+
+    it 'rejects wrong issuer' do
+      expect do
+        described_class.verify_with_jwks(
+          token, jwks_url: jwks_url, issuers: ['https://other.issuer.com']
+        )
+      end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /issuer not allowed/)
+    end
+
+    it 'validates audience when provided' do
+      result = described_class.verify_with_jwks(
+        token, jwks_url: jwks_url, audience: 'app-client-id'
+      )
+      expect(result[:sub]).to eq('worker-1')
+    end
+
+    it 'rejects wrong audience' do
+      expect do
+        described_class.verify_with_jwks(
+          token, jwks_url: jwks_url, audience: 'wrong-audience'
+        )
+      end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /audience mismatch/)
+    end
+
+    it 'rejects expired token' do
+      expired_payload = { sub: 'worker-1', iat: Time.now.to_i - 7200, exp: Time.now.to_i - 3600 }
+      expired_token = JWT.encode(expired_payload, rsa_key, 'RS256', { kid: kid, alg: 'RS256' })
+
+      expect do
+        described_class.verify_with_jwks(expired_token, jwks_url: jwks_url)
+      end.to raise_error(Legion::Crypt::JWT::ExpiredTokenError)
+    end
+
+    it 'rejects token with missing kid' do
+      no_kid_token = JWT.encode({ sub: 'test' }, rsa_key, 'RS256')
+
+      expect do
+        described_class.verify_with_jwks(no_kid_token, jwks_url: jwks_url)
+      end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /missing kid/)
+    end
+
+    it 'rejects token signed with wrong key' do
+      other_key = OpenSSL::PKey::RSA.generate(2048)
+      bad_token = JWT.encode({ sub: 'test', exp: Time.now.to_i + 3600 }, other_key, 'RS256',
+                             { kid: kid, alg: 'RS256' })
+
+      expect do
+        described_class.verify_with_jwks(bad_token, jwks_url: jwks_url)
+      end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /signature verification failed/)
+    end
+  end
+
+  describe '.decode_header' do
+    let(:rsa_key) { OpenSSL::PKey::RSA.generate(2048) }
+
+    it 'extracts header fields from a JWT' do
+      token = JWT.encode({ sub: 'test' }, rsa_key, 'RS256', { kid: 'k1', alg: 'RS256' })
+      header = described_class.send(:decode_header, token)
+      expect(header['kid']).to eq('k1')
+      expect(header['alg']).to eq('RS256')
+    end
+
+    it 'raises on invalid token format' do
+      expect { described_class.send(:decode_header, 'not.a.valid.token.format') }
+        .to raise_error(Legion::Crypt::JWT::DecodeError)
+    end
+  end
+
   describe 'error hierarchy' do
     it 'all errors inherit from Legion::Crypt::JWT::Error' do
       expect(Legion::Crypt::JWT::ExpiredTokenError.ancestors).to include(Legion::Crypt::JWT::Error)

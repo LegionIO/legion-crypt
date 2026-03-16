@@ -64,6 +64,10 @@ module Legion
                                          issuer: jwt[:issuer])
       end
 
+      def verify_external_token(token, jwks_url:, **)
+        Legion::Crypt::JWT.verify_with_jwks(token, jwks_url: jwks_url, **)
+      end
+
       def shutdown
         Legion::Crypt::LeaseManager.instance.shutdown
         shutdown_renewer

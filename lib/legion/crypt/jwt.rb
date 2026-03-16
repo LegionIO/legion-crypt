@@ -2,6 +2,7 @@
 
 require 'jwt'
 require 'securerandom'
+require 'legion/crypt/jwks_client'
 
 module Legion
   module Crypt
@@ -59,6 +60,60 @@ module Legion
         raise DecodeError, "failed to decode token: #{e.message}"
       end
 
+      def self.verify_with_jwks(token, jwks_url:, **opts)
+        header = decode_header(token)
+        kid = header['kid']
+        algorithm = header['alg'] || 'RS256'
+
+        raise InvalidTokenError, 'token header missing kid' unless kid
+
+        validate_algorithm!(algorithm)
+
+        public_key = Legion::Crypt::JwksClient.find_key(jwks_url, kid)
+
+        verify_expiration = opts.fetch(:verify_expiration, true)
+        issuers = opts[:issuers]
+        audience = opts[:audience]
+
+        decode_opts = {
+          algorithm:         algorithm,
+          verify_expiration: verify_expiration
+        }
+
+        if issuers
+          decode_opts[:verify_iss] = true
+          decode_opts[:iss] = issuers
+        end
+
+        if audience
+          decode_opts[:verify_aud] = true
+          decode_opts[:aud] = audience
+        end
+
+        payload, _header = ::JWT.decode(token, public_key, true, decode_opts)
+        symbolize_keys(payload)
+      rescue ::JWT::ExpiredSignature
+        raise ExpiredTokenError, 'token has expired'
+      rescue ::JWT::VerificationError, ::JWT::IncorrectAlgorithm
+        raise InvalidTokenError, 'token signature verification failed'
+      rescue ::JWT::InvalidIssuerError
+        raise InvalidTokenError, 'token issuer not allowed'
+      rescue ::JWT::InvalidAudError
+        raise InvalidTokenError, 'token audience mismatch'
+      rescue ::JWT::DecodeError => e
+        raise DecodeError, "failed to decode token: #{e.message}"
+      end
+
+      def self.decode_header(token)
+        parts = token.to_s.split('.')
+        raise DecodeError, 'invalid token format' unless parts.size == 3
+
+        header_json = Base64.urlsafe_decode64(parts[0])
+        ::JSON.parse(header_json)
+      rescue ::JSON::ParserError, ArgumentError => e
+        raise DecodeError, "failed to decode token header: #{e.message}"
+      end
+
       def self.validate_algorithm!(algorithm)
         return if SUPPORTED_ALGORITHMS.include?(algorithm)
 
@@ -69,7 +124,7 @@ module Legion
         hash.transform_keys(&:to_sym)
       end
 
-      private_class_method :validate_algorithm!, :symbolize_keys
+      private_class_method :validate_algorithm!, :symbolize_keys, :decode_header
     end
   end
 end

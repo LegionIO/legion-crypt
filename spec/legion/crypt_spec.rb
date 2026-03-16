@@ -19,6 +19,19 @@ RSpec.describe Legion::Crypt do
     expect { Legion::Crypt.shutdown }.not_to raise_exception
   end
 
+  describe '.verify_external_token' do
+    it 'delegates to JWT.verify_with_jwks' do
+      expect(Legion::Crypt::JWT).to receive(:verify_with_jwks)
+        .with('token', jwks_url: 'https://example.com/keys', issuers: ['iss'])
+        .and_return({ sub: 'test' })
+
+      result = Legion::Crypt.verify_external_token(
+        'token', jwks_url: 'https://example.com/keys', issuers: ['iss']
+      )
+      expect(result[:sub]).to eq('test')
+    end
+  end
+
   describe 'LeaseManager integration' do
     before do
       allow(Legion::Crypt::LeaseManager.instance).to receive(:start)
