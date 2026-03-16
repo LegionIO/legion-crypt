@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-03-16
+
+### Added
+- `LeaseManager` singleton for dynamic Vault secret lease management
+- Named lease definitions in `crypt.vault.leases` settings
+- Boot-time lease fetch with data caching
+- Background renewal thread with rotation detection
+- Settings push-back on credential rotation via reverse index
+- `lease://name#key` URI references resolved by Settings resolver
+
 ## v1.2.1
 
 ### Fixed

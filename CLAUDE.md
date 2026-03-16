@@ -45,6 +45,7 @@ Legion::Crypt (singleton module)
 │   └── .worker_login  # Issue a Legion JWT and authenticate to Vault in one step
 │
 ├── VaultRenewer       # Background Vault token renewal thread
+├── LeaseManager       # Dynamic Vault lease lifecycle: fetch, cache, renew, rotate, push-back
 ├── Settings           # Default crypt config
 └── Version
 ```
@@ -98,6 +99,7 @@ Dev dependencies: `legion-logging`, `legion-settings`
 | `lib/legion/crypt/cluster_secret.rb` | Cluster-wide shared secret management |
 | `lib/legion/crypt/vault_jwt_auth.rb` | Vault JWT auth backend: `.login`, `.login!`, `.worker_login`; raises `AuthError` on failure |
 | `lib/legion/crypt/vault_renewer.rb` | Background Vault token renewal |
+| `lib/legion/crypt/lease_manager.rb` | Dynamic Vault lease lifecycle management |
 | `lib/legion/crypt/settings.rb` | Default configuration |
 | `lib/legion/crypt/version.rb` | VERSION constant |
 
