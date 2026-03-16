@@ -34,7 +34,13 @@ Legion::Crypt (singleton module)
 ├── JWT                # JSON Web Token operations
 │   ├── .issue         # Create signed JWT (HS256 or RS256)
 │   ├── .verify        # Verify and decode JWT
+│   ├── .verify_with_jwks  # Verify RS256 token via external JWKS endpoint (Entra ID, etc.)
 │   └── .decode        # Decode without verification (inspection)
+│
+├── JwksClient         # External JWKS endpoint integration (thread-safe)
+│   ├── .fetch_keys    # Fetch and parse JWKS from a URL
+│   ├── .find_key      # Lookup key by kid (cache-first, re-fetch on miss)
+│   └── .clear_cache   # Clear the key cache
 │
 ├── ClusterSecret      # Cluster-wide shared secret management
 │   └── .cs            # Generate/distribute cluster secret
@@ -57,6 +63,7 @@ Legion::Crypt (singleton module)
 - **Vault Conditional**: Vault module is only included if the `vault` gem is available
 - **Token Lifecycle**: VaultRenewer runs background thread for automatic token renewal
 - **JWT Dual Algorithm**: HS256 (symmetric, cluster secret) for intra-cluster tokens; RS256 (asymmetric, RSA keypair) for tokens verifiable without sharing the signing key
+- **JWKS External Validation**: `JwksClient` fetches public keys from external identity provider JWKS endpoints (Entra ID, Bot Framework). Keys cached for 1 hour (CACHE_TTL=3600s), thread-safe via Mutex, automatic re-fetch on cache miss handles key rotation
 
 ## Default Settings
 
@@ -94,7 +101,8 @@ Dev dependencies: `legion-logging`, `legion-settings`
 |------|---------|
 | `lib/legion/crypt.rb` | Module entry, start/shutdown lifecycle |
 | `lib/legion/crypt/cipher.rb` | AES-256-CBC encrypt/decrypt, RSA key generation |
-| `lib/legion/crypt/jwt.rb` | JWT issue/verify/decode operations |
+| `lib/legion/crypt/jwt.rb` | JWT issue/verify/decode/verify_with_jwks operations |
+| `lib/legion/crypt/jwks_client.rb` | JWKS endpoint fetch, parse, cache (thread-safe, 1hr TTL) |
 | `lib/legion/crypt/vault.rb` | Vault read/write/connect/renew operations |
 | `lib/legion/crypt/cluster_secret.rb` | Cluster-wide shared secret management |
 | `lib/legion/crypt/vault_jwt_auth.rb` | Vault JWT auth backend: `.login`, `.login!`, `.worker_login`; raises `AuthError` on failure |
@@ -110,6 +118,7 @@ First service-level module initialized during `Legion::Service` startup (before 
 2. Message encryption for `legion-transport` (optional `transport.messages.encrypt`)
 3. Cluster secret for inter-node encrypted communication
 4. JWT tokens for node authentication and task authorization
+5. External token verification for identity providers (Entra ID OIDC via JWKS)
 
 ### Vault JWT Auth Usage
 
@@ -143,6 +152,31 @@ decoded = Legion::Crypt::JWT.decode(token) # no verification, inspection only
 **Algorithms:**
 - `HS256` (default): Uses cluster secret. All cluster nodes can issue and verify.
 - `RS256`: Uses RSA keypair. Only the issuing node can sign; anyone with the public key can verify.
+
+### External Token Verification (JWKS)
+
+Verify tokens from external identity providers using their public JWKS endpoints:
+
+```ruby
+# Convenience method
+claims = Legion::Crypt.verify_external_token(
+  token,
+  jwks_url: 'https://login.microsoftonline.com/TENANT/discovery/v2.0/keys',
+  issuers:  ['https://login.microsoftonline.com/TENANT/v2.0'],
+  audience: 'app-client-id'
+)
+
+# Direct module usage
+claims = Legion::Crypt::JWT.verify_with_jwks(token, jwks_url: jwks_url)
+```
+
+**Flow:** decode JWT header (unverified) to extract `kid` -> `JwksClient.find_key` fetches the matching public key from cache or JWKS endpoint -> verify JWT signature with the public key.
+
+**Options:** `issuers:` (array, multi-issuer support), `audience:` (string), `verify_expiration:` (bool, default true).
+
+**Error hierarchy:** `ExpiredTokenError`, `InvalidTokenError` (bad signature, wrong issuer, wrong audience), `DecodeError` (malformed token) — all inherit from `Legion::Crypt::JWT::Error`.
+
+**Used by:** `lex-identity` Entra runner for Digital Worker OIDC token validation.
 
 ---
 
