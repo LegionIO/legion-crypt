@@ -51,6 +51,10 @@ Legion::Crypt (singleton module)
 │   └── .worker_login  # Issue a Legion JWT and authenticate to Vault in one step
 │
 ├── VaultRenewer       # Background Vault token renewal thread
+├── Ed25519            # Ed25519 key generation, signing, verification, Vault storage
+├── PartitionKeys      # HKDF per-tenant key derivation, AES-256-GCM encrypt/decrypt
+├── Erasure            # Cryptographic erasure via Vault master key deletion
+├── Attestation        # Signed identity claims with Ed25519, freshness checking
 ├── LeaseManager       # Dynamic Vault lease lifecycle: fetch, cache, renew, rotate, push-back
 ├── MockVault          # In-memory Vault mock for local development mode
 ├── Settings           # Default crypt config
@@ -91,6 +95,7 @@ Legion::Crypt (singleton module)
 
 | Gem | Purpose |
 |-----|---------|
+| `ed25519` (~> 1.3) | Ed25519 key operations (pure Ruby) |
 | `jwt` (>= 2.7) | JSON Web Token encoding/decoding |
 | `vault` (>= 0.17) | HashiCorp Vault Ruby client |
 
@@ -110,6 +115,10 @@ Dev dependencies: `legion-logging`, `legion-settings`
 | `lib/legion/crypt/vault_renewer.rb` | Background Vault token renewal |
 | `lib/legion/crypt/lease_manager.rb` | Dynamic Vault lease lifecycle management |
 | `lib/legion/crypt/settings.rb` | Default configuration |
+| `lib/legion/crypt/ed25519.rb` | Ed25519 key generation, signing, verification, Vault storage |
+| `lib/legion/crypt/partition_keys.rb` | HKDF per-tenant key derivation with AES-256-GCM |
+| `lib/legion/crypt/erasure.rb` | Cryptographic erasure via Vault master key deletion |
+| `lib/legion/crypt/attestation.rb` | Signed identity claims with Ed25519 signatures |
 | `lib/legion/crypt/version.rb` | VERSION constant |
 
 ## Role in LegionIO

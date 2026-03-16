@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-03-16
+
+### Added
+- `Legion::Crypt::Ed25519`: Ed25519 key generation, signing, verification, Vault key storage
+- `Legion::Crypt::PartitionKeys`: HKDF-based per-tenant key derivation with AES-256-GCM encrypt/decrypt
+- `Legion::Crypt::Erasure`: cryptographic erasure via Vault master key deletion with event emission
+- `Legion::Crypt::Attestation`: signed identity claims with Ed25519 signatures and freshness checking
+- Dependency: `ed25519` gem ~> 1.3
+
 ## [1.4.1] - 2026-03-16
 
 ### Added
