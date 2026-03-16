@@ -38,7 +38,8 @@ module Legion
           renewer:             true,
           push_cluster_secret: true,
           read_cluster_secret: true,
-          kv_path:             ENV['LEGION_VAULT_KV_PATH'] || 'legion'
+          kv_path:             ENV['LEGION_VAULT_KV_PATH'] || 'legion',
+          leases:              {}
         }
       end
     end

@@ -101,5 +101,9 @@ RSpec.describe Legion::Crypt::Settings do
       expect(described_class.vault[:kv_path]).to eq('custom/path')
       ENV['LEGION_VAULT_KV_PATH'] = original
     end
+
+    it 'has leases as an empty hash' do
+      expect(vault[:leases]).to eq({})
+    end
   end
 end
