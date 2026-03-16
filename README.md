@@ -41,6 +41,25 @@ claims = Legion::Crypt.verify_token(token, algorithm: 'RS256')
 decoded = Legion::Crypt::JWT.decode(token)
 ```
 
+### External Token Verification (JWKS)
+
+Verify tokens from external identity providers (Entra ID, Bot Framework) using their public JWKS endpoints:
+
+```ruby
+# Verify an Entra ID OIDC token
+claims = Legion::Crypt.verify_external_token(
+  token,
+  jwks_url: 'https://login.microsoftonline.com/TENANT/discovery/v2.0/keys',
+  issuers:  ['https://login.microsoftonline.com/TENANT/v2.0'],
+  audience: 'app-client-id'
+)
+
+# Or use the JWT module directly
+claims = Legion::Crypt::JWT.verify_with_jwks(token, jwks_url: jwks_url)
+```
+
+Public keys are cached for 1 hour and automatically re-fetched on cache miss (handles key rotation).
+
 ## Configuration
 
 ```json
