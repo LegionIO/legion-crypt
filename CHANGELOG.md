@@ -1,6 +1,12 @@
 # Legion::Crypt
 
-## [Unreleased]
+## [1.4.3] - 2026-03-17
+
+### Added
+- `Crypt::TLS`: mTLS configuration for RabbitMQ (Bunny) and PostgreSQL (Sequel) connections
+- `TLS.ssl_context` builds OpenSSL::SSL::SSLContext with TLS 1.2+ and VERIFY_PEER
+- `TLS.bunny_options` and `TLS.sequel_options` generate adapter-specific TLS option hashes
+- Configurable cert/key/ca paths via settings with sensible defaults
 
 ## [1.4.2] - 2026-03-16
 
