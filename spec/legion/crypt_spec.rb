@@ -32,6 +32,28 @@ RSpec.describe Legion::Crypt do
     end
   end
 
+  describe 'multi-cluster module methods' do
+    it 'responds to :cluster' do
+      expect(Legion::Crypt).to respond_to(:cluster)
+    end
+
+    it 'responds to :clusters' do
+      expect(Legion::Crypt).to respond_to(:clusters)
+    end
+
+    it 'responds to :vault_client' do
+      expect(Legion::Crypt).to respond_to(:vault_client)
+    end
+
+    it 'responds to :ldap_login_all' do
+      expect(Legion::Crypt).to respond_to(:ldap_login_all)
+    end
+
+    it ':clusters returns a hash' do
+      expect(Legion::Crypt.clusters).to be_a(Hash)
+    end
+  end
+
   describe 'LeaseManager integration' do
     before do
       allow(Legion::Crypt::LeaseManager.instance).to receive(:start)

@@ -8,9 +8,14 @@ require 'legion/crypt/cipher'
 require 'legion/crypt/jwt'
 require 'legion/crypt/vault_jwt_auth'
 require 'legion/crypt/lease_manager'
+require 'legion/crypt/vault_cluster'
+require 'legion/crypt/ldap_auth'
 
 module Legion
   module Crypt
+    extend Legion::Crypt::VaultCluster
+    extend Legion::Crypt::LdapAuth
+
     class << self
       attr_reader :sessions
 
@@ -21,11 +26,19 @@ module Legion
         include Legion::Crypt::Vault
       end
 
+      def vault_settings
+        Legion::Settings[:crypt][:vault]
+      end
+
       def start
         Legion::Logging.debug 'Legion::Crypt is running start'
         ::File.write('./legionio.key', private_key) if settings[:save_private_key]
 
-        connect_vault unless settings[:vault][:token].nil?
+        if vault_settings[:clusters]&.any?
+          connect_all_clusters
+        else
+          connect_vault unless settings[:vault][:token].nil?
+        end
         start_lease_manager
       end
 
