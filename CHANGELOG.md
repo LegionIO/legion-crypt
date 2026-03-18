@@ -1,5 +1,15 @@
 # Legion::Crypt
 
+## [1.4.4] - 2026-03-18
+
+### Added
+- Multi-cluster Vault support: named clusters with `default` pointer in `crypt.vault.clusters`
+- `VaultCluster` module: per-cluster `::Vault::Client` management, `connect_all_clusters`
+- `LdapAuth` module: LDAP authentication via Vault HTTP API (`auth/ldap/login/:username`)
+- `ldap_login_all` authenticates to all LDAP-configured clusters with single credentials
+- `VaultRenewer` now renews tokens for all connected clusters
+- Backward compatible: single-cluster config (`crypt.vault.address`) still works unchanged
+
 ## [1.4.3] - 2026-03-17
 
 ### Added
