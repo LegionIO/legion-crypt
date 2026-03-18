@@ -105,5 +105,13 @@ RSpec.describe Legion::Crypt::Settings do
     it 'has leases as an empty hash' do
       expect(vault[:leases]).to eq({})
     end
+
+    it 'has default as nil' do
+      expect(vault[:default]).to be_nil
+    end
+
+    it 'has clusters as an empty hash' do
+      expect(vault[:clusters]).to eq({})
+    end
   end
 end
