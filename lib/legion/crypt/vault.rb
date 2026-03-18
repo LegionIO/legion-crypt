@@ -83,8 +83,21 @@ module Legion
       end
 
       def renew_sessions(**_opts)
-        @sessions.each do |session|
-          renew_session(session: session)
+        if respond_to?(:connected_clusters) && connected_clusters.any?
+          renew_cluster_tokens
+        else
+          @sessions.each do |session|
+            renew_session(session: session)
+          end
+        end
+      end
+
+      def renew_cluster_tokens
+        connected_clusters.each_key do |name|
+          client = vault_client(name)
+          client.auth_token.renew_self
+        rescue StandardError => e
+          log_vault_error(name, e)
         end
       end
 
