@@ -1,6 +1,8 @@
 # legion-crypt
 
-Encryption, secrets management, JWT token management, and HashiCorp Vault integration for the [LegionIO](https://github.com/LegionIO/LegionIO) framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, and Vault token lifecycle management.
+Encryption, secrets management, JWT token management, and HashiCorp Vault integration for the [LegionIO](https://github.com/LegionIO/LegionIO) framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, Vault token lifecycle management, and multi-cluster Vault connectivity.
+
+**Version**: 1.4.4
 
 ## Installation
 
@@ -145,6 +147,48 @@ Both `username` and `password` come from a single Vault read — one lease, one 
 - Revokes all leases on `Crypt.shutdown`
 
 Lease names are stable across environments. The actual Vault paths are deployment-specific config.
+
+## Multi-Cluster Vault
+
+`VaultCluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `::Vault::Client` instance.
+
+```json
+{
+  "crypt": {
+    "vault": {
+      "default": "primary",
+      "clusters": {
+        "primary": {
+          "protocol": "https",
+          "address": "vault.example.com",
+          "port": 8200,
+          "namespace": "my-namespace",
+          "auth_method": "ldap"
+        },
+        "secondary": {
+          "protocol": "https",
+          "address": "vault2.example.com",
+          "port": 8200,
+          "auth_method": "ldap"
+        }
+      }
+    }
+  }
+}
+```
+
+```ruby
+# Authenticate to all LDAP-configured clusters at once
+Legion::Crypt.ldap_login_all(username: 'user', password: 'pass')
+
+# Read from specific cluster
+Legion::Crypt.read('secret/data/mykey', cluster: :secondary)
+
+# Get a Vault client for a specific cluster
+client = Legion::Crypt.vault_client(:primary)
+```
+
+When `clusters` is empty, the legacy single-cluster path is used (backward compatible).
 
 ## Requirements
 
