@@ -1,5 +1,17 @@
 # Legion::Crypt
 
+## [1.4.5] - 2026-03-20
+
+### Changed
+- Refactored `Legion::Crypt::TLS` to standard `resolve` pattern: pure config normalizer with port auto-detect, vault URI resolution, legacy key migration, and three verification levels (none/peer/mutual)
+- Removed consumer-specific `bunny_options` and `sequel_options` methods (moved to consuming gems)
+
+### Added
+- `TLS.resolve(tls_config, port:)` — standard TLS config resolver
+- `TLS.migrate_legacy(config)` — backwards-compat mapping for transport's old TLS keys
+- `TLS::TLS_PORTS` — known TLS port auto-detection map (5671, 6380, 11207)
+- Default `tls:` settings block in `Legion::Crypt::Settings`
+
 ## [1.4.4] - 2026-03-18
 
 ### Added

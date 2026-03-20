@@ -3,10 +3,21 @@
 module Legion
   module Crypt
     module Settings
+      def self.tls
+        {
+          enabled: false,
+          verify:  'peer',
+          ca:      nil,
+          cert:    nil,
+          key:     nil
+        }
+      end
+
       def self.default
         {
           vault:            vault,
           jwt:              jwt,
+          tls:              tls,
           cs_encrypt_ready: false,
           dynamic_keys:     true,
           cluster_secret:   nil,

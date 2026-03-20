@@ -1,78 +1,92 @@
 # frozen_string_literal: true
 
-require 'openssl'
-
 module Legion
   module Crypt
     module TLS
-      DEFAULT_CERT_DIR = '/etc/legion/tls'
+      TLS_PORTS = {
+        5671   => 'amqp',
+        6380   => 'redis',
+        11_207 => 'memcached'
+      }.freeze
 
       class << self
-        def enabled?
-          settings_dig(:enabled) == true
-        end
+        def resolve(tls_config, port: nil)
+          config = symbolize_keys(migrate_legacy(tls_config || {}))
 
-        def ssl_context(role: :client) # rubocop:disable Lint/UnusedMethodArgument
-          ctx = OpenSSL::SSL::SSLContext.new
-          ctx.min_version = OpenSSL::SSL::TLS1_2_VERSION
-          ctx.verify_mode = OpenSSL::SSL::VERIFY_PEER
+          enabled       = config[:enabled]
+          auto_detected = false
 
-          ctx.cert = OpenSSL::X509::Certificate.new(File.read(cert_path)) if cert_path && File.exist?(cert_path)
-          ctx.key = OpenSSL::PKey.read(File.read(key_path)) if key_path && File.exist?(key_path)
-          ctx.ca_file = ca_path if ca_path && File.exist?(ca_path)
+          if enabled.nil? && port && TLS_PORTS.key?(port.to_i)
+            enabled = true
+            auto_detected = true
+            log_warn("TLS auto-enabled for port #{port}")
+          end
 
-          ctx
-        end
+          enabled = false if enabled.nil?
 
-        def bunny_options
-          return {} unless enabled?
+          verify = normalize_verify(config[:verify])
+          ca     = resolve_uri(config[:ca])
+          cert   = resolve_uri(config[:cert])
+          key    = resolve_uri(config[:key])
+
+          if verify == :mutual && (cert.nil? || key.nil?)
+            log_warn('TLS mutual requested but cert or key missing, downgrading to peer')
+            verify = :peer
+          end
 
           {
-            tls:                 true,
-            tls_cert:            cert_path,
-            tls_key:             key_path,
-            tls_ca_certificates: [ca_path].compact,
-            verify_peer:         true
+            enabled:       enabled,
+            verify:        verify,
+            ca:            ca,
+            cert:          cert,
+            key:           key,
+            auto_detected: auto_detected
           }
         end
 
-        def sequel_options
-          return {} unless enabled?
+        def migrate_legacy(config)
+          config = symbolize_keys(config)
+          return config unless config.key?(:use_tls) && !config.key?(:enabled)
 
           {
-            sslmode:     'verify-full',
-            sslcert:     cert_path,
-            sslkey:      key_path,
-            sslrootcert: ca_path
+            enabled: config[:use_tls],
+            verify:  config[:verify_peer] ? 'peer' : 'none',
+            ca:      config[:ca_certs],
+            cert:    config[:tls_cert],
+            key:     config[:tls_key]
           }
-        end
-
-        def cert_path
-          settings_dig(:cert_path) || File.join(DEFAULT_CERT_DIR, 'legion.crt')
-        end
-
-        def key_path
-          settings_dig(:key_path) || File.join(DEFAULT_CERT_DIR, 'legion.key')
-        end
-
-        def ca_path
-          settings_dig(:ca_path) || File.join(DEFAULT_CERT_DIR, 'ca-bundle.crt')
         end
 
         private
 
-        def settings_dig(*keys)
-          return nil unless defined?(Legion::Settings)
+        def symbolize_keys(hash)
+          hash.each_with_object({}) { |(k, v), h| h[k.to_sym] = v }
+        end
 
-          result = Legion::Settings[:crypt]
-          [:tls, *keys].each do |key|
-            return nil unless result.is_a?(Hash)
-
-            result = result[key]
+        def normalize_verify(value)
+          case value.to_s
+          when 'none'   then :none
+          when 'mutual' then :mutual
+          else :peer
           end
-          result
-        rescue StandardError
-          nil
+        end
+
+        def resolve_uri(value)
+          return nil if value.nil?
+
+          if defined?(Legion::Settings::Resolver)
+            Legion::Settings::Resolver.resolve_value(value)
+          else
+            value
+          end
+        end
+
+        def log_warn(msg)
+          if defined?(Legion::Logging)
+            Legion::Logging.warn(msg)
+          else
+            warn msg
+          end
         end
       end
     end
