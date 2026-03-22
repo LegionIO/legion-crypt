@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'uri'
 require 'vault'
 
 module Legion
@@ -13,7 +14,19 @@ module Legion
 
       def connect_vault
         @sessions = []
-        ::Vault.address = "#{Legion::Settings[:crypt][:vault][:protocol]}://#{Legion::Settings[:crypt][:vault][:address]}:#{Legion::Settings[:crypt][:vault][:port]}" # rubocop:disable Layout/LineLength
+        vault_settings = Legion::Settings[:crypt][:vault]
+        protocol = vault_settings[:protocol] || 'http'
+        address  = vault_settings[:address] || 'localhost'
+        port     = vault_settings[:port] || 8200
+
+        if address.match?(%r{\Ahttps?://})
+          uri = URI.parse(address)
+          protocol = uri.scheme
+          address  = uri.host
+          port     = uri.port if vault_settings[:port].nil?
+        end
+
+        ::Vault.address = "#{protocol}://#{address}:#{port}"
 
         Legion::Settings[:crypt][:vault][:token] = ENV['VAULT_DEV_ROOT_TOKEN_ID'] if ENV.key? 'VAULT_DEV_ROOT_TOKEN_ID'
         return nil if Legion::Settings[:crypt][:vault][:token].nil?

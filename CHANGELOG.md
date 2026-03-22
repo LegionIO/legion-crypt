@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.4.6] - 2026-03-21
+
+### Fixed
+- Vault URL construction: normalize `address` field that contains a full URL with scheme (e.g. `https://host`) instead of just a hostname, preventing malformed `http://https://host:port` addresses
+
 ## [1.4.5] - 2026-03-20
 
 ### Changed
