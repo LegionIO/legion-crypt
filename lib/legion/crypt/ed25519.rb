@@ -8,6 +8,7 @@ module Legion
       class << self
         def generate_keypair
           signing_key = ::Ed25519::SigningKey.generate
+          Legion::Logging.debug 'Ed25519 keypair generated' if defined?(Legion::Logging)
           {
             private_key:    signing_key.to_bytes,
             public_key:     signing_key.verify_key.to_bytes,
@@ -17,12 +18,15 @@ module Legion
 
         def sign(message, private_key_bytes)
           signing_key = ::Ed25519::SigningKey.new(private_key_bytes)
-          signing_key.sign(message)
+          result = signing_key.sign(message)
+          Legion::Logging.debug 'Ed25519 sign complete' if defined?(Legion::Logging)
+          result
         end
 
         def verify(message, signature, public_key_bytes)
           verify_key = ::Ed25519::VerifyKey.new(public_key_bytes)
           verify_key.verify(signature, message)
+          Legion::Logging.debug 'Ed25519 verify success' if defined?(Legion::Logging)
           true
         rescue ::Ed25519::VerifyError
           false
@@ -32,6 +36,7 @@ module Legion
           keypair ||= generate_keypair
           vault_path = "#{key_prefix}/#{agent_id}"
           if defined?(Legion::Crypt::Vault)
+            Legion::Logging.debug "Ed25519 storing keypair at #{vault_path}" if defined?(Legion::Logging)
             Legion::Crypt::Vault.write(vault_path, {
                                          private_key: keypair[:private_key].unpack1('H*'),
                                          public_key:  keypair[:public_key_hex]
@@ -42,6 +47,7 @@ module Legion
 
         def load_private_key(agent_id:)
           vault_path = "#{key_prefix}/#{agent_id}"
+          Legion::Logging.debug "Ed25519 loading private key from #{vault_path}" if defined?(Legion::Logging)
           data = Legion::Crypt::Vault.read(vault_path)
           [data[:private_key]].pack('H*') if data&.dig(:private_key)
         rescue StandardError

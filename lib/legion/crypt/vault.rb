@@ -32,7 +32,10 @@ module Legion
         return nil if Legion::Settings[:crypt][:vault][:token].nil?
 
         ::Vault.token = Legion::Settings[:crypt][:vault][:token]
-        Legion::Settings[:crypt][:vault][:connected] = true if ::Vault.sys.health_status.initialized?
+        if ::Vault.sys.health_status.initialized?
+          Legion::Settings[:crypt][:vault][:connected] = true
+          Legion::Logging.info "Vault connected at #{::Vault.address}" if defined?(Legion::Logging)
+        end
         return unless Legion.const_defined? 'Extensions::Actors::Every'
 
         require_relative 'vault_renewer'
@@ -45,20 +48,32 @@ module Legion
 
       def read(path, type = 'legion')
         full_path = type.nil? || type.empty? ? "#{type}/#{path}" : path
+        Legion::Logging.debug "Vault read: #{full_path}" if defined?(Legion::Logging)
         lease = ::Vault.logical.read(full_path)
         add_session(path: lease.lease_id) if lease.respond_to? :lease_id
         lease.data
+      rescue StandardError => e
+        Legion::Logging.warn "Vault read failed at #{full_path}: #{e.message}" if defined?(Legion::Logging)
+        raise
       end
 
       def get(path)
+        Legion::Logging.debug "Vault kv get: #{path}" if defined?(Legion::Logging)
         result = ::Vault.kv(settings[:vault][:kv_path]).read(path)
         return nil if result.nil?
 
         result.data
+      rescue StandardError => e
+        Legion::Logging.warn "Vault kv get failed at #{path}: #{e.message}" if defined?(Legion::Logging)
+        raise
       end
 
       def write(path, **hash)
+        Legion::Logging.debug "Vault kv write: #{path}" if defined?(Legion::Logging)
         ::Vault.kv(settings[:vault][:kv_path]).write(path, **hash)
+      rescue StandardError => e
+        Legion::Logging.warn "Vault kv write failed at #{path}: #{e.message}" if defined?(Legion::Logging)
+        raise
       end
 
       def exist?(path)
@@ -96,19 +111,23 @@ module Legion
       end
 
       def renew_sessions(**_opts)
-        if respond_to?(:connected_clusters) && connected_clusters.any?
-          renew_cluster_tokens
-        else
-          @sessions.each do |session|
-            renew_session(session: session)
-          end
-        end
+        Legion::Logging.debug 'Vault renewal cycle start' if defined?(Legion::Logging)
+        result = if respond_to?(:connected_clusters) && connected_clusters.any?
+                   renew_cluster_tokens
+                 else
+                   @sessions.each do |session|
+                     renew_session(session: session)
+                   end
+                 end
+        Legion::Logging.debug 'Vault renewal cycle complete' if defined?(Legion::Logging)
+        result
       end
 
       def renew_cluster_tokens
         connected_clusters.each_key do |name|
           client = vault_client(name)
           client.auth_token.renew_self
+          Legion::Logging.info "Vault token renewed for cluster #{name}" if defined?(Legion::Logging)
         rescue StandardError => e
           log_vault_error(name, e)
         end

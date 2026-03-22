@@ -13,8 +13,12 @@ module Legion
         clusters[cluster_name][:token] = token
         clusters[cluster_name][:connected] = true
 
+        Legion::Logging.info "LDAP login success: user=#{username}, cluster=#{cluster_name}" if defined?(Legion::Logging)
         { token: token, lease_duration: auth.lease_duration,
           renewable: auth.renewable, policies: auth.policies }
+      rescue StandardError => e
+        Legion::Logging.warn "LDAP login failed: user=#{username}, cluster=#{cluster_name}: #{e.message}" if defined?(Legion::Logging)
+        raise
       end
 
       def ldap_login_all(username:, password:)

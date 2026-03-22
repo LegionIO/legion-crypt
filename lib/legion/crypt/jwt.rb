@@ -25,7 +25,9 @@ module Legion
           jti: SecureRandom.uuid
         }.merge(payload)
 
-        ::JWT.encode(claims, signing_key, algorithm)
+        token = ::JWT.encode(claims, signing_key, algorithm)
+        Legion::Logging.info "JWT issued: sub=#{claims[:sub]}, exp=#{Time.at(claims[:exp]).utc.iso8601}, alg=#{algorithm}" if defined?(Legion::Logging)
+        token
       end
 
       def self.verify(token, verification_key:, **opts)
@@ -44,12 +46,17 @@ module Legion
         decode_opts[:iss] = issuer if verify_issuer
 
         payload, _header = ::JWT.decode(token, verification_key, true, decode_opts)
-        symbolize_keys(payload)
+        result = symbolize_keys(payload)
+        Legion::Logging.debug "JWT verify success: sub=#{result[:sub]}, jti=#{result[:jti]}" if defined?(Legion::Logging)
+        result
       rescue ::JWT::ExpiredSignature
+        Legion::Logging.warn 'JWT verify failed: token has expired' if defined?(Legion::Logging)
         raise ExpiredTokenError, 'token has expired'
       rescue ::JWT::VerificationError, ::JWT::IncorrectAlgorithm
+        Legion::Logging.warn 'JWT verify failed: signature verification failed' if defined?(Legion::Logging)
         raise InvalidTokenError, 'token signature verification failed'
       rescue ::JWT::DecodeError => e
+        Legion::Logging.warn "JWT verify failed: #{e.message}" if defined?(Legion::Logging)
         raise DecodeError, "failed to decode token: #{e.message}"
       end
 
@@ -91,16 +98,23 @@ module Legion
         end
 
         payload, _header = ::JWT.decode(token, public_key, true, decode_opts)
-        symbolize_keys(payload)
+        result = symbolize_keys(payload)
+        Legion::Logging.debug "JWT JWKS verify success: sub=#{result[:sub]}, kid=#{kid}" if defined?(Legion::Logging)
+        result
       rescue ::JWT::ExpiredSignature
+        Legion::Logging.warn "JWT JWKS verify failed: token has expired, kid=#{kid}" if defined?(Legion::Logging)
         raise ExpiredTokenError, 'token has expired'
       rescue ::JWT::VerificationError, ::JWT::IncorrectAlgorithm
+        Legion::Logging.warn "JWT JWKS verify failed: signature verification failed, kid=#{kid}" if defined?(Legion::Logging)
         raise InvalidTokenError, 'token signature verification failed'
       rescue ::JWT::InvalidIssuerError
+        Legion::Logging.warn "JWT JWKS verify failed: issuer not allowed, kid=#{kid}" if defined?(Legion::Logging)
         raise InvalidTokenError, 'token issuer not allowed'
       rescue ::JWT::InvalidAudError
+        Legion::Logging.warn "JWT JWKS verify failed: audience mismatch, kid=#{kid}" if defined?(Legion::Logging)
         raise InvalidTokenError, 'token audience mismatch'
       rescue ::JWT::DecodeError => e
+        Legion::Logging.warn "JWT JWKS verify failed: #{e.message}, kid=#{kid}" if defined?(Legion::Logging)
         raise DecodeError, "failed to decode token: #{e.message}"
       end
 

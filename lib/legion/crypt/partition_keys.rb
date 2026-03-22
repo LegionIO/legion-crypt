@@ -12,6 +12,7 @@ module Legion
           rescue StandardError
             nil
           end || 'legion-partition'
+          Legion::Logging.debug "PartitionKeys key derivation for tenant #{tenant_id}" if defined?(Legion::Logging)
           salt = OpenSSL::Digest::SHA256.digest(tenant_id.to_s)
           OpenSSL::KDF.hkdf(master_key, salt: salt, info: context, length: 32, hash: 'SHA256')
         end
@@ -26,6 +27,9 @@ module Legion
           auth_tag = cipher.auth_tag
 
           { ciphertext: ciphertext, iv: iv, auth_tag: auth_tag }
+        rescue StandardError => e
+          Legion::Logging.warn "PartitionKeys encrypt failed for tenant #{tenant_id}: #{e.message}" if defined?(Legion::Logging)
+          raise
         end
 
         def decrypt_for_tenant(ciphertext:, init_vector:, auth_tag:, tenant_id:, master_key:)
@@ -36,6 +40,9 @@ module Legion
           decipher.iv = init_vector
           decipher.auth_tag = auth_tag
           decipher.update(ciphertext) + decipher.final
+        rescue StandardError => e
+          Legion::Logging.warn "PartitionKeys decrypt failed for tenant #{tenant_id}: #{e.message}" if defined?(Legion::Logging)
+          raise
         end
       end
     end

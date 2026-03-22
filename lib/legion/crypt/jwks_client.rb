@@ -17,6 +17,7 @@ module Legion
       class << self
         def fetch_keys(jwks_url)
           @mutex.synchronize do
+            Legion::Logging.debug "JWKS fetch: #{jwks_url}" if defined?(Legion::Logging)
             response = http_get(jwks_url)
             jwks_data = parse_response(response)
             keys = parse_jwks(jwks_data)
@@ -24,6 +25,9 @@ module Legion
             @cache[jwks_url] = { keys: keys, fetched_at: Time.now }
             keys
           end
+        rescue StandardError => e
+          Legion::Logging.warn "JWKS fetch failed for #{jwks_url}: #{e.message}" if defined?(Legion::Logging)
+          raise
         end
 
         def find_key(jwks_url, kid)
@@ -31,10 +35,12 @@ module Legion
 
           if cached && !expired?(cached[:fetched_at])
             key = cached[:keys][kid]
-            return key if key
+            if key
+              Legion::Logging.debug "JWKS cache hit: kid=#{kid}" if defined?(Legion::Logging)
+              return key
+            end
           end
 
-          # Re-fetch once on cache miss or expiry
           keys = fetch_keys(jwks_url)
           key = keys[kid]
           return key if key

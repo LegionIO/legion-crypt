@@ -17,6 +17,7 @@ module Legion
 
           payload = Legion::JSON.dump(claim)
           signature = Legion::Crypt::Ed25519.sign(payload, private_key)
+          Legion::Logging.debug "Attestation created for agent #{agent_id}, state=#{state}" if defined?(Legion::Logging)
 
           { claim: claim, signature: signature.unpack1('H*'), payload: payload }
         end
@@ -24,7 +25,15 @@ module Legion
         def verify(claim_hash:, signature_hex:, public_key:)
           payload = Legion::JSON.dump(claim_hash)
           signature = [signature_hex].pack('H*')
-          Legion::Crypt::Ed25519.verify(payload, signature, public_key)
+          result = Legion::Crypt::Ed25519.verify(payload, signature, public_key)
+          if defined?(Legion::Logging)
+            if result
+              Legion::Logging.debug "Attestation verified for agent #{claim_hash[:agent_id]}"
+            else
+              Legion::Logging.warn "Attestation verification failed for agent #{claim_hash[:agent_id]}"
+            end
+          end
+          result
         end
 
         def fresh?(claim_hash, max_age_seconds: 300)

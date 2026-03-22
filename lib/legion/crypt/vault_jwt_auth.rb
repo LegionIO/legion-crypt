@@ -44,8 +44,10 @@ module Legion
           metadata:       response.auth.metadata
         }
       rescue ::Vault::HTTPClientError => e
+        Legion::Logging.warn "Vault JWT auth failed (client error): role=#{role}, #{e.message}" if defined?(Legion::Logging)
         raise AuthError, "Vault JWT auth failed: #{e.message}"
       rescue ::Vault::HTTPServerError => e
+        Legion::Logging.warn "Vault JWT auth failed (server error): role=#{role}, #{e.message}" if defined?(Legion::Logging)
         raise AuthError, "Vault server error during JWT auth: #{e.message}"
       end
 

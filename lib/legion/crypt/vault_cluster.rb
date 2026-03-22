@@ -37,6 +37,7 @@ module Legion
           client = vault_client(name)
           config[:connected] = client.sys.health_status.initialized?
           results[name] = config[:connected]
+          Legion::Logging.info "Vault cluster connected: #{name} at #{config[:address]}" if config[:connected] && defined?(Legion::Logging)
         rescue StandardError => e
           config[:connected] = false
           results[name] = false

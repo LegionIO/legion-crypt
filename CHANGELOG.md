@@ -1,5 +1,19 @@
 # Legion::Crypt
 
+## [1.4.7] - 2026-03-22
+
+### Added
+- Logging across vault, JWT, JWKS, Ed25519, PartitionKeys, Attestation, LdapAuth, VaultJwtAuth, VaultCluster operations
+- `vault.rb`: `.info` on Vault connect, `.info` on cluster token renewal, `.debug` on read/write/get paths, `.warn` on read/write/get failures, `.debug` on renewal cycle start/complete
+- `jwt.rb`: `.info` on JWT issue (subject, expiry, algorithm), `.debug` on verify success, `.warn` on verify failures (expired, invalid, decode) before raising
+- `jwks_client.rb`: `.debug` on JWKS fetch URL, `.debug` on cache hit, `.warn` on fetch failure
+- `ed25519.rb`: `.debug` on keypair generation, sign, verify, and Vault store/load paths
+- `partition_keys.rb`: `.debug` on key derivation, `.warn` on encrypt/decrypt failures
+- `attestation.rb`: `.debug` on attestation create/verify, `.warn` on verification failure
+- `ldap_auth.rb`: `.info` on LDAP login success, `.warn` on LDAP login failure
+- `vault_jwt_auth.rb`: `.warn` on JWT auth client/server errors in non-bang `login`
+- `vault_cluster.rb`: `.info` on successful cluster connect
+
 ## [1.4.6] - 2026-03-21
 
 ### Fixed
