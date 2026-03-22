@@ -1,1 +1,40 @@
+# Default owner — all files
 * @Esity
+
+# Core library code
+# lib/ @Esity @future-security-team
+
+# Cipher and key management
+# lib/legion/crypt/cipher.rb @Esity @future-security-team
+# lib/legion/crypt/partition_keys.rb @Esity @future-security-team
+# lib/legion/crypt/ed25519.rb @Esity @future-security-team
+
+# Vault integration
+# lib/legion/crypt/vault.rb @Esity @future-security-team
+# lib/legion/crypt/vault_jwt_auth.rb @Esity @future-security-team
+# lib/legion/crypt/vault_renewer.rb @Esity @future-security-team
+# lib/legion/crypt/vault_cluster.rb @Esity @future-security-team
+# lib/legion/crypt/lease_manager.rb @Esity @future-security-team
+
+# JWT and JWKS
+# lib/legion/crypt/jwt.rb @Esity @future-security-team
+# lib/legion/crypt/jwks_client.rb @Esity @future-security-team
+
+# Auth integrations
+# lib/legion/crypt/ldap_auth.rb @Esity @future-security-team
+# lib/legion/crypt/vault_kerberos_auth.rb @Esity @future-security-team
+
+# Cluster secret
+# lib/legion/crypt/cluster_secret.rb @Esity @future-security-team
+
+# Cryptographic erasure
+# lib/legion/crypt/erasure.rb @Esity @future-security-team
+
+# Specs
+# spec/ @Esity @future-contributors
+
+# Documentation
+# *.md @Esity @future-docs-team
+
+# CI/CD
+# .github/ @Esity
