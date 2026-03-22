@@ -32,7 +32,8 @@ module Legion
         return nil unless Legion::Crypt.exist?('crypt')
 
         get('crypt')[:cluster_secret]
-      rescue StandardError
+      rescue StandardError => e
+        Legion::Logging.warn("Legion::Crypt::ClusterSecret#from_vault failed: #{e.message}") if defined?(Legion::Logging)
         nil
       end
 
@@ -77,7 +78,8 @@ module Legion
 
       def only_member?
         Legion::Transport::Queue.new('node.crypt', passive: true).consumer_count.zero?
-      rescue StandardError
+      rescue StandardError => e
+        Legion::Logging.warn("Legion::Crypt::ClusterSecret#only_member? failed: #{e.message}") if defined?(Legion::Logging)
         nil
       end
 

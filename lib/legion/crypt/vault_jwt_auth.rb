@@ -84,7 +84,8 @@ module Legion
         defined?(::Vault) &&
           defined?(Legion::Settings) &&
           Legion::Settings[:crypt][:vault][:connected] == true
-      rescue StandardError
+      rescue StandardError => e
+        Legion::Logging.debug("Legion::Crypt::VaultJwtAuth#vault_connected? failed: #{e.message}") if defined?(Legion::Logging)
         false
       end
 

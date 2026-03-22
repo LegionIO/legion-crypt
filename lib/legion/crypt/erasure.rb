@@ -13,6 +13,7 @@ module Legion
 
           { erased: true, tenant_id: tenant_id, path: key_path }
         rescue StandardError => e
+          Legion::Logging.error("Legion::Crypt::Erasure#erase_tenant failed: #{e.message}") if defined?(Legion::Logging)
           { erased: false, tenant_id: tenant_id, error: e.message }
         end
 
@@ -20,7 +21,8 @@ module Legion
           key_path = "#{tenant_prefix}/#{tenant_id}/master_key"
           data = Legion::Crypt::Vault.read(key_path)
           { erased: data.nil?, tenant_id: tenant_id }
-        rescue StandardError
+        rescue StandardError => e
+          Legion::Logging.warn("Legion::Crypt::Erasure#verify_erasure failed: #{e.message}") if defined?(Legion::Logging)
           { erased: true, tenant_id: tenant_id }
         end
 
@@ -33,7 +35,8 @@ module Legion
         def tenant_prefix
           begin
             Legion::Settings[:crypt][:partition_keys][:vault_tenant_prefix]
-          rescue StandardError
+          rescue StandardError => e
+            Legion::Logging.debug("Legion::Crypt::Erasure#tenant_prefix settings lookup failed: #{e.message}") if defined?(Legion::Logging)
             nil
           end || 'secret/data/legion/tenants'
         end

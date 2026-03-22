@@ -95,8 +95,8 @@ module Legion
 
             jwk = ::JWT::JWK.new(jwk_hash)
             keys[kid] = jwk.public_key
-          rescue StandardError
-            # Skip malformed keys, continue with valid ones
+          rescue StandardError => e
+            Legion::Logging.debug("Legion::Crypt::JwksClient#parse_jwks skipping malformed key kid=#{kid}: #{e.message}") if defined?(Legion::Logging)
             next
           end
 

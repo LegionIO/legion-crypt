@@ -39,7 +39,8 @@ module Legion
         def fresh?(claim_hash, max_age_seconds: 300)
           timestamp = Time.parse(claim_hash[:timestamp])
           Time.now.utc - timestamp < max_age_seconds
-        rescue StandardError
+        rescue StandardError => e
+          Legion::Logging.warn("Legion::Crypt::Attestation#fresh? failed: #{e.message}") if defined?(Legion::Logging)
           false
         end
       end

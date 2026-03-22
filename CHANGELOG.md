@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.4.8] - 2026-03-22
+
+### Changed
+- Added logging to all silent rescue blocks across attestation, cluster_secret, ed25519, erasure, jwks_client, ldap_auth, vault_jwt_auth, and vault_kerberos_auth
+
 ## [1.4.7] - 2026-03-22
 
 ### Added

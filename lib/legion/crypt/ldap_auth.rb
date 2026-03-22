@@ -28,6 +28,7 @@ module Legion
 
           results[name] = ldap_login(cluster_name: name, username: username, password: password)
         rescue StandardError => e
+          Legion::Logging.warn("Legion::Crypt::LdapAuth#ldap_login_all cluster=#{name} failed: #{e.message}") if defined?(Legion::Logging)
           results[name] = { error: e.message }
         end
         results
