@@ -10,6 +10,7 @@ require 'legion/crypt/vault_jwt_auth'
 require 'legion/crypt/lease_manager'
 require 'legion/crypt/vault_cluster'
 require 'legion/crypt/ldap_auth'
+require 'legion/crypt/helper'
 
 module Legion
   module Crypt

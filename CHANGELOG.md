@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.4.9] - 2026-03-22
+
+### Added
+- `Legion::Crypt::Helper` module: injectable Vault mixin for LEX extensions
+- Namespaced `vault_get`, `vault_write`, `vault_exist?` with automatic lex-prefixed paths
+
 ## [1.4.8] - 2026-03-22
 
 ### Changed
