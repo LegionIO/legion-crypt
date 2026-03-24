@@ -13,3 +13,6 @@
 # rspec failure tracking
 .rspec_status
 legionio.key
+
+# git worktrees
+.worktrees/
