@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.4.10] - 2026-03-24
+
+### Added
+- `Legion::Crypt.delete(path)` for Vault KV path deletion (supports credential revocation on worker termination)
+
 ## [1.4.9] - 2026-03-22
 
 ### Added
