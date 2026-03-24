@@ -11,6 +11,8 @@ require 'legion/crypt/lease_manager'
 require 'legion/crypt/vault_cluster'
 require 'legion/crypt/ldap_auth'
 require 'legion/crypt/helper'
+require 'legion/crypt/mtls'
+require 'legion/crypt/cert_rotation'
 
 module Legion
   module Crypt
