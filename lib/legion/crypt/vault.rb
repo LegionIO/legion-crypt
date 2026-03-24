@@ -76,6 +76,14 @@ module Legion
         raise
       end
 
+      def delete(path)
+        ::Vault.logical.delete(path)
+        { success: true, path: path }
+      rescue StandardError => e
+        Legion::Logging.warn "Vault delete failed for #{path}: #{e.message}" if defined?(Legion::Logging)
+        { success: false, path: path, error: e.message }
+      end
+
       def exist?(path)
         !::Vault.kv(settings[:vault][:kv_path]).read_metadata(path).nil?
       end

@@ -54,6 +54,34 @@ RSpec.describe Legion::Crypt do
     end
   end
 
+  describe '.delete' do
+    context 'when Vault is available' do
+      let(:logical) { double('logical') }
+
+      before do
+        allow(Vault).to receive(:logical).and_return(logical)
+        allow(logical).to receive(:delete).and_return(true)
+      end
+
+      it 'deletes the Vault path' do
+        result = Legion::Crypt.delete('secret/data/legion/workers/w-1/entra')
+        expect(logical).to have_received(:delete).with('secret/data/legion/workers/w-1/entra')
+        expect(result).to include(success: true)
+      end
+    end
+
+    context 'when Vault is not available' do
+      before do
+        allow(Vault).to receive(:logical).and_raise(StandardError, 'not connected')
+      end
+
+      it 'returns failure without raising' do
+        result = Legion::Crypt.delete('secret/data/legion/workers/w-1/entra')
+        expect(result[:success]).to be false
+      end
+    end
+  end
+
   describe 'LeaseManager integration' do
     before do
       allow(Legion::Crypt::LeaseManager.instance).to receive(:start)
