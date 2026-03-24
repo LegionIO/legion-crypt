@@ -77,7 +77,7 @@ RSpec.describe Legion::Crypt::Mtls do
     end
 
     it 'calls Vault.logical.write with pki path and common_name' do
-      expect(::Vault.logical).to receive(:write).with(
+      expect(Vault.logical).to receive(:write).with(
         'pki/issue/legion-internal',
         hash_including(common_name: 'node.legion.internal', ttl: '24h')
       ).and_return(vault_response)
@@ -105,7 +105,7 @@ RSpec.describe Legion::Crypt::Mtls do
     end
 
     it 'accepts a custom ttl override' do
-      expect(::Vault.logical).to receive(:write).with(
+      expect(Vault.logical).to receive(:write).with(
         anything,
         hash_including(ttl: '4h')
       ).and_return(vault_response)
@@ -114,7 +114,7 @@ RSpec.describe Legion::Crypt::Mtls do
 
     it 'includes ip_sans with local IP' do
       ip = described_class.local_ip
-      expect(::Vault.logical).to receive(:write).with(
+      expect(Vault.logical).to receive(:write).with(
         anything,
         hash_including(ip_sans: ip)
       ).and_return(vault_response)
@@ -122,7 +122,7 @@ RSpec.describe Legion::Crypt::Mtls do
     end
 
     it 'raises when Vault returns nil' do
-      allow(::Vault.logical).to receive(:write).and_return(nil)
+      allow(Vault.logical).to receive(:write).and_return(nil)
       expect { described_class.issue_cert(common_name: 'x') }.to raise_error(RuntimeError, /Vault PKI returned nil/)
     end
   end

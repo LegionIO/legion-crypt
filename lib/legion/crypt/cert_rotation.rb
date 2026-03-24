@@ -35,7 +35,7 @@ module Legion
       end
 
       def running?
-        @running && @thread&.alive? || false
+        (@running && @thread&.alive?) || false
       end
 
       def rotate!
