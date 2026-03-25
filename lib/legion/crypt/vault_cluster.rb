@@ -1,5 +1,15 @@
 # frozen_string_literal: true
 
+# Ruby 4.0 freezes OpenSSL::SSL::SSLContext::DEFAULT_PARAMS by default.
+# The vault gem (0.18.x) mutates this hash in Vault.setup! — replace it
+# with a mutable dup so the require succeeds on Ruby 4.0+.
+require 'openssl'
+if OpenSSL::SSL::SSLContext::DEFAULT_PARAMS.frozen?
+  unfrozen = OpenSSL::SSL::SSLContext::DEFAULT_PARAMS.dup
+  OpenSSL::SSL::SSLContext.send(:remove_const, :DEFAULT_PARAMS)
+  OpenSSL::SSL::SSLContext.const_set(:DEFAULT_PARAMS, unfrozen)
+end
+
 require 'vault'
 
 module Legion

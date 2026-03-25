@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.4.12] - 2026-03-25
+
+### Fixed
+- Ruby 4.0 compatibility: unfreeze `OpenSSL::SSL::SSLContext::DEFAULT_PARAMS` before requiring vault gem (vault 0.18.x mutates this hash in `Vault.setup!`)
+
 ## [1.4.11] - 2026-03-24
 
 ### Added
