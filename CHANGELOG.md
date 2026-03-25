@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.4.11] - 2026-03-24
+
+### Added
+- `Legion::Crypt::Mtls` module: Vault PKI cert issuance with `.issue_cert`, `.enabled?`, `.pki_path`, `.local_ip`; feature-flagged via `security.mtls.enabled`
+- `Legion::Crypt::CertRotation` class: background cert rotation at 50% TTL boundary with `#start`, `#stop`, `#rotate!`, `#needs_renewal?`; emits `cert.rotated` event via `Legion::Events`
+
 ## [1.4.10] - 2026-03-24
 
 ### Added
