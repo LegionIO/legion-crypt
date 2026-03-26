@@ -1,5 +1,18 @@
 # Legion::Crypt
 
+## [1.4.13] - 2026-03-25
+
+### Added
+- Kerberos auto-auth to Vault on boot (`auth_method: 'kerberos'` per cluster)
+- `KerberosAuth` module: client-side SPNEGO token acquisition via lex-kerberos, Vault token exchange
+- `TokenRenewer`: plain-Thread token lifecycle (renew at 75% TTL, re-auth via Kerberos, exponential backoff 30s-10min)
+- `kerberos` settings block in vault cluster config (`service_principal`, `auth_path`)
+- `auth_method` dispatch in `connect_all_clusters` (kerberos, ldap, token)
+
+### Changed
+- Token renewal no longer depends on `Extensions::Actors::Every` (starts at boot, not after extensions load)
+- Removed actor-dependent renewer guard from `connect_vault`
+
 ## [1.4.12] - 2026-03-25
 
 ### Fixed
