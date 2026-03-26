@@ -156,4 +156,23 @@ RSpec.describe Legion::Crypt::KerberosAuth do
       expect(described_class.instance_variable_get(:@spnego_available)).to be_nil
     end
   end
+
+  describe '.kerberos_principal' do
+    before { described_class.instance_variable_set(:@kerberos_principal, nil) }
+
+    it 'is nil before authentication' do
+      expect(described_class.kerberos_principal).to be_nil
+    end
+
+    it 'stores the principal after successful login' do
+      described_class.login(vault_client: vault_client, service_principal: 'HTTP/vault.example.com')
+      expect(described_class.kerberos_principal).to eq('miverso2')
+    end
+
+    it 'resets on reset!' do
+      described_class.instance_variable_set(:@kerberos_principal, 'someone')
+      described_class.reset!
+      expect(described_class.kerberos_principal).to be_nil
+    end
+  end
 end
