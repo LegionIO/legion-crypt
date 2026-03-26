@@ -34,9 +34,7 @@ module Legion
       rescue ThreadError
         nil
       ensure
-        @thread&.join(5)
-        @thread = nil
-        log_debug('token renewal thread stopped')
+        stop_thread_and_revoke
       end
 
       def running?
@@ -125,6 +123,31 @@ module Legion
 
           sleep([remaining, 1.0].min)
         end
+      end
+
+      def stop_thread_and_revoke
+        return unless @thread
+
+        @thread.join(5)
+        thread_still_running = @thread.alive?
+        @thread = nil
+
+        if thread_still_running
+          log_warn('token renewal thread did not stop within timeout; skipping token revocation')
+        else
+          revoke_token
+          log_debug('token renewal thread stopped')
+        end
+      end
+
+      def revoke_token
+        return unless @vault_client&.token
+        return unless @config[:auth_method]&.to_s == 'kerberos'
+
+        @vault_client.auth_token.revoke_self
+        log_info('Vault token revoked')
+      rescue StandardError => e
+        log_warn("Vault token revoke failed: #{e.message}")
       end
 
       def log_debug(message)

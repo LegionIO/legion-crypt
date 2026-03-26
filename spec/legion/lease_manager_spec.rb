@@ -35,6 +35,27 @@ RSpec.describe Legion::Crypt::LeaseManager do
       manager.start(lease_definitions)
     end
 
+    context 'when vault_client: is provided' do
+      let(:mock_vault_client) { double('Vault::Client') }
+      let(:mock_logical) { double('Vault::Logical') }
+
+      before do
+        allow(mock_vault_client).to receive(:logical).and_return(mock_logical)
+        allow(mock_logical).to receive(:read).and_return(vault_response)
+      end
+
+      it 'uses the provided vault_client for reads' do
+        expect(mock_logical).to receive(:read).with('rabbitmq/creds/legion-role').and_return(vault_response)
+        expect(Vault).not_to receive(:logical)
+        manager.start(lease_definitions, vault_client: mock_vault_client)
+      end
+
+      it 'stores the vault_client for use by sys operations' do
+        manager.start(lease_definitions, vault_client: mock_vault_client)
+        expect(manager.instance_variable_get(:@vault_client)).to eq(mock_vault_client)
+      end
+    end
+
     it 'caches the lease data' do
       manager.start(lease_definitions)
       expect(manager.lease_data('rabbitmq')).to eq({ username: 'rabbit_user', password: 'rabbit_pass' })
@@ -221,6 +242,27 @@ RSpec.describe Legion::Crypt::LeaseManager do
       allow(Vault).to receive(:sys).and_return(sys_double)
       expect(sys_double).to receive(:revoke).with('rabbitmq/creds/legion-role/abc123')
       manager.shutdown
+    end
+
+    context 'when started with a vault_client' do
+      let(:mock_vault_client) { double('Vault::Client') }
+      let(:mock_logical) { double('Vault::Logical') }
+      let(:mock_sys) { double('Vault::Sys') }
+
+      before do
+        manager.reset!
+        allow(mock_vault_client).to receive(:logical).and_return(mock_logical)
+        allow(mock_vault_client).to receive(:sys).and_return(mock_sys)
+        allow(mock_logical).to receive(:read).and_return(vault_response)
+        allow(mock_sys).to receive(:revoke)
+        manager.start(lease_definitions, vault_client: mock_vault_client)
+      end
+
+      it 'uses the cluster vault_client to revoke leases' do
+        expect(mock_sys).to receive(:revoke).with('rabbitmq/creds/legion-role/abc123')
+        expect(Vault).not_to receive(:sys)
+        manager.shutdown
+      end
     end
 
     it 'clears the cache after shutdown' do

@@ -78,7 +78,14 @@ module Legion
           address: "#{config[:protocol]}://#{config[:address]}:#{config[:port]}",
           token:   config[:token]
         )
-        client.namespace = config[:namespace] if config[:namespace]
+        namespace =
+          if config.key?(:namespace)
+            config[:namespace]
+          elsif defined?(Legion::Settings)
+            crypt_settings = Legion::Settings[:crypt]
+            crypt_settings.respond_to?(:dig) ? crypt_settings.dig(:vault, :vault_namespace) : nil
+          end
+        client.namespace = namespace if namespace
         client
       end
 
@@ -111,6 +118,7 @@ module Legion
         config[:lease_duration] = result[:lease_duration]
         config[:renewable] = result[:renewable]
         config[:connected] = true
+        vault_client(name).token = result[:token]
         log_cluster_connected(name, config)
         true
       rescue Legion::Crypt::KerberosAuth::GemMissingError => e

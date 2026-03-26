@@ -17,7 +17,8 @@ module Legion
         @renewal_thread = nil
       end
 
-      def start(definitions)
+      def start(definitions, vault_client: nil)
+        @vault_client = vault_client
         return if definitions.nil? || definitions.empty?
 
         definitions.each do |name, opts|
@@ -25,7 +26,7 @@ module Legion
           next unless path
 
           begin
-            response = ::Vault.logical.read(path)
+            response = logical.read(path)
             next unless response
 
             @lease_cache[name] = response.data || {}
@@ -95,7 +96,7 @@ module Legion
           next if lease_id.nil? || lease_id.empty?
 
           begin
-            ::Vault.sys.revoke(lease_id)
+            sys.revoke(lease_id)
             log_debug("LeaseManager: revoked lease '#{name}' (#{lease_id})")
           rescue StandardError => e
             log_warn("LeaseManager: failed to revoke lease '#{name}' (#{lease_id}): #{e.message}")
@@ -105,6 +106,7 @@ module Legion
         @lease_cache.clear
         @active_leases.clear
         @refs.clear
+        @vault_client = nil
       end
 
       def reset!
@@ -112,9 +114,18 @@ module Legion
         @lease_cache.clear
         @active_leases.clear
         @refs.clear
+        @vault_client = nil
       end
 
       private
+
+      def logical
+        @vault_client ? @vault_client.logical : ::Vault.logical
+      end
+
+      def sys
+        @vault_client ? @vault_client.sys : ::Vault.sys
+      end
 
       def stop_renewal_thread
         @running = false
@@ -145,7 +156,7 @@ module Legion
       end
 
       def renew_lease(name, lease)
-        response = ::Vault.sys.renew(lease[:lease_id])
+        response = sys.renew(lease[:lease_id])
         lease[:expires_at] = Time.now + (response.lease_duration || 0)
 
         if response.data && response.data != @lease_cache[name]

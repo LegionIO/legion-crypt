@@ -125,6 +125,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
 
     it 'creates separate clients for different cluster names' do
       mock_beta = instance_double(Vault::Client)
+      allow(mock_beta).to receive(:namespace=)
       allow(Vault::Client).to receive(:new).and_return(mock_client, mock_beta)
 
       client_alpha = test_object.vault_client(:alpha)
@@ -151,6 +152,29 @@ RSpec.describe Legion::Crypt::VaultCluster do
 
       it 'sets the namespace on the client' do
         expect(mock_client).to receive(:namespace=).with('admin')
+        test_object.vault_client(:alpha)
+      end
+    end
+
+    context 'when cluster config has no namespace but Settings has vault_namespace' do
+      let(:test_object) do
+        obj = Object.new
+        obj.extend(described_class)
+        vault_settings_hash = { default: :alpha, clusters: { alpha: cluster_alpha } }
+        obj.define_singleton_method(:vault_settings) { vault_settings_hash }
+        obj
+      end
+
+      before do
+        stub_const('Legion::Settings', Module.new do
+          def self.[](key)
+            { vault: { vault_namespace: 'legionio' } } if key == :crypt
+          end
+        end)
+      end
+
+      it 'falls back to vault_namespace from Settings' do
+        expect(mock_client).to receive(:namespace=).with('legionio')
         test_object.vault_client(:alpha)
       end
     end
@@ -201,11 +225,23 @@ RSpec.describe Legion::Crypt::VaultCluster do
         )
         allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
         allow(mock_alpha_client).to receive(:namespace=)
+        allow(mock_alpha_client).to receive(:token=)
 
         results = test_object.connect_all_clusters
         expect(results[:krb]).to be true
         expect(krb_cluster[:token]).to eq('hvs.krb-token')
         expect(krb_cluster[:connected]).to be true
+      end
+
+      it 'sets the token on the cached vault_client after kerberos auth' do
+        allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(
+          { token: 'hvs.krb-token', lease_duration: 3600, renewable: true, policies: [], metadata: {} }
+        )
+        allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
+        allow(mock_alpha_client).to receive(:namespace=)
+        expect(mock_alpha_client).to receive(:token=).with('hvs.krb-token')
+
+        test_object.connect_all_clusters
       end
 
       it 'handles KerberosAuth failure gracefully' do

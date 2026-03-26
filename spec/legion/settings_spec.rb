@@ -120,5 +120,9 @@ RSpec.describe Legion::Crypt::Settings do
         auth_path:         'auth/kerberos/login'
       )
     end
+
+    it 'defaults vault_namespace to legionio' do
+      expect(vault[:vault_namespace]).to eq('legionio')
+    end
   end
 end
