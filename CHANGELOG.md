@@ -1,5 +1,21 @@
 # Legion::Crypt
 
+## [1.4.16] - 2026-03-26
+
+### Changed
+- `KerberosAuth#exchange_token`: removed namespace clear/restore logic — Kerberos auth is now mounted inside the target namespace, client namespace is preserved so the issued token is scoped correctly
+- `VaultCluster#connect_kerberos_cluster`: set token on the cached vault_client after Kerberos auth (`vault_client(name).token = result[:token]`) so the memoized client is immediately usable
+- `VaultCluster#build_vault_client`: fall back to `Settings[:crypt][:vault][:vault_namespace]` when `config[:namespace]` is absent, guarded with `defined?(Legion::Settings)`
+- `TokenRenewer#stop`: revoke the Vault token on shutdown (only for Kerberos auth_method; token-based clusters are not revoked)
+- `LeaseManager#start`: accepts optional `vault_client:` keyword argument; stores and routes `logical.read` through it when provided
+- `LeaseManager#shutdown`: routes `sys.revoke` through the cluster vault_client when one was supplied
+- `LeaseManager#renew_lease`: routes `sys.renew` through the cluster vault_client when one was supplied
+- `Crypt#start_lease_manager`: triggers when `connected_clusters.any?` in addition to the single-cluster `vault.connected` flag; passes the default cluster client to the lease manager
+
+### Added
+- `vault_namespace: 'legionio'` default in `Settings.vault` — used as namespace fallback for cluster clients when `config[:namespace]` is not set
+- `TokenRenewer#revoke_token` private method: self-revokes the token via `auth_token.revoke_self`, guarded to Kerberos auth_method only
+
 ## [1.4.15] - 2026-03-26
 
 ### Fixed

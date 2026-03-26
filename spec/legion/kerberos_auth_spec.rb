@@ -26,8 +26,6 @@ RSpec.describe Legion::Crypt::KerberosAuth do
                  end
                end)
     described_class.instance_variable_set(:@spnego_available, nil)
-    allow(vault_client).to receive(:namespace).and_return('legionio')
-    allow(vault_client).to receive(:namespace=)
     allow(vault_client).to receive(:put).and_return(response_hash)
   end
 
@@ -74,10 +72,8 @@ RSpec.describe Legion::Crypt::KerberosAuth do
       )
     end
 
-    it 'clears the namespace before auth and restores it after' do
-      expect(vault_client).to receive(:namespace=).with(nil).ordered
-      expect(vault_client).to receive(:put).and_return(response_hash).ordered
-      expect(vault_client).to receive(:namespace=).with('legionio').ordered
+    it 'does not clear or modify the vault client namespace' do
+      expect(vault_client).not_to receive(:namespace=)
 
       described_class.login(
         vault_client:      vault_client,
@@ -135,9 +131,8 @@ RSpec.describe Legion::Crypt::KerberosAuth do
         )
       end
 
-      it 'restores the namespace and raises AuthError' do
-        expect(vault_client).to receive(:namespace=).with(nil).ordered
-        expect(vault_client).to receive(:namespace=).with('legionio').ordered
+      it 'raises AuthError without touching the namespace' do
+        expect(vault_client).not_to receive(:namespace=)
 
         expect do
           described_class.login(vault_client: vault_client, service_principal: 'HTTP/vault.example.com')

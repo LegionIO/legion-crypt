@@ -84,10 +84,68 @@ RSpec.describe Legion::Crypt::TokenRenewer do
   describe '#start and #stop' do
     it 'starts and stops the renewal thread' do
       allow(auth_token).to receive(:renew_self).and_return(renew_result)
+      allow(vault_client).to receive(:token).and_return('hvs.initial-token')
+      allow(auth_token).to receive(:revoke_self)
       renewer.start
       expect(renewer.running?).to be true
       renewer.stop
       expect(renewer.running?).to be false
+    end
+  end
+
+  describe '#revoke_token (private)' do
+    context 'when auth_method is kerberos' do
+      it 'calls revoke_self on auth_token' do
+        allow(vault_client).to receive(:token).and_return('hvs.initial-token')
+        expect(auth_token).to receive(:revoke_self)
+        renewer.send(:revoke_token)
+      end
+    end
+
+    context 'when auth_method is not kerberos' do
+      let(:config) do
+        {
+          token: 'hvs.env-token', lease_duration: 100, renewable: true,
+          connected: true, auth_method: 'token', address: 'vault.example.com'
+        }
+      end
+
+      it 'does not revoke the token' do
+        allow(vault_client).to receive(:token).and_return('hvs.env-token')
+        expect(auth_token).not_to receive(:revoke_self)
+        renewer.send(:revoke_token)
+      end
+    end
+
+    context 'when auth_method is nil' do
+      let(:config) do
+        {
+          token: 'hvs.env-token', lease_duration: 100, renewable: true,
+          connected: true, address: 'vault.example.com'
+        }
+      end
+
+      it 'does not revoke the token' do
+        allow(vault_client).to receive(:token).and_return('hvs.env-token')
+        expect(auth_token).not_to receive(:revoke_self)
+        renewer.send(:revoke_token)
+      end
+    end
+
+    context 'when vault_client has no token' do
+      it 'does not attempt revocation' do
+        allow(vault_client).to receive(:token).and_return(nil)
+        expect(auth_token).not_to receive(:revoke_self)
+        renewer.send(:revoke_token)
+      end
+    end
+
+    context 'when revoke_self raises' do
+      it 'does not propagate the error' do
+        allow(vault_client).to receive(:token).and_return('hvs.initial-token')
+        allow(auth_token).to receive(:revoke_self).and_raise(StandardError, 'network error')
+        expect { renewer.send(:revoke_token) }.not_to raise_error
+      end
     end
   end
 

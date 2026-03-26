@@ -99,10 +99,11 @@ module Legion
       def start_lease_manager
         leases = settings.dig(:vault, :leases) || {}
         return if leases.empty?
-        return unless settings.dig(:vault, :connected)
+        return unless settings.dig(:vault, :connected) || connected_clusters.any?
 
+        client = connected_clusters.any? ? vault_client : nil
         lease_manager = Legion::Crypt::LeaseManager.instance
-        lease_manager.start(leases)
+        lease_manager.start(leases, vault_client: client)
         lease_manager.start_renewal_thread
         Legion::Logging.info "LeaseManager: #{leases.size} lease(s) initialized"
       rescue StandardError => e
