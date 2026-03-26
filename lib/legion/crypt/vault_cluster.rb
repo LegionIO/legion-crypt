@@ -42,12 +42,19 @@ module Legion
       def connect_all_clusters
         results = {}
         clusters.each do |name, config|
-          next unless config[:token]
+          case config[:auth_method]&.to_s
+          when 'kerberos'
+            results[name] = connect_kerberos_cluster(name, config)
+          when 'ldap'
+            next # handled by ldap_login_all
+          else
+            next unless config[:token]
 
-          client = vault_client(name)
-          config[:connected] = client.sys.health_status.initialized?
-          results[name] = config[:connected]
-          Legion::Logging.info "Vault cluster connected: #{name} at #{config[:address]}" if config[:connected] && defined?(Legion::Logging)
+            client = vault_client(name)
+            config[:connected] = client.sys.health_status.initialized?
+            results[name] = config[:connected]
+            log_cluster_connected(name, config) if config[:connected]
+          end
         rescue StandardError => e
           config[:connected] = false
           results[name] = false
@@ -80,6 +87,51 @@ module Legion
           Legion::Logging.error("Vault cluster #{name}: #{error.message}")
         else
           warn("Vault cluster #{name}: #{error.message}")
+        end
+      end
+
+      def connect_kerberos_cluster(name, config)
+        krb_config = config[:kerberos] || {}
+        spn = krb_config[:service_principal]
+
+        unless spn
+          log_vault_warn(name, 'Kerberos auth missing service_principal, skipping')
+          config[:connected] = false
+          return false
+        end
+
+        require 'legion/crypt/kerberos_auth'
+        result = Legion::Crypt::KerberosAuth.login(
+          vault_client:      vault_client(name),
+          service_principal: spn,
+          auth_path:         krb_config[:auth_path] || Legion::Crypt::KerberosAuth::DEFAULT_AUTH_PATH
+        )
+
+        config[:token] = result[:token]
+        config[:lease_duration] = result[:lease_duration]
+        config[:renewable] = result[:renewable]
+        config[:connected] = true
+        log_cluster_connected(name, config)
+        true
+      rescue Legion::Crypt::KerberosAuth::GemMissingError => e
+        log_vault_warn(name, e.message)
+        config[:connected] = false
+        false
+      rescue Legion::Crypt::KerberosAuth::AuthError => e
+        log_vault_warn(name, "Kerberos auth failed: #{e.message}")
+        config[:connected] = false
+        false
+      end
+
+      def log_cluster_connected(name, config)
+        Legion::Logging.info "Vault cluster connected: #{name} at #{config[:address]}" if defined?(Legion::Logging)
+      end
+
+      def log_vault_warn(name, message)
+        if defined?(Legion::Logging)
+          Legion::Logging.warn("Vault cluster #{name}: #{message}")
+        else
+          warn("Vault cluster #{name}: #{message}")
         end
       end
     end

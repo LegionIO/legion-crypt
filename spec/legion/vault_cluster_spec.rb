@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'legion/crypt/vault_cluster'
+require 'legion/crypt/kerberos_auth'
 
 RSpec.describe Legion::Crypt::VaultCluster do
   let(:cluster_alpha) do
@@ -181,6 +182,81 @@ RSpec.describe Legion::Crypt::VaultCluster do
       allow(mock_alpha_client).to receive(:sys).and_raise(StandardError, 'connection refused')
       results = test_object.connect_all_clusters
       expect(results[:alpha]).to be(false)
+    end
+
+    context 'with auth_method: kerberos' do
+      let(:krb_cluster) do
+        {
+          protocol: 'https', address: 'vault.example.com', port: 8200,
+          auth_method: 'kerberos', connected: false,
+          kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
+        }
+      end
+
+      let(:test_clusters) { { krb: krb_cluster } }
+
+      it 'authenticates via KerberosAuth and sets the token' do
+        allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(
+          { token: 'hvs.krb-token', lease_duration: 3600, renewable: true, policies: [], metadata: {} }
+        )
+        allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
+        allow(mock_alpha_client).to receive(:namespace=)
+
+        results = test_object.connect_all_clusters
+        expect(results[:krb]).to be true
+        expect(krb_cluster[:token]).to eq('hvs.krb-token')
+        expect(krb_cluster[:connected]).to be true
+      end
+
+      it 'handles KerberosAuth failure gracefully' do
+        allow(Legion::Crypt::KerberosAuth).to receive(:login)
+          .and_raise(Legion::Crypt::KerberosAuth::AuthError, 'no TGT')
+        allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
+        allow(mock_alpha_client).to receive(:namespace=)
+
+        results = test_object.connect_all_clusters
+        expect(results[:krb]).to be false
+        expect(krb_cluster[:connected]).to be false
+      end
+
+      it 'handles missing lex-kerberos gem gracefully' do
+        allow(Legion::Crypt::KerberosAuth).to receive(:login)
+          .and_raise(Legion::Crypt::KerberosAuth::GemMissingError, 'lex-kerberos required')
+        allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
+        allow(mock_alpha_client).to receive(:namespace=)
+
+        results = test_object.connect_all_clusters
+        expect(results[:krb]).to be false
+      end
+
+      context 'without service_principal configured' do
+        let(:krb_cluster) do
+          {
+            protocol: 'https', address: 'vault.example.com', port: 8200,
+            auth_method: 'kerberos', connected: false,
+            kerberos: { service_principal: nil, auth_path: 'auth/kerberos/login' }
+          }
+        end
+
+        it 'skips the cluster' do
+          results = test_object.connect_all_clusters
+          expect(results[:krb]).to be false
+        end
+      end
+    end
+
+    context 'with auth_method: ldap' do
+      let(:ldap_cluster) do
+        { protocol: 'https', address: 'vault.example.com', port: 8200,
+          auth_method: 'ldap', connected: false }
+      end
+
+      let(:test_clusters) { { ldap: ldap_cluster } }
+
+      it 'skips ldap clusters' do
+        results = test_object.connect_all_clusters
+        expect(results).not_to have_key(:ldap)
+      end
     end
   end
 end
