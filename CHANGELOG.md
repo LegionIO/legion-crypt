@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.4.17] - 2026-03-26
+
+### Added
+- Store Kerberos principal after successful SPNEGO authentication (`KerberosAuth.kerberos_principal`)
+- Expose `Legion::Crypt.kerberos_principal` delegation
+
 ## [1.4.16] - 2026-03-26
 
 ### Changed
