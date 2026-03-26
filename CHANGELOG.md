@@ -16,6 +16,11 @@
 - `vault_namespace: 'legionio'` default in `Settings.vault` — used as namespace fallback for cluster clients when `config[:namespace]` is not set
 - `TokenRenewer#revoke_token` private method: self-revokes the token via `auth_token.revoke_self`, guarded to Kerberos auth_method only
 
+### Fixed
+- `TokenRenewer#stop`: skip token revocation when renewal thread is still alive after join timeout to prevent racy revocation against a running thread; log warning instead
+- `Crypt#start_lease_manager`: use `vault_settings[:default]` (matching `VaultCluster#default_cluster_name`) instead of the nonexistent `:default_cluster` key so configured default cluster is honored
+- `LeaseManager#start`: always assign `@vault_client` before early return so subsequent `shutdown`/`reset!` calls do not use a stale cluster client; clear `@vault_client` in both `shutdown` and `reset!`
+
 ## [1.4.15] - 2026-03-26
 
 ### Fixed

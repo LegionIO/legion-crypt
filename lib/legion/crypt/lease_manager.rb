@@ -18,9 +18,9 @@ module Legion
       end
 
       def start(definitions, vault_client: nil)
+        @vault_client = vault_client
         return if definitions.nil? || definitions.empty?
 
-        @vault_client = vault_client
         definitions.each do |name, opts|
           path = opts['path'] || opts[:path]
           next unless path
@@ -106,6 +106,7 @@ module Legion
         @lease_cache.clear
         @active_leases.clear
         @refs.clear
+        @vault_client = nil
       end
 
       def reset!
@@ -113,6 +114,7 @@ module Legion
         @lease_cache.clear
         @active_leases.clear
         @refs.clear
+        @vault_client = nil
       end
 
       private

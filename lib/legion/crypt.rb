@@ -106,7 +106,7 @@ module Legion
         if settings.dig(:vault, :connected)
           client = vault_client
         elsif connected_clusters.any?
-          default_cluster = vault_settings[:default_cluster]
+          default_cluster = vault_settings[:default]
           selected_cluster =
             if default_cluster && connected_clusters.include?(default_cluster.to_sym)
               default_cluster.to_sym

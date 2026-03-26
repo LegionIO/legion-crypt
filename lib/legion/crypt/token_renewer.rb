@@ -34,10 +34,7 @@ module Legion
       rescue ThreadError
         nil
       ensure
-        @thread&.join(5)
-        @thread = nil
-        revoke_token
-        log_debug('token renewal thread stopped')
+        stop_thread_and_revoke
       end
 
       def running?
@@ -125,6 +122,21 @@ module Legion
           break if remaining <= 0 || @stop
 
           sleep([remaining, 1.0].min)
+        end
+      end
+
+      def stop_thread_and_revoke
+        return unless @thread
+
+        @thread.join(5)
+        thread_still_running = @thread.alive?
+        @thread = nil
+
+        if thread_still_running
+          log_warn('token renewal thread did not stop within timeout; skipping token revocation')
+        else
+          revoke_token
+          log_debug('token renewal thread stopped')
         end
       end
 

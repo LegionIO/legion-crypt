@@ -57,6 +57,12 @@ Legion::Crypt (singleton module)
 ├── Erasure            # Cryptographic erasure via Vault master key deletion
 ├── Attestation        # Signed identity claims with Ed25519, freshness checking
 ├── LeaseManager       # Dynamic Vault lease lifecycle: fetch, cache, renew, rotate, push-back
+├── KerberosAuth       # GSSAPI SPNEGO token acquisition; `disable_gssapi_finalizers` prevents GC segfault on macOS
+├── VaultKerberosAuth  # Vault Kerberos auth: SPNEGO as `Authorization` header, namespace clear/restore, TokenRenewer wiring
+├── LdapAuth           # Vault LDAP auth backend
+├── Tls                # TLS settings (cert/key/CA/verify_peer/Vault PKI)
+├── Mtls               # mTLS cert issuance (Vault PKI) + CertRotation background thread (50% TTL renewal)
+├── TokenRenewer       # Background renewal thread: 75% TTL renew, Kerberos re-auth on failure, exponential backoff
 ├── MockVault          # In-memory Vault mock for local development mode
 ├── Settings           # Default crypt config
 └── Version
@@ -120,6 +126,12 @@ Dev dependencies: `legion-logging`, `legion-settings`
 | `lib/legion/crypt/partition_keys.rb` | HKDF per-tenant key derivation with AES-256-GCM |
 | `lib/legion/crypt/erasure.rb` | Cryptographic erasure via Vault master key deletion |
 | `lib/legion/crypt/attestation.rb` | Signed identity claims with Ed25519 signatures |
+| `lib/legion/crypt/kerberos_auth.rb` | GSSAPI/Kerberos token acquisition; `obtain_spnego_token`, `disable_gssapi_finalizers` (prevents GC segfault on macOS) |
+| `lib/legion/crypt/vault_kerberos_auth.rb` | Vault Kerberos auth backend: sends SPNEGO token as `Authorization` HTTP header, clears/restores namespace, wires `TokenRenewer` |
+| `lib/legion/crypt/ldap_auth.rb` | Vault LDAP auth backend integration |
+| `lib/legion/crypt/tls.rb` | TLS settings module (cert, key, CA paths, verify_peer, Vault PKI flag) |
+| `lib/legion/crypt/mtls.rb` | mTLS certificate issuance from Vault PKI; `CertRotation` background renewal thread (50% TTL) |
+| `lib/legion/crypt/token_renewer.rb` | Plain Thread renewer: renews at 75% TTL, re-auths via Kerberos on failure, exponential backoff |
 | `lib/legion/crypt/version.rb` | VERSION constant |
 
 ## Role in LegionIO

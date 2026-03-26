@@ -2,7 +2,7 @@
 
 Encryption, secrets management, JWT token management, and HashiCorp Vault integration for the [LegionIO](https://github.com/LegionIO/LegionIO) framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, Vault token lifecycle management, and multi-cluster Vault connectivity.
 
-**Version**: 1.4.7
+**Version**: 1.4.15
 
 ## Installation
 
@@ -190,12 +190,41 @@ client = Legion::Crypt.vault_client(:primary)
 
 When `clusters` is empty, the legacy single-cluster path is used (backward compatible).
 
+## Kerberos Authentication
+
+When `crypt.vault.auth_method` is set to `kerberos`, `Crypt.start` performs Kerberos auto-auth to Vault using `KerberosAuth`:
+
+```ruby
+# Settings
+{
+  "crypt": {
+    "vault": {
+      "auth_method": "kerberos",
+      "kerberos": {
+        "service_principal": "HTTP/vault.example.com@REALM",
+        "auth_path": "auth/kerberos/login"
+      }
+    }
+  }
+}
+```
+
+The SPNEGO token is sent as an HTTP `Authorization` header (not JSON body). The Vault namespace is cleared before auth (Kerberos mount is at root) and restored after. Requires Homebrew MIT Kerberos (`brew install krb5`) on macOS — the system Heimdal library is not compatible.
+
+`TokenRenewer` keeps the Vault token alive: renews at 75% TTL, re-auths via Kerberos if renewal fails, uses exponential backoff.
+
+## mTLS
+
+`Crypt::Mtls` issues mTLS certificates from Vault PKI. `Crypt::CertRotation` runs a background thread renewing certs at 50% TTL. `Transport::Connection::Vault` applies tempfile-based Bunny mTLS. Feature-flagged via `security.mtls.enabled: false`.
+
 ## Requirements
 
 - Ruby >= 3.4
+- `ed25519` (~> 1.3)
 - `jwt` gem (>= 2.7)
 - `vault` gem (>= 0.17, optional)
 - HashiCorp Vault (optional, for secrets management)
+- `gssapi` gem (optional, required for Kerberos auth)
 
 ## License
 
