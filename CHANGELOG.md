@@ -1,5 +1,14 @@
 # Legion::Crypt
 
+## [1.4.18] - 2026-03-26
+
+### Fixed
+- `KerberosAuth.login`: clear `@kerberos_principal` at the start of each login attempt so a failed re-auth does not leave a stale principal from a previous successful login
+
+### Added
+- `crypt_spec.rb`: delegation spec for `Legion::Crypt.kerberos_principal`
+- `kerberos_auth_spec.rb`: spec verifying stale principal is cleared before a failing login attempt
+
 ## [1.4.17] - 2026-03-26
 
 ### Added

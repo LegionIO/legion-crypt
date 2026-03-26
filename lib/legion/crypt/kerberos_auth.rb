@@ -17,6 +17,7 @@ module Legion
       def self.login(vault_client:, service_principal:, auth_path: DEFAULT_AUTH_PATH)
         raise GemMissingError, 'lex-kerberos gem is required for Kerberos auth' unless spnego_available?
 
+        @kerberos_principal = nil
         token = obtain_token(service_principal)
         result = exchange_token(vault_client, token, auth_path)
         @kerberos_principal = result[:metadata]&.dig('username') || result[:metadata]&.dig(:username)

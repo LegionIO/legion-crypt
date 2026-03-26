@@ -32,6 +32,18 @@ RSpec.describe Legion::Crypt do
     end
   end
 
+  describe '.kerberos_principal' do
+    it 'delegates to KerberosAuth.kerberos_principal' do
+      allow(Legion::Crypt::KerberosAuth).to receive(:kerberos_principal).and_return('miverso2@EXAMPLE.COM')
+      expect(Legion::Crypt.kerberos_principal).to eq('miverso2@EXAMPLE.COM')
+    end
+
+    it 'returns nil when no Kerberos auth has occurred' do
+      allow(Legion::Crypt::KerberosAuth).to receive(:kerberos_principal).and_return(nil)
+      expect(Legion::Crypt.kerberos_principal).to be_nil
+    end
+  end
+
   describe 'multi-cluster module methods' do
     it 'responds to :cluster' do
       expect(Legion::Crypt).to respond_to(:cluster)

@@ -174,5 +174,14 @@ RSpec.describe Legion::Crypt::KerberosAuth do
       described_class.reset!
       expect(described_class.kerberos_principal).to be_nil
     end
+
+    it 'clears a stale principal at the start of login before attempting auth' do
+      described_class.instance_variable_set(:@kerberos_principal, 'stale@EXAMPLE.COM')
+      allow(vault_client).to receive(:put).and_raise(Vault::HTTPClientError.new('forbidden'))
+      expect do
+        described_class.login(vault_client: vault_client, service_principal: 'HTTP/vault.example.com')
+      end.to raise_error(Legion::Crypt::KerberosAuth::AuthError)
+      expect(described_class.kerberos_principal).to be_nil
+    end
   end
 end
