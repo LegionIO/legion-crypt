@@ -34,6 +34,10 @@ module Legion
         Legion::Settings[:crypt][:vault]
       end
 
+      def kerberos_principal
+        KerberosAuth.kerberos_principal
+      end
+
       def start
         Legion::Logging.debug 'Legion::Crypt is running start'
         ::File.write('./legionio.key', private_key) if settings[:save_private_key]
