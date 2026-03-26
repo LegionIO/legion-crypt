@@ -43,17 +43,34 @@ module Legion
         end
 
         def exchange_token(vault_client, spnego_token, auth_path)
-          response = vault_client.logical.write(auth_path, authorization: "Negotiate #{spnego_token}")
+          # Kerberos auth is mounted at the root namespace. Temporarily
+          # clear the client namespace so the request reaches the correct
+          # mount path, then restore it for subsequent operations.
+          saved_ns = vault_client.namespace
+          vault_client.namespace = nil
+
+          # The Vault Kerberos plugin reads the SPNEGO token from the HTTP
+          # Authorization header, not the JSON body.
+          json = vault_client.put(
+            "/v1/#{auth_path}",
+            '{}',
+            'Authorization' => "Negotiate #{spnego_token}"
+          )
+          response = ::Vault::Secret.decode(json)
           raise AuthError, 'Vault Kerberos auth returned no auth data' unless response&.auth
 
+          vault_client.namespace = saved_ns
+
+          auth = response.auth
           {
-            token:          response.auth.client_token,
-            lease_duration: response.auth.lease_duration,
-            renewable:      response.auth.renewable,
-            policies:       response.auth.policies,
-            metadata:       response.auth.metadata
+            token:          auth.client_token,
+            lease_duration: auth.lease_duration,
+            renewable:      auth.renewable?,
+            policies:       auth.policies,
+            metadata:       auth.metadata
           }
         rescue ::Vault::HTTPClientError => e
+          vault_client.namespace = saved_ns if saved_ns
           raise AuthError, "Vault Kerberos auth failed: #{e.message}"
         end
       end

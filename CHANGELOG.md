@@ -1,5 +1,12 @@
 # Legion::Crypt
 
+## [1.4.14] - 2026-03-26
+
+### Fixed
+- Vault Kerberos auth: send SPNEGO token as HTTP `Authorization` header instead of JSON body (Vault plugin reads headers, not body)
+- Vault Kerberos auth: clear client namespace before auth request (Kerberos mount is at root namespace, not child)
+- Vault Kerberos auth: use `Vault::SecretAuth#renewable?` accessor (not `#renewable`)
+
 ## [1.4.13] - 2026-03-25
 
 ### Added

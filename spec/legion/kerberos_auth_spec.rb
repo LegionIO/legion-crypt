@@ -5,17 +5,17 @@ require 'legion/crypt/kerberos_auth'
 
 RSpec.describe Legion::Crypt::KerberosAuth do
   let(:vault_client) { instance_double(Vault::Client) }
-  let(:vault_logical) { double('VaultLogical') }
   let(:vault_token) { 'hvs.kerberos-token' }
-  let(:auth_double) do
-    double('VaultAuth',
-           client_token:   vault_token,
-           lease_duration: 3600,
-           renewable:      true,
-           policies:       %w[default legion-worker],
-           metadata:       { 'username' => 'miverso2' })
+  let(:auth_hash) do
+    {
+      client_token:   vault_token,
+      lease_duration: 3600,
+      renewable:      true,
+      policies:       %w[default legion-worker],
+      metadata:       { username: 'miverso2' }
+    }
   end
-  let(:response_double) { double('VaultResponse', auth: auth_double) }
+  let(:response_hash) { { auth: auth_hash } }
 
   before do
     stub_const('Vault::HTTPClientError', Class.new(StandardError))
@@ -26,8 +26,9 @@ RSpec.describe Legion::Crypt::KerberosAuth do
                  end
                end)
     described_class.instance_variable_set(:@spnego_available, nil)
-    allow(vault_client).to receive(:logical).and_return(vault_logical)
-    allow(vault_logical).to receive(:write).and_return(response_double)
+    allow(vault_client).to receive(:namespace).and_return('legionio')
+    allow(vault_client).to receive(:namespace=)
+    allow(vault_client).to receive(:put).and_return(response_hash)
   end
 
   after do
@@ -46,11 +47,12 @@ RSpec.describe Legion::Crypt::KerberosAuth do
       expect(result[:policies]).to include('legion-worker')
     end
 
-    it 'sends the SPNEGO token to the correct auth path' do
-      expect(vault_logical).to receive(:write).with(
-        'auth/kerberos/login',
-        authorization: 'Negotiate fake-spnego-b64'
-      ).and_return(response_double)
+    it 'sends the SPNEGO token as an Authorization header' do
+      expect(vault_client).to receive(:put).with(
+        '/v1/auth/kerberos/login',
+        '{}',
+        'Authorization' => 'Negotiate fake-spnego-b64'
+      ).and_return(response_hash)
 
       described_class.login(
         vault_client:      vault_client,
@@ -59,15 +61,27 @@ RSpec.describe Legion::Crypt::KerberosAuth do
     end
 
     it 'uses a custom auth_path when provided' do
-      expect(vault_logical).to receive(:write).with(
-        'auth/custom/login',
-        authorization: 'Negotiate fake-spnego-b64'
-      ).and_return(response_double)
+      expect(vault_client).to receive(:put).with(
+        '/v1/auth/custom/login',
+        '{}',
+        'Authorization' => 'Negotiate fake-spnego-b64'
+      ).and_return(response_hash)
 
       described_class.login(
         vault_client:      vault_client,
         service_principal: 'HTTP/vault.example.com',
         auth_path:         'auth/custom/login'
+      )
+    end
+
+    it 'clears the namespace before auth and restores it after' do
+      expect(vault_client).to receive(:namespace=).with(nil).ordered
+      expect(vault_client).to receive(:put).and_return(response_hash).ordered
+      expect(vault_client).to receive(:namespace=).with('legionio').ordered
+
+      described_class.login(
+        vault_client:      vault_client,
+        service_principal: 'HTTP/vault.example.com'
       )
     end
 
@@ -104,13 +118,30 @@ RSpec.describe Legion::Crypt::KerberosAuth do
 
     context 'when Vault returns no auth data' do
       before do
-        allow(vault_logical).to receive(:write).and_return(double('VaultResponse', auth: nil))
+        allow(vault_client).to receive(:put).and_return({ auth: nil })
       end
 
       it 'raises AuthError' do
         expect do
           described_class.login(vault_client: vault_client, service_principal: 'HTTP/vault.example.com')
         end.to raise_error(Legion::Crypt::KerberosAuth::AuthError, /no auth data/)
+      end
+    end
+
+    context 'when Vault returns an HTTP error' do
+      before do
+        allow(vault_client).to receive(:put).and_raise(
+          Vault::HTTPClientError.new('permission denied')
+        )
+      end
+
+      it 'restores the namespace and raises AuthError' do
+        expect(vault_client).to receive(:namespace=).with(nil).ordered
+        expect(vault_client).to receive(:namespace=).with('legionio').ordered
+
+        expect do
+          described_class.login(vault_client: vault_client, service_principal: 'HTTP/vault.example.com')
+        end.to raise_error(Legion::Crypt::KerberosAuth::AuthError, /permission denied/)
       end
     end
   end
