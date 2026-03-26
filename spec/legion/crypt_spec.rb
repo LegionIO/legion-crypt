@@ -119,4 +119,76 @@ RSpec.describe Legion::Crypt do
       expect(Legion::Crypt::LeaseManager.instance).to have_received(:shutdown)
     end
   end
+
+  describe '.start with kerberos clusters' do
+    let(:mock_renewer) do
+      instance_double(Legion::Crypt::TokenRenewer, start: nil, stop: nil, running?: true)
+    end
+
+    before do
+      allow(Legion::Crypt::LeaseManager.instance).to receive(:start)
+      allow(Legion::Crypt::LeaseManager.instance).to receive(:start_renewal_thread)
+      allow(Legion::Crypt::LeaseManager.instance).to receive(:shutdown)
+      allow(Legion::Crypt).to receive(:connect_all_clusters)
+    end
+
+    after do
+      Legion::Crypt.shutdown
+      Legion::Settings[:crypt][:vault][:clusters] = {}
+    end
+
+    it 'starts a TokenRenewer for connected kerberos clusters' do
+      Legion::Settings[:crypt][:vault][:clusters] = {
+        primary: {
+          protocol: 'https', address: 'vault.example.com', port: 8200,
+          auth_method: 'kerberos', connected: true, token: 'hvs.krb-token',
+          lease_duration: 3600, renewable: true,
+          kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
+        }
+      }
+      mock_client = instance_double(Vault::Client)
+      allow(Vault::Client).to receive(:new).and_return(mock_client)
+      allow(mock_client).to receive(:namespace=)
+      allow(Legion::Crypt::TokenRenewer).to receive(:new).and_return(mock_renewer)
+
+      Legion::Crypt.start
+      expect(Legion::Crypt::TokenRenewer).to have_received(:new)
+      expect(mock_renewer).to have_received(:start)
+    end
+
+    it 'skips non-kerberos clusters' do
+      Legion::Settings[:crypt][:vault][:clusters] = {
+        token_based: {
+          protocol: 'https', address: 'vault.example.com', port: 8200,
+          token: 'hvs.static', connected: true
+        }
+      }
+      mock_client = instance_double(Vault::Client)
+      allow(Vault::Client).to receive(:new).and_return(mock_client)
+      allow(mock_client).to receive(:namespace=)
+      allow(mock_client).to receive(:sys).and_return(double('sys', health_status: double(initialized?: true)))
+
+      Legion::Crypt.start
+      expect(Legion::Crypt::TokenRenewer).not_to receive(:new)
+    end
+
+    it 'stops all token renewers on shutdown' do
+      Legion::Settings[:crypt][:vault][:clusters] = {
+        primary: {
+          protocol: 'https', address: 'vault.example.com', port: 8200,
+          auth_method: 'kerberos', connected: true, token: 'hvs.krb-token',
+          lease_duration: 3600, renewable: true,
+          kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
+        }
+      }
+      mock_client = instance_double(Vault::Client)
+      allow(Vault::Client).to receive(:new).and_return(mock_client)
+      allow(mock_client).to receive(:namespace=)
+      allow(Legion::Crypt::TokenRenewer).to receive(:new).and_return(mock_renewer)
+
+      Legion::Crypt.start
+      Legion::Crypt.shutdown
+      expect(mock_renewer).to have_received(:stop)
+    end
+  end
 end

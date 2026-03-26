@@ -36,10 +36,6 @@ module Legion
           Legion::Settings[:crypt][:vault][:connected] = true
           Legion::Logging.info "Vault connected at #{::Vault.address}" if defined?(Legion::Logging)
         end
-        return unless Legion.const_defined? 'Extensions::Actors::Every'
-
-        require_relative 'vault_renewer'
-        @renewer = Legion::Crypt::Vault::Renewer.new
       rescue StandardError => e
         Legion::Logging.error e.message
         Legion::Settings[:crypt][:vault][:connected] = false

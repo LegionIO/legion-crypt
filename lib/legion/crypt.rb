@@ -10,6 +10,7 @@ require 'legion/crypt/vault_jwt_auth'
 require 'legion/crypt/lease_manager'
 require 'legion/crypt/vault_cluster'
 require 'legion/crypt/ldap_auth'
+require 'legion/crypt/token_renewer'
 require 'legion/crypt/helper'
 require 'legion/crypt/mtls'
 require 'legion/crypt/cert_rotation'
@@ -36,9 +37,11 @@ module Legion
       def start
         Legion::Logging.debug 'Legion::Crypt is running start'
         ::File.write('./legionio.key', private_key) if settings[:save_private_key]
+        @token_renewers ||= []
 
         if vault_settings[:clusters]&.any?
           connect_all_clusters
+          start_token_renewers
         else
           connect_vault unless settings[:vault][:token].nil?
         end
@@ -86,6 +89,7 @@ module Legion
 
       def shutdown
         Legion::Crypt::LeaseManager.instance.shutdown
+        stop_token_renewers
         shutdown_renewer
         close_sessions
       end
@@ -103,6 +107,27 @@ module Legion
         Legion::Logging.info "LeaseManager: #{leases.size} lease(s) initialized"
       rescue StandardError => e
         Legion::Logging.warn "LeaseManager startup failed: #{e.message}"
+      end
+
+      def start_token_renewers
+        clusters.each do |name, config|
+          next unless config[:auth_method]&.to_s == 'kerberos' && config[:connected]
+
+          renewer = Legion::Crypt::TokenRenewer.new(
+            cluster_name: name,
+            config:       config,
+            vault_client: vault_client(name)
+          )
+          renewer.start
+          @token_renewers << renewer
+        end
+      end
+
+      def stop_token_renewers
+        return unless @token_renewers
+
+        @token_renewers.each(&:stop)
+        @token_renewers.clear
       end
     end
   end
