@@ -78,8 +78,13 @@ module Legion
           address: "#{config[:protocol]}://#{config[:address]}:#{config[:port]}",
           token:   config[:token]
         )
-        namespace = config[:namespace] ||
-                    (defined?(Legion::Settings) && Legion::Settings[:crypt].dig(:vault, :vault_namespace))
+        namespace =
+          if config.key?(:namespace)
+            config[:namespace]
+          elsif defined?(Legion::Settings)
+            crypt_settings = Legion::Settings[:crypt]
+            crypt_settings.respond_to?(:dig) ? crypt_settings.dig(:vault, :vault_namespace) : nil
+          end
         client.namespace = namespace if namespace
         client
       end
