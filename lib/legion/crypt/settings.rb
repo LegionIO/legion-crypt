@@ -52,6 +52,10 @@ module Legion
           kv_path:             ENV['LEGION_VAULT_KV_PATH'] || 'legion',
           leases:              {},
           default:             nil,
+          kerberos:            {
+            service_principal: nil,
+            auth_path:         'auth/kerberos/login'
+          },
           clusters:            {}
         }
       end

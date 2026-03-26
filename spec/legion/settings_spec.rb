@@ -113,5 +113,12 @@ RSpec.describe Legion::Crypt::Settings do
     it 'has clusters as an empty hash' do
       expect(vault[:clusters]).to eq({})
     end
+
+    it 'includes kerberos defaults' do
+      expect(vault[:kerberos]).to eq(
+        service_principal: nil,
+        auth_path:         'auth/kerberos/login'
+      )
+    end
   end
 end
