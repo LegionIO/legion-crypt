@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.4.15] - 2026-03-26
+
+### Fixed
+- Route `get`, `write`, `read`, `delete`, `exist?` through default cluster client when multi-cluster Vault is configured (#1)
+- Previously these methods used the global `::Vault` singleton which was never initialized when clusters were present, causing 403 errors against the wrong Vault server
+
 ## [1.4.14] - 2026-03-26
 
 ### Fixed

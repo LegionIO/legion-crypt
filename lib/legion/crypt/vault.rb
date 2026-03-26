@@ -45,7 +45,7 @@ module Legion
       def read(path, type = 'legion')
         full_path = type.nil? || type.empty? ? "#{type}/#{path}" : path
         Legion::Logging.debug "Vault read: #{full_path}" if defined?(Legion::Logging)
-        lease = ::Vault.logical.read(full_path)
+        lease = logical_client.read(full_path)
         add_session(path: lease.lease_id) if lease.respond_to? :lease_id
         lease.data
       rescue StandardError => e
@@ -55,7 +55,7 @@ module Legion
 
       def get(path)
         Legion::Logging.debug "Vault kv get: #{path}" if defined?(Legion::Logging)
-        result = ::Vault.kv(settings[:vault][:kv_path]).read(path)
+        result = kv_client.read(path)
         return nil if result.nil?
 
         result.data
@@ -66,14 +66,14 @@ module Legion
 
       def write(path, **hash)
         Legion::Logging.debug "Vault kv write: #{path}" if defined?(Legion::Logging)
-        ::Vault.kv(settings[:vault][:kv_path]).write(path, **hash)
+        kv_client.write(path, **hash)
       rescue StandardError => e
         Legion::Logging.warn "Vault kv write failed at #{path}: #{e.message}" if defined?(Legion::Logging)
         raise
       end
 
       def delete(path)
-        ::Vault.logical.delete(path)
+        logical_client.delete(path)
         { success: true, path: path }
       rescue StandardError => e
         Legion::Logging.warn "Vault delete failed for #{path}: #{e.message}" if defined?(Legion::Logging)
@@ -81,7 +81,7 @@ module Legion
       end
 
       def exist?(path)
-        !::Vault.kv(settings[:vault][:kv_path]).read_metadata(path).nil?
+        !kv_client.read_metadata(path).nil?
       end
 
       def add_session(path:)
@@ -139,6 +139,24 @@ module Legion
 
       def vault_exists?(name)
         ::Vault.sys.mounts.key?(name.to_sym)
+      end
+
+      private
+
+      def kv_client
+        if respond_to?(:connected_clusters) && connected_clusters.any?
+          vault_client.kv(settings[:vault][:kv_path])
+        else
+          ::Vault.kv(settings[:vault][:kv_path])
+        end
+      end
+
+      def logical_client
+        if respond_to?(:connected_clusters) && connected_clusters.any?
+          vault_client.logical
+        else
+          ::Vault.logical
+        end
       end
     end
   end
