@@ -2,7 +2,7 @@
 
 Encryption, secrets management, JWT token management, and HashiCorp Vault integration for the [LegionIO](https://github.com/LegionIO/LegionIO) framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, Vault token lifecycle management, and multi-cluster Vault connectivity.
 
-**Version**: 1.4.21
+**Version**: 1.4.22
 
 ## Installation
 
