@@ -12,6 +12,7 @@ module Legion
 
         clusters[cluster_name][:token] = token
         clusters[cluster_name][:connected] = true
+        mark_vault_connected
 
         Legion::Logging.info "LDAP login success: user=#{username}, cluster=#{cluster_name}" if defined?(Legion::Logging)
         { token: token, lease_duration: auth.lease_duration,

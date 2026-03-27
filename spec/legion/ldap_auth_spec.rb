@@ -77,6 +77,15 @@ RSpec.describe Legion::Crypt::LdapAuth do
       result = test_object.ldap_login(cluster_name: 'one', username: 'jdoe', password: 'secret')
       expect(result[:token]).to eq('new-vault-token')
     end
+
+    it 'sets the top-level vault connected flag when Legion::Settings is defined' do
+      vault_hash = { connected: false }
+      crypt_hash = { vault: vault_hash }
+      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(crypt_hash)
+
+      test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
+      expect(vault_hash[:connected]).to be(true)
+    end
   end
 
   describe '#ldap_login_all' do
