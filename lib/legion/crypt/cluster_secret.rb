@@ -64,7 +64,13 @@ module Legion
         Legion::Logging.error 'Cluster secret is still unknown!'
         nil
       rescue StandardError => e
-        Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
+        if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
+          Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
+        elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:error)
+          Legion::Logging.error "from_transport failed: #{e.class}=#{e.message}"
+        else
+          warn "from_transport failed: #{e.class}=#{e.message}"
+        end
         nil
       end
 
