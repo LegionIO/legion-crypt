@@ -40,8 +40,10 @@ module Legion
       end
 
       def connect_all_clusters
+        log_vault_debug("connect_all_clusters: #{clusters.size} cluster(s) configured")
         results = {}
         clusters.each do |name, config|
+          log_vault_debug("connect_all_clusters: #{name} (auth_method=#{config[:auth_method].inspect})")
           case config[:auth_method]&.to_s
           when 'kerberos'
             results[name] = connect_kerberos_cluster(name, config)
@@ -61,7 +63,9 @@ module Legion
           log_vault_error(name, e)
         end
 
-        mark_vault_connected if results.any? { |_, v| v }
+        connected = results.select { |_, v| v }
+        log_vault_debug("connect_all_clusters: #{connected.size}/#{results.size} connected")
+        mark_vault_connected if connected.any?
         results
       end
 
@@ -82,8 +86,10 @@ module Legion
       def build_vault_client(config)
         return nil unless config.is_a?(Hash)
 
+        addr = "#{config[:protocol]}://#{config[:address]}:#{config[:port]}"
+        log_vault_debug("build_vault_client: address=#{addr}")
         client = ::Vault::Client.new(
-          address: "#{config[:protocol]}://#{config[:address]}:#{config[:port]}",
+          address: addr,
           token:   config[:token]
         )
         namespace =
@@ -94,6 +100,7 @@ module Legion
             crypt_settings.respond_to?(:dig) ? crypt_settings.dig(:vault, :vault_namespace) : nil
           end
         client.namespace = namespace if namespace
+        log_vault_debug("build_vault_client: namespace=#{namespace.inspect}")
         client
       end
 
@@ -108,6 +115,9 @@ module Legion
       def connect_kerberos_cluster(name, config)
         krb_config = config[:kerberos] || {}
         spn = krb_config[:service_principal]
+        auth_path = krb_config[:auth_path] || Legion::Crypt::KerberosAuth::DEFAULT_AUTH_PATH
+
+        log_vault_debug("connect_kerberos_cluster[#{name}]: SPN=#{spn}, auth_path=#{auth_path}, namespace=#{config[:namespace].inspect}")
 
         unless spn
           log_vault_warn(name, 'Kerberos auth missing service_principal, skipping')
@@ -116,10 +126,13 @@ module Legion
         end
 
         require 'legion/crypt/kerberos_auth'
+        client = vault_client(name)
+        log_vault_debug("connect_kerberos_cluster[#{name}]: client.namespace=#{client.respond_to?(:namespace) ? client.namespace.inspect : 'n/a'}")
+
         result = Legion::Crypt::KerberosAuth.login(
-          vault_client:      vault_client(name),
+          vault_client:      client,
           service_principal: spn,
-          auth_path:         krb_config[:auth_path] || Legion::Crypt::KerberosAuth::DEFAULT_AUTH_PATH
+          auth_path:         auth_path
         )
 
         config[:token] = result[:token]
@@ -127,6 +140,7 @@ module Legion
         config[:renewable] = result[:renewable]
         config[:connected] = true
         vault_client(name).token = result[:token]
+        log_vault_debug("connect_kerberos_cluster[#{name}]: policies=#{result[:policies].inspect}")
         log_cluster_connected(name, config)
         true
       rescue Legion::Crypt::KerberosAuth::GemMissingError => e
@@ -149,6 +163,10 @@ module Legion
         else
           warn("Vault cluster #{name}: #{message}")
         end
+      end
+
+      def log_vault_debug(message)
+        Legion::Logging.debug(message) if defined?(Legion::Logging)
       end
     end
   end

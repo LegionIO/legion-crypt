@@ -44,23 +44,34 @@ module Legion
 
       def read(path, type = 'legion')
         full_path = type.nil? || type.empty? ? "#{type}/#{path}" : path
-        Legion::Logging.debug "Vault read: #{full_path}" if defined?(Legion::Logging)
+        log_read_context(full_path)
         lease = logical_client.read(full_path)
-        add_session(path: lease.lease_id) if lease.respond_to? :lease_id
-        lease.data
+        if lease.nil?
+          log_vault_debug("Vault read: #{full_path} returned nil")
+          return nil
+        end
+        add_session(path: lease.lease_id) if lease.respond_to?(:lease_id) && lease.lease_id && !lease.lease_id.empty?
+
+        data = lease.data
+        log_vault_debug("Vault read: #{full_path} returned keys=#{data&.keys&.inspect}")
+        unwrap_kv_v2(data, full_path)
       rescue StandardError => e
-        Legion::Logging.warn "Vault read failed at #{full_path}: #{e.message}" if defined?(Legion::Logging)
+        Legion::Logging.warn "Vault read failed at #{full_path}: #{e.class}=#{e.message}" if defined?(Legion::Logging)
         raise
       end
 
       def get(path)
-        Legion::Logging.debug "Vault kv get: #{path}" if defined?(Legion::Logging)
+        Legion::Logging.debug "Vault kv get: path=#{path}" if defined?(Legion::Logging)
         result = kv_client.read(path)
-        return nil if result.nil?
+        if result.nil?
+          Legion::Logging.debug "Vault kv get: #{path} returned nil" if defined?(Legion::Logging)
+          return nil
+        end
 
+        Legion::Logging.debug "Vault kv get: #{path} returned keys=#{result.data&.keys&.inspect}" if defined?(Legion::Logging)
         result.data
       rescue StandardError => e
-        Legion::Logging.warn "Vault kv get failed at #{path}: #{e.message}" if defined?(Legion::Logging)
+        Legion::Logging.warn "Vault kv get failed at #{path}: #{e.class}=#{e.message}" if defined?(Legion::Logging)
         raise
       end
 
@@ -158,6 +169,29 @@ module Legion
         else
           ::Vault.logical
         end
+      end
+
+      def log_read_context(full_path)
+        return unless defined?(Legion::Logging)
+
+        namespace = if respond_to?(:connected_clusters) && connected_clusters.any?
+                      client = vault_client
+                      client.respond_to?(:namespace) ? client.namespace : 'n/a'
+                    else
+                      'n/a (global client)'
+                    end
+        Legion::Logging.debug "Vault read: path=#{full_path}, namespace=#{namespace}"
+      end
+
+      def unwrap_kv_v2(data, full_path)
+        return data unless data.is_a?(Hash) && data.key?(:data) && data[:data].is_a?(Hash) && data.key?(:metadata)
+
+        log_vault_debug("Vault read: #{full_path} detected KV v2 envelope, unwrapping :data key")
+        data[:data]
+      end
+
+      def log_vault_debug(message)
+        Legion::Logging.debug(message) if defined?(Legion::Logging)
       end
     end
   end

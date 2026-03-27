@@ -123,7 +123,13 @@ module Legion
         lease_manager = Legion::Crypt::LeaseManager.instance
         lease_manager.start(leases, vault_client: client)
         lease_manager.start_renewal_thread
-        Legion::Logging.info "LeaseManager: #{leases.size} lease(s) initialized"
+        fetched = lease_manager.fetched_count
+        defined = leases.size
+        if fetched == defined
+          Legion::Logging.info "LeaseManager: #{fetched} lease(s) initialized"
+        else
+          Legion::Logging.warn "LeaseManager: #{fetched}/#{defined} lease(s) initialized (#{defined - fetched} failed)"
+        end
       rescue StandardError => e
         Legion::Logging.warn "LeaseManager startup failed: #{e.message}"
       end

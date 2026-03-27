@@ -1,5 +1,18 @@
 # Legion::Crypt
 
+## [1.4.20] - 2026-03-27
+
+### Fixed
+- `Vault#read`: unwrap KV v2 response envelope — `logical.read` returns `{data: {keys}, metadata: {}}` for KV v2 mounts; the nested `:data` key is now auto-detected and unwrapped
+
+### Added
+- Debug logging throughout Vault auth, read, and cluster connection paths (`vault.rb`, `vault_cluster.rb`, `kerberos_auth.rb`, `lease_manager.rb`)
+- `Vault#log_read_context`: logs path and namespace context for each Vault read
+- `Vault#unwrap_kv_v2`: detects and unwraps KV v2 envelope pattern
+- `VaultCluster`: debug logging for cluster connection, client build, and Kerberos auth flow
+- `KerberosAuth`: debug logging for SPN, token exchange, policies, and renewal metadata
+- `LeaseManager`: debug logging for lease fetch, renewal, and revocation
+
 ## [1.4.19] - 2026-03-26
 
 ### Fixed

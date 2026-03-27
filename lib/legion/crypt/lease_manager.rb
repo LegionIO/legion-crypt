@@ -27,7 +27,10 @@ module Legion
 
           begin
             response = logical.read(path)
-            next unless response
+            unless response
+              log_warn("LeaseManager: no data at '#{name}' (#{path}) — path may not exist or role not configured")
+              next
+            end
 
             @lease_cache[name] = response.data || {}
             @active_leases[name] = {
@@ -42,6 +45,10 @@ module Legion
             log_warn("LeaseManager: failed to fetch lease '#{name}' from #{path}: #{e.message}")
           end
         end
+      end
+
+      def fetched_count
+        @active_leases.size
       end
 
       def fetch(name, key)

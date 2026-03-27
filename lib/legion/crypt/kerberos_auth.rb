@@ -17,10 +17,19 @@ module Legion
       def self.login(vault_client:, service_principal:, auth_path: DEFAULT_AUTH_PATH)
         raise GemMissingError, 'lex-kerberos gem is required for Kerberos auth' unless spnego_available?
 
+        log_debug("login: SPN=#{service_principal}, auth_path=#{auth_path}")
+        addr = vault_client.respond_to?(:address) ? vault_client.address : 'n/a'
+        ns   = vault_client.respond_to?(:namespace) ? vault_client.namespace.inspect : 'n/a'
+        log_debug("login: vault_client.address=#{addr}, namespace=#{ns}")
+
         @kerberos_principal = nil
         token = obtain_token(service_principal)
+        log_debug("login: SPNEGO token obtained (#{token.length} chars)")
+
         result = exchange_token(vault_client, token, auth_path)
         @kerberos_principal = result[:metadata]&.dig('username') || result[:metadata]&.dig(:username)
+        log_debug("login: authenticated as #{@kerberos_principal.inspect}, policies=#{result[:policies].inspect}")
+        log_debug("login: renewable=#{result[:renewable]}, ttl=#{result[:lease_duration]}s")
         result
       end
 
@@ -41,6 +50,11 @@ module Legion
         @kerberos_principal = nil
       end
 
+      def self.log_debug(message)
+        Legion::Logging.debug("KerberosAuth: #{message}") if defined?(Legion::Logging)
+      end
+      private_class_method :log_debug
+
       class << self
         private
 
@@ -58,6 +72,7 @@ module Legion
 
           # The Vault Kerberos plugin reads the SPNEGO token from the HTTP
           # Authorization header, not the JSON body.
+          log_debug("exchange_token: PUT /v1/#{auth_path} (namespace=#{vault_client.respond_to?(:namespace) ? vault_client.namespace.inspect : 'n/a'})")
           json = vault_client.put(
             "/v1/#{auth_path}",
             '{}',
@@ -75,6 +90,7 @@ module Legion
             metadata:       auth.metadata
           }
         rescue ::Vault::HTTPClientError => e
+          log_debug("exchange_token: HTTP error: #{e.message}")
           raise AuthError, "Vault Kerberos auth failed: #{e.message}"
         end
       end
