@@ -76,4 +76,93 @@ RSpec.describe Legion::Crypt::ClusterSecret do
   it 'can do magic things with vault(fake)' do
     expect(@cs.from_vault).to be_nil
   end
+
+  describe '#from_transport rescue paths' do
+    before do
+      # Simulate transport connected but require itself raising an error
+      allow(Legion::Settings[:transport]).to receive(:[]).and_call_original
+      allow(Legion::Settings[:transport]).to receive(:[]).with(:connected).and_return(true)
+      allow(@cs).to receive(:require).and_raise(StandardError, 'transport error')
+    end
+
+    it 'returns nil when an exception is raised' do
+      expect(@cs.from_transport).to be_nil
+    end
+
+    it 'logs via log_exception when available' do
+      logging = double('Legion::Logging')
+      stub_const('Legion::Logging', logging)
+      allow(logging).to receive(:respond_to?).with(:log_exception).and_return(true)
+      expect(logging).to receive(:log_exception).with(instance_of(StandardError), lex: 'crypt', component_type: :helper)
+      @cs.from_transport
+    end
+
+    it 'falls back to Logging.error with backtrace when log_exception unavailable' do
+      logging = double('Legion::Logging')
+      stub_const('Legion::Logging', logging)
+      allow(logging).to receive(:respond_to?).with(:log_exception).and_return(false)
+      allow(logging).to receive(:respond_to?).with(:error).and_return(true)
+      expect(logging).to receive(:error).with(match(/transport error/))
+      @cs.from_transport
+    end
+
+    it 'does not raise and returns nil when Legion::Logging is absent' do
+      hide_const('Legion::Logging')
+      allow(Kernel).to receive(:warn)
+      result = nil
+      expect { result = @cs.from_transport }.not_to raise_error
+      expect(result).to be_nil
+    end
+  end
+
+  describe '#cs rescue paths' do
+    before do
+      allow(@cs).to receive(:find_cluster_secret).and_raise(StandardError, 'digest error')
+    end
+
+    it 'returns nil when find_cluster_secret raises' do
+      expect(@cs.cs).to be_nil
+    end
+
+    it 'logs via log_exception when available' do
+      logging = double('Legion::Logging')
+      stub_const('Legion::Logging', logging)
+      allow(logging).to receive(:respond_to?).with(:log_exception).and_return(true)
+      expect(logging).to receive(:log_exception).with(instance_of(StandardError), lex: 'crypt', component_type: :helper)
+      @cs.cs
+    end
+
+    it 'falls back to Logging.error with backtrace when log_exception unavailable' do
+      logging = double('Legion::Logging')
+      stub_const('Legion::Logging', logging)
+      allow(logging).to receive(:respond_to?).with(:log_exception).and_return(false)
+      allow(logging).to receive(:respond_to?).with(:error).and_return(true)
+      expect(logging).to receive(:error).with(match(/digest error/))
+      @cs.cs
+    end
+
+    it 'falls back to Logging.warn when only warn is available' do
+      logging = double('Legion::Logging')
+      stub_const('Legion::Logging', logging)
+      allow(logging).to receive(:respond_to?).with(:log_exception).and_return(false)
+      allow(logging).to receive(:respond_to?).with(:error).and_return(false)
+      allow(logging).to receive(:respond_to?).with(:warn).and_return(true)
+      expect(logging).to receive(:warn).with(match(/digest error/))
+      @cs.cs
+    end
+
+    it 'falls back to Kernel.warn when Legion::Logging is absent' do
+      hide_const('Legion::Logging')
+      expect(Kernel).to receive(:warn).with(match(/digest error/))
+      expect(@cs.cs).to be_nil
+    end
+
+    it 'returns nil without raising when Legion::Logging is absent' do
+      hide_const('Legion::Logging')
+      allow(Kernel).to receive(:warn)
+      result = nil
+      expect { result = @cs.cs }.not_to raise_error
+      expect(result).to be_nil
+    end
+  end
 end

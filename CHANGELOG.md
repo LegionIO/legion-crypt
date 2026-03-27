@@ -1,5 +1,19 @@
 # Legion::Crypt
 
+## [1.4.22] - 2026-03-27
+
+### Changed
+- Replace split `log.error(e.message); log.error(e.backtrace)` patterns with single `Legion::Logging.log_exception` calls in `vault.rb`, `cluster_secret.rb`, and `settings.rb` for structured exception events
+- Guard all `log_exception` call sites in `vault.rb`, `settings.rb`, and `cluster_secret.rb` with `Legion::Logging` presence checks (`defined?` in `vault.rb`/`cluster_secret.rb`, `Legion.const_defined?('Logging')` in `settings.rb`) plus `Legion::Logging.respond_to?(:log_exception)`; fall back to `Legion::Logging.fatal`/`error` or `warn` to preserve structured logging in environments where `log_exception` is unavailable
+- `from_transport` and `cs` rescue blocks in `cluster_secret.rb` now use the same 4-branch guard (log_exception / Logging.error / Logging.warn / Kernel.warn) and explicitly return `nil` to preserve expected return types
+- Fallback `.error`/`.warn`/`Kernel.warn` branches in `from_transport` and `cs` include the first 10 backtrace lines for debuggability parity with the prior `e.backtrace[0..10]` logging; `Vault#connect_vault` warn fallback omits backtrace to keep health-check failure messages concise
+- `cs` rescue adds final `Kernel.warn` fallback so exceptions are never silently swallowed when `Legion::Logging` is absent
+
+### Added
+- Specs for `connect_vault` rescue logging: asserts `false` return and covers log_exception / Logging.error / warn fallback branches when `Vault.sys.health_status` raises
+- Specs for `from_transport` and `cs` rescue paths: asserts `nil` return and covers all logging fallback branches (including `Kernel.warn`) plus `Legion::Logging` absent case
+- Duplicate invocation eliminated in rescue-path specs: single call stored in `result`, both no-raise and return value asserted on that one call
+
 ## [1.4.20] - 2026-03-27
 
 ### Fixed

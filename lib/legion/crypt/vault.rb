@@ -37,7 +37,13 @@ module Legion
           Legion::Logging.info "Vault connected at #{::Vault.address}" if defined?(Legion::Logging)
         end
       rescue StandardError => e
-        Legion::Logging.error e.message
+        if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
+          Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
+        elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:error)
+          Legion::Logging.error "Vault connection failed: #{e.class}=#{e.message}\n#{Array(e.backtrace).first(10).join("\n")}"
+        else
+          warn "Vault connection failed: #{e.class}=#{e.message}"
+        end
         Legion::Settings[:crypt][:vault][:connected] = false
         false
       end
