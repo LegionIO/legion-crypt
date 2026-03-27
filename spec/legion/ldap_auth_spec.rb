@@ -42,7 +42,7 @@ RSpec.describe Legion::Crypt::LdapAuth do
     allow(mock_secret).to receive(:auth).and_return(mock_auth)
     allow(mock_auth).to receive(:client_token).and_return('new-vault-token')
     allow(mock_auth).to receive(:lease_duration).and_return(3600)
-    allow(mock_auth).to receive(:renewable).and_return(true)
+    allow(mock_auth).to receive(:renewable?).and_return(true)
     allow(mock_auth).to receive(:policies).and_return(['default'])
   end
 
@@ -76,6 +76,15 @@ RSpec.describe Legion::Crypt::LdapAuth do
     it 'accepts cluster_name as a string and converts to symbol' do
       result = test_object.ldap_login(cluster_name: 'one', username: 'jdoe', password: 'secret')
       expect(result[:token]).to eq('new-vault-token')
+    end
+
+    it 'sets the top-level vault connected flag when Legion::Settings is defined' do
+      vault_hash = { connected: false }
+      crypt_hash = { vault: vault_hash }
+      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(crypt_hash)
+
+      test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
+      expect(vault_hash[:connected]).to be(true)
     end
   end
 

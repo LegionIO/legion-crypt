@@ -294,5 +294,44 @@ RSpec.describe Legion::Crypt::VaultCluster do
         expect(results).not_to have_key(:ldap)
       end
     end
+
+    context 'when a token-based cluster connects successfully' do
+      it 'sets Legion::Settings[:crypt][:vault][:connected] to true' do
+        vault_hash = { connected: false }
+        crypt_hash = { vault: vault_hash }
+        stub_const('Legion::Settings', Module.new do
+          define_singleton_method(:[]) { |_k| crypt_hash }
+        end)
+        allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(crypt_hash)
+
+        test_object.connect_all_clusters
+        expect(vault_hash[:connected]).to be(true)
+      end
+    end
+  end
+
+  describe '#mark_vault_connected (via connect_all_clusters)' do
+    it 'sets the top-level vault connected flag when Legion::Settings is defined' do
+      vault_hash = { connected: false }
+      crypt_hash = { vault: vault_hash }
+
+      mock_client  = instance_double(Vault::Client)
+      mock_sys     = instance_double(Vault::Sys)
+      mock_health  = double('health', initialized?: true)
+
+      allow(Vault::Client).to receive(:new).and_return(mock_client)
+      allow(mock_client).to receive(:namespace=)
+      allow(mock_client).to receive(:sys).and_return(mock_sys)
+      allow(mock_sys).to receive(:health_status).and_return(mock_health)
+      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(crypt_hash)
+
+      test_object.connect_all_clusters
+      expect(vault_hash[:connected]).to be(true)
+    end
+
+    it 'does not raise when Legion::Settings is not defined' do
+      hide_const('Legion::Settings')
+      expect { test_object.connect_all_clusters }.not_to raise_error
+    end
   end
 end

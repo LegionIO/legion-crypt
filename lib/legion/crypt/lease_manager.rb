@@ -33,7 +33,7 @@ module Legion
             @active_leases[name] = {
               lease_id:       response.lease_id,
               lease_duration: response.lease_duration,
-              renewable:      response.renewable,
+              renewable:      response.renewable?,
               expires_at:     Time.now + (response.lease_duration || 0),
               fetched_at:     Time.now
             }
@@ -45,7 +45,7 @@ module Legion
       end
 
       def fetch(name, key)
-        data = @lease_cache[name]
+        data = @lease_cache[name.to_sym] || @lease_cache[name.to_s]
         return nil unless data
 
         data[key.to_sym] || data[key.to_s]

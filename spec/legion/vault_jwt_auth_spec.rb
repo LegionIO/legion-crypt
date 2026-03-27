@@ -11,7 +11,7 @@ RSpec.describe Legion::Crypt::VaultJwtAuth do
       'VaultAuth',
       client_token:   vault_token,
       lease_duration: 3600,
-      renewable:      true,
+      renewable?:     true,
       policies:       %w[default legion-worker],
       metadata:       { 'worker_id' => 'abc-123' }
     )

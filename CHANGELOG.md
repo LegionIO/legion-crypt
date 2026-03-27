@@ -1,5 +1,13 @@
 # Legion::Crypt
 
+## [1.4.19] - 2026-03-26
+
+### Fixed
+- `LeaseManager`, `VaultJwtAuth`, `LdapAuth`, `VaultKerberosAuth`: use `renewable?` instead of `renewable` to match Vault gem API
+- `LeaseManager#fetch`: handle string/symbol key mismatch between resolver (strings) and cache (symbols)
+- `VaultCluster#connect_all_clusters`: set top-level `vault.connected` flag after any cluster connects via Kerberos/LDAP
+- `Vault#add_session`: guard `@sessions` with lazy init to prevent nil error when using cluster-based auth
+
 ## [1.4.18] - 2026-03-26
 
 ### Fixed

@@ -11,7 +11,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
            data:           { username: 'rabbit_user', password: 'rabbit_pass' },
            lease_id:       'rabbitmq/creds/legion-role/abc123',
            lease_duration: 3600,
-           renewable:      true)
+           renewable?:     true)
   end
 
   let(:lease_definitions) do
@@ -148,7 +148,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
              data:           { username: 'new_user', password: 'new_pass' },
              lease_id:       'rabbitmq/creds/legion-role/def456',
              lease_duration: 3600,
-             renewable:      true)
+             renewable?:     true)
     end
 
     before do
@@ -184,7 +184,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
              data:           { username: 'user1', password: 'pass1' },
              lease_id:       'rabbitmq/creds/role/abc',
              lease_duration: 10,
-             renewable:      true)
+             renewable?:     true)
     end
 
     before do
@@ -287,7 +287,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
                                   data:           { token: 'abc' },
                                   lease_id:       nil,
                                   lease_duration: 900,
-                                  renewable:      false)
+                                  renewable?:     false)
       manager.reset!
       allow(Vault).to receive_message_chain(:logical, :read).and_return(nil_lease_response)
       manager.start(lease_definitions)
@@ -300,7 +300,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
                                     data:           { token: 'abc' },
                                     lease_id:       '',
                                     lease_duration: 900,
-                                    renewable:      false)
+                                    renewable?:     false)
       manager.reset!
       allow(Vault).to receive_message_chain(:logical, :read).and_return(empty_lease_response)
       manager.start(lease_definitions)

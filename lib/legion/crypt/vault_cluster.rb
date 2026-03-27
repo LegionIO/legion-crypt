@@ -60,10 +60,18 @@ module Legion
           results[name] = false
           log_vault_error(name, e)
         end
+
+        mark_vault_connected if results.any? { |_, v| v }
         results
       end
 
       private
+
+      def mark_vault_connected
+        return unless defined?(Legion::Settings)
+
+        Legion::Settings[:crypt][:vault][:connected] = true
+      end
 
       def resolve_cluster_name(name)
         return name.to_sym if name

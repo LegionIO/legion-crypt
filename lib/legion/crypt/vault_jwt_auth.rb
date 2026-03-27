@@ -39,7 +39,7 @@ module Legion
         {
           token:          response.auth.client_token,
           lease_duration: response.auth.lease_duration,
-          renewable:      response.auth.renewable,
+          renewable:      response.auth.renewable?,
           policies:       response.auth.policies,
           metadata:       response.auth.metadata
         }
