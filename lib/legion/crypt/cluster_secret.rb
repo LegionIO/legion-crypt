@@ -67,9 +67,9 @@ module Legion
         if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
           Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
         elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:error)
-          Legion::Logging.error "from_transport failed: #{e.class}=#{e.message}"
+          Legion::Logging.error "from_transport failed: #{e.class}=#{e.message}\n#{Array(e.backtrace).first(10).join("\n")}"
         else
-          warn "from_transport failed: #{e.class}=#{e.message}"
+          warn "from_transport failed: #{e.class}=#{e.message}\n#{Array(e.backtrace).first(10).join("\n")}"
         end
         nil
       end
@@ -120,7 +120,15 @@ module Legion
       def cs
         @cs ||= Digest::SHA256.digest(find_cluster_secret)
       rescue StandardError => e
-        Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper) if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
+        if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
+          Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
+        elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:error)
+          backtrace = Array(e.backtrace).first(10).join("\n")
+          Legion::Logging.error "Legion::Crypt::ClusterSecret#cs failed: #{e.class}: #{e.message}\n#{backtrace}"
+        elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:warn)
+          backtrace = Array(e.backtrace).first(10).join("\n")
+          Legion::Logging.warn "Legion::Crypt::ClusterSecret#cs failed: #{e.class}: #{e.message}\n#{backtrace}"
+        end
         nil
       end
 
