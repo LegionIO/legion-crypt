@@ -51,8 +51,10 @@ RSpec.describe Legion::Crypt::Vault do
 
     it 'does not raise and returns false when Legion::Logging is absent' do
       hide_const('Legion::Logging')
-      expect { @vault.connect_vault }.not_to raise_error
-      expect(@vault.connect_vault).to eq false
+      allow(Kernel).to receive(:warn)
+      result = nil
+      expect { result = @vault.connect_vault }.not_to raise_error
+      expect(result).to eq false
     end
   end
 

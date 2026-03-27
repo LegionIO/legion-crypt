@@ -108,8 +108,10 @@ RSpec.describe Legion::Crypt::ClusterSecret do
 
     it 'does not raise and returns nil when Legion::Logging is absent' do
       hide_const('Legion::Logging')
-      expect { @cs.from_transport }.not_to raise_error
-      expect(@cs.from_transport).to be_nil
+      allow(Kernel).to receive(:warn)
+      result = nil
+      expect { result = @cs.from_transport }.not_to raise_error
+      expect(result).to be_nil
     end
   end
 
@@ -149,10 +151,18 @@ RSpec.describe Legion::Crypt::ClusterSecret do
       @cs.cs
     end
 
+    it 'falls back to Kernel.warn when Legion::Logging is absent' do
+      hide_const('Legion::Logging')
+      expect(Kernel).to receive(:warn).with(match(/digest error/))
+      expect(@cs.cs).to be_nil
+    end
+
     it 'returns nil without raising when Legion::Logging is absent' do
       hide_const('Legion::Logging')
-      expect { @cs.cs }.not_to raise_error
-      expect(@cs.cs).to be_nil
+      allow(Kernel).to receive(:warn)
+      result = nil
+      expect { result = @cs.cs }.not_to raise_error
+      expect(result).to be_nil
     end
   end
 end

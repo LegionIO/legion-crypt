@@ -128,6 +128,9 @@ module Legion
         elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:warn)
           backtrace = Array(e.backtrace).first(10).join("\n")
           Legion::Logging.warn "Legion::Crypt::ClusterSecret#cs failed: #{e.class}: #{e.message}\n#{backtrace}"
+        else
+          backtrace = Array(e.backtrace).first(10).join("\n")
+          ::Kernel.warn "Legion::Crypt::ClusterSecret#cs failed: #{e.class}: #{e.message}\n#{backtrace}"
         end
         nil
       end

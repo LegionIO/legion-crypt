@@ -40,7 +40,7 @@ module Legion
         if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
           Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
         elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:error)
-          Legion::Logging.error "Vault connection failed: #{e.class}=#{e.message}"
+          Legion::Logging.error "Vault connection failed: #{e.class}=#{e.message}\n#{Array(e.backtrace).first(10).join("\n")}"
         else
           warn "Vault connection failed: #{e.class}=#{e.message}"
         end
