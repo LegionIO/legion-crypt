@@ -1,5 +1,12 @@
 # Legion::Crypt
 
+## [1.4.21] - 2026-03-27
+
+### Changed
+- Replace split `log.error(e.message); log.error(e.backtrace)` patterns with single `Legion::Logging.log_exception` calls in `vault.rb`, `cluster_secret.rb`, and `settings.rb` for structured exception events
+- Guard `log_exception` calls with `defined?(Legion::Logging) && respond_to?(:log_exception)` checks; fall back to `Legion::Logging.fatal`/`error` or `warn` to preserve structured logging in environments where `log_exception` is unavailable
+- `from_transport` and `cs` rescue blocks in `cluster_secret.rb` now explicitly return `nil` after logging to preserve expected return types
+
 ## [1.4.20] - 2026-03-27
 
 ### Fixed

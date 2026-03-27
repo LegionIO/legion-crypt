@@ -65,6 +65,7 @@ module Legion
         nil
       rescue StandardError => e
         Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
+        nil
       end
 
       def force_cluster_secret
@@ -113,7 +114,8 @@ module Legion
       def cs
         @cs ||= Digest::SHA256.digest(find_cluster_secret)
       rescue StandardError => e
-        Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
+        Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper) if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
+        nil
       end
 
       def validate_hex(value, length = secret_length)

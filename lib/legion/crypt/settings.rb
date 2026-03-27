@@ -69,6 +69,8 @@ begin
 rescue StandardError => e
   if Legion.const_defined?('Logging') && Legion::Logging.respond_to?(:log_exception)
     Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper, level: :fatal)
+  elsif Legion.const_defined?('Logging') && Legion::Logging.respond_to?(:fatal)
+    Legion::Logging.fatal("crypt settings merge error: #{e.class}: #{e.message}\n#{Array(e.backtrace).join("\n")}")
   else
     puts e.message
     puts e.backtrace
