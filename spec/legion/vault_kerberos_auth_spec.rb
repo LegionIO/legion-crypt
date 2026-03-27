@@ -10,7 +10,7 @@ RSpec.describe Legion::Crypt::VaultKerberosAuth do
     double('VaultAuth',
            client_token:   vault_token,
            lease_duration: 3600,
-           renewable:      true,
+           renewable?:     true,
            policies:       %w[default legion-worker],
            metadata:       { 'username' => 'miverso2' })
   end

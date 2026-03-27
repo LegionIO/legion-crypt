@@ -85,6 +85,7 @@ module Legion
       end
 
       def add_session(path:)
+        @sessions ||= []
         @sessions.push(path)
       end
 

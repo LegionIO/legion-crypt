@@ -42,7 +42,7 @@ RSpec.describe Legion::Crypt::LdapAuth do
     allow(mock_secret).to receive(:auth).and_return(mock_auth)
     allow(mock_auth).to receive(:client_token).and_return('new-vault-token')
     allow(mock_auth).to receive(:lease_duration).and_return(3600)
-    allow(mock_auth).to receive(:renewable).and_return(true)
+    allow(mock_auth).to receive(:renewable?).and_return(true)
     allow(mock_auth).to receive(:policies).and_return(['default'])
   end
 
