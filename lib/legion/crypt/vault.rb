@@ -32,7 +32,7 @@ module Legion
         return nil if Legion::Settings[:crypt][:vault][:token].nil?
 
         ::Vault.token = Legion::Settings[:crypt][:vault][:token]
-        if ::Vault.sys.health_status.initialized?
+        if vault_healthy?
           Legion::Settings[:crypt][:vault][:connected] = true
           Legion::Logging.info "Vault connected at #{::Vault.address}" if defined?(Legion::Logging)
         end
@@ -46,6 +46,16 @@ module Legion
         end
         Legion::Settings[:crypt][:vault][:connected] = false
         false
+      end
+
+      def vault_healthy?
+        ::Vault.sys.health_status.initialized?
+      rescue ::Vault::HTTPError => e
+        # 429 = standby, 472 = DR secondary, 473 = performance standby
+        # All indicate an initialized, healthy Vault — just not the active node.
+        return true if e.message =~ /\b(429|472|473)\b/
+
+        raise
       end
 
       def read(path, type = 'legion')
