@@ -64,8 +64,7 @@ module Legion
         Legion::Logging.error 'Cluster secret is still unknown!'
         nil
       rescue StandardError => e
-        Legion::Logging.error e.message
-        Legion::Logging.error e.backtrace[0..10]
+        Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
       end
 
       def force_cluster_secret
@@ -114,8 +113,7 @@ module Legion
       def cs
         @cs ||= Digest::SHA256.digest(find_cluster_secret)
       rescue StandardError => e
-        Legion::Logging.error e.message
-        Legion::Logging.error e.backtrace[0..10]
+        Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
       end
 
       def validate_hex(value, length = secret_length)

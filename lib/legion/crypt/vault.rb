@@ -37,7 +37,7 @@ module Legion
           Legion::Logging.info "Vault connected at #{::Vault.address}" if defined?(Legion::Logging)
         end
       rescue StandardError => e
-        Legion::Logging.error e.message
+        Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
         Legion::Settings[:crypt][:vault][:connected] = false
         false
       end
