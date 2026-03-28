@@ -1,5 +1,16 @@
 # Legion::Crypt
 
+## [1.4.24] - 2026-03-28
+
+### Fixed
+- `LeaseManager#start`: no longer creates new Vault dynamic credentials when a valid cached lease already exists, preventing orphaned RabbitMQ users on repeated `start` calls (closes #6)
+- `LeaseManager#start`: expired leases are now revoked before re-fetching, ensuring clean credential rotation
+
+### Added
+- `LeaseManager#lease_valid?`: returns true when a named lease is cached and its `expires_at` is in the future
+- `LeaseManager#revoke_expired_lease`: revokes and clears a stale cached lease entry before a re-fetch
+- Specs for repeated `start` idempotency, expired-lease re-fetch, `lease_valid?` edge cases
+
 ## [1.4.23] - 2026-03-27
 
 ### Fixed

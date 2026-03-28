@@ -25,6 +25,13 @@ module Legion
           path = opts['path'] || opts[:path]
           next unless path
 
+          if lease_valid?(name)
+            log_debug("LeaseManager: reusing valid cached lease for '#{name}'")
+            next
+          end
+
+          revoke_expired_lease(name)
+
           begin
             response = logical.read(path)
             unless response
@@ -172,6 +179,34 @@ module Legion
         end
       rescue StandardError => e
         log_warn("LeaseManager: failed to renew lease '#{name}': #{e.message}")
+      end
+
+      def lease_valid?(name)
+        meta = @active_leases[name]
+        return false unless meta
+
+        expires_at = meta[:expires_at]
+        return false unless expires_at
+
+        expires_at > Time.now
+      end
+
+      def revoke_expired_lease(name)
+        meta = @active_leases[name]
+        return unless meta
+
+        lease_id = meta[:lease_id]
+        return if lease_id.nil? || lease_id.empty?
+
+        begin
+          sys.revoke(lease_id)
+          log_debug("LeaseManager: revoked expired lease '#{name}' (#{lease_id}) before re-fetch")
+        rescue StandardError => e
+          log_warn("LeaseManager: failed to revoke expired lease '#{name}' (#{lease_id}): #{e.message}")
+        ensure
+          @active_leases.delete(name)
+          @lease_cache.delete(name)
+        end
       end
 
       def approaching_expiry?(lease)
