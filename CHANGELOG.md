@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.4.23] - 2026-03-27
+
+### Fixed
+- `connect_vault` now accepts Vault standby responses (429, 472, 473) as healthy, fixing connection failures against performance standby nodes
+- `connect_all_clusters` uses the same standby-tolerant health check
+
 ## [1.4.22] - 2026-03-27
 
 ### Changed

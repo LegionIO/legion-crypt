@@ -53,7 +53,7 @@ module Legion
             next unless config[:token]
 
             client = vault_client(name)
-            config[:connected] = client.sys.health_status.initialized?
+            config[:connected] = cluster_healthy?(client)
             results[name] = config[:connected]
             log_cluster_connected(name, config) if config[:connected]
           end
@@ -70,6 +70,14 @@ module Legion
       end
 
       private
+
+      def cluster_healthy?(client)
+        client.sys.health_status.initialized?
+      rescue ::Vault::HTTPError => e
+        return true if e.message =~ /\b(429|472|473)\b/
+
+        raise
+      end
 
       def mark_vault_connected
         return unless defined?(Legion::Settings)
