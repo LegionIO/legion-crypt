@@ -103,6 +103,9 @@ module Legion
 
         Legion::Logging.info 'Pushing Cluster Secret to Vault'
         Legion::Crypt.write('cluster', secret: Legion::Settings[:crypt][:cluster_secret])
+      rescue StandardError => e
+        Legion::Logging.warn("push_cs_to_vault failed: #{e.message}") if defined?(Legion::Logging)
+        false
       end
 
       def cluster_secret_timeout

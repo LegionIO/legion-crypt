@@ -50,6 +50,66 @@ RSpec.describe Legion::Crypt::ClusterSecret do
     expect(@cs.push_cs_to_vault).to eq false
   end
 
+  describe '#push_cs_to_vault rescue paths' do
+    before do
+      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).and_call_original
+      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).with(:connected).and_return(true)
+      allow(Legion::Settings[:crypt]).to receive(:[]).and_call_original
+      allow(Legion::Settings[:crypt]).to receive(:[]).with(:cluster_secret).and_return('aabbccdd')
+      allow(Legion::Crypt).to receive(:write).and_raise(StandardError, 'permission denied')
+    end
+
+    it 'returns false when Vault write raises' do
+      expect(@cs.push_cs_to_vault).to eq false
+    end
+
+    it 'does not propagate the exception' do
+      expect { @cs.push_cs_to_vault }.not_to raise_error
+    end
+
+    it 'logs a warning when Legion::Logging is available' do
+      logging = double('Legion::Logging')
+      stub_const('Legion::Logging', logging)
+      allow(logging).to receive(:info)
+      expect(logging).to receive(:warn).with(match(/push_cs_to_vault failed/))
+      @cs.push_cs_to_vault
+    end
+  end
+
+  describe '#set_cluster_secret stores value even when Vault push fails' do
+    let(:valid_secret) { SecureRandom.hex(16) }
+
+    before do
+      allow(@cs).to receive(:settings_push_vault).and_return(true)
+      allow(@cs).to receive(:push_cs_to_vault).and_raise(StandardError, 'vault 403')
+    end
+
+    it 'raises because push_cs_to_vault propagated — demonstrating the old bug (pre-fix)' do
+      # With the old code, push_cs_to_vault raising would prevent the assignment.
+      # This spec documents that push_cs_to_vault itself now rescues internally,
+      # so set_cluster_secret always completes the Settings assignment.
+      # Here we force the raise at the set_cluster_secret level to confirm the fix
+      # is in push_cs_to_vault, not set_cluster_secret.
+      expect { @cs.set_cluster_secret(valid_secret, true) }.to raise_error(StandardError, 'vault 403')
+    end
+
+    context 'when push_cs_to_vault rescues internally (the fix)' do
+      before do
+        allow(@cs).to receive(:push_cs_to_vault).and_return(false)
+      end
+
+      it 'stores cluster_secret in Settings' do
+        @cs.set_cluster_secret(valid_secret, true)
+        expect(Legion::Settings[:crypt][:cluster_secret]).to eq valid_secret
+      end
+
+      it 'sets cs_encrypt_ready to true' do
+        @cs.set_cluster_secret(valid_secret, true)
+        expect(Legion::Settings[:crypt][:cs_encrypt_ready]).to eq true
+      end
+    end
+  end
+
   it '.cluster_secret_timeout' do
     expect(@cs.cluster_secret_timeout).to eq 5
   end

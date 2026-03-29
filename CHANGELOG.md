@@ -1,5 +1,14 @@
 # Legion::Crypt
 
+## [1.4.26] - 2026-03-28
+
+### Fixed
+- `push_cs_to_vault` now rescues `StandardError` and returns `false` instead of propagating Vault errors (e.g. 403 permission denied), ensuring `set_cluster_secret` always stores the cluster secret in Settings even when the Vault write fails
+
+### Added
+- Specs for `push_cs_to_vault` rescue path: verifies the method returns false and does not raise on Vault errors, and logs a warning when `Legion::Logging` is available
+- Specs for `set_cluster_secret` confirming Settings assignment completes when Vault push returns false
+
 ## [1.4.25] - 2026-03-28
 
 ### Fixed
