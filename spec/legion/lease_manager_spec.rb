@@ -103,6 +103,68 @@ RSpec.describe Legion::Crypt::LeaseManager do
       manager.start({})
       expect(manager.active_leases).to be_empty
     end
+
+    context 'when a valid lease is already cached' do
+      before { manager.start(lease_definitions) }
+
+      it 'does not create a second lease on repeated start' do
+        expect(Vault.logical).not_to receive(:read)
+        manager.start(lease_definitions)
+      end
+
+      it 'preserves the original cached credentials' do
+        manager.start(lease_definitions)
+        expect(manager.fetch('rabbitmq', :username)).to eq('rabbit_user')
+      end
+    end
+
+    context 'when a cached lease is expired' do
+      let(:expired_response) do
+        double('Vault::Secret',
+               data:           { username: 'old_user', password: 'old_pass' },
+               lease_id:       'rabbitmq/creds/legion-role/expired123',
+               lease_duration: 3600,
+               renewable?:     true)
+      end
+
+      let(:fresh_response) do
+        double('Vault::Secret',
+               data:           { username: 'new_user', password: 'new_pass' },
+               lease_id:       'rabbitmq/creds/legion-role/fresh456',
+               lease_duration: 3600,
+               renewable?:     true)
+      end
+
+      before do
+        allow(Vault).to receive_message_chain(:logical, :read).and_return(expired_response)
+        manager.start(lease_definitions)
+        manager.active_leases['rabbitmq'][:expires_at] = Time.now - 1
+        allow(Vault).to receive_message_chain(:logical, :read).and_return(fresh_response)
+        allow(Vault).to receive_message_chain(:sys, :revoke)
+      end
+
+      it 'revokes the expired lease before re-fetching' do
+        sys_double = instance_double(Vault::Sys)
+        allow(Vault).to receive(:sys).and_return(sys_double)
+        expect(sys_double).to receive(:revoke).with('rabbitmq/creds/legion-role/expired123')
+        manager.start(lease_definitions)
+      end
+
+      it 'fetches new credentials when the cached lease has expired' do
+        expect(Vault.logical).to receive(:read).with('rabbitmq/creds/legion-role').and_return(fresh_response)
+        manager.start(lease_definitions)
+      end
+
+      it 'caches the new credentials after re-fetch' do
+        manager.start(lease_definitions)
+        expect(manager.fetch('rabbitmq', :username)).to eq('new_user')
+      end
+
+      it 'stores the new lease_id after re-fetch' do
+        manager.start(lease_definitions)
+        expect(manager.active_leases['rabbitmq'][:lease_id]).to eq('rabbitmq/creds/legion-role/fresh456')
+      end
+    end
   end
 
   describe '#fetch' do
@@ -214,6 +276,29 @@ RSpec.describe Legion::Crypt::LeaseManager do
       thread2 = manager.instance_variable_get(:@renewal_thread)
       expect(thread1).to be(thread2)
       manager.shutdown
+    end
+  end
+
+  describe '#lease_valid?' do
+    it 'returns false when no lease exists for the name' do
+      expect(manager.send(:lease_valid?, 'rabbitmq')).to be(false)
+    end
+
+    it 'returns true when the lease exists and has not expired' do
+      manager.start(lease_definitions)
+      expect(manager.send(:lease_valid?, 'rabbitmq')).to be(true)
+    end
+
+    it 'returns false when the lease exists but expires_at is in the past' do
+      manager.start(lease_definitions)
+      manager.active_leases['rabbitmq'][:expires_at] = Time.now - 1
+      expect(manager.send(:lease_valid?, 'rabbitmq')).to be(false)
+    end
+
+    it 'returns false when expires_at is nil' do
+      manager.start(lease_definitions)
+      manager.active_leases['rabbitmq'][:expires_at] = nil
+      expect(manager.send(:lease_valid?, 'rabbitmq')).to be(false)
     end
   end
 
