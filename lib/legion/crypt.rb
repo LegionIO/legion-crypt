@@ -14,6 +14,10 @@ require 'legion/crypt/token_renewer'
 require 'legion/crypt/helper'
 require 'legion/crypt/mtls'
 require 'legion/crypt/cert_rotation'
+require 'legion/crypt/spiffe'
+require 'legion/crypt/spiffe/workload_api_client'
+require 'legion/crypt/spiffe/svid_rotation'
+require 'legion/crypt/spiffe/identity_helpers'
 
 module Legion
   module Crypt
@@ -38,6 +42,20 @@ module Legion
         KerberosAuth.kerberos_principal
       end
 
+      def spiffe_svid
+        @svid_rotation&.current_svid
+      end
+
+      def fetch_svid
+        @workload_client ||= Spiffe::WorkloadApiClient.new
+        @workload_client.fetch_x509_svid
+      end
+
+      def fetch_jwt_svid(audience:)
+        @workload_client ||= Spiffe::WorkloadApiClient.new
+        @workload_client.fetch_jwt_svid(audience: audience)
+      end
+
       def start
         Legion::Logging.debug 'Legion::Crypt is running start'
         ::File.write('./legionio.key', private_key) if settings[:save_private_key]
@@ -50,6 +68,7 @@ module Legion
           connect_vault unless settings[:vault][:token].nil?
         end
         start_lease_manager
+        start_svid_rotation
       end
 
       def settings
@@ -96,6 +115,7 @@ module Legion
         stop_token_renewers
         shutdown_renewer
         close_sessions
+        stop_svid_rotation
       end
 
       private
@@ -153,6 +173,22 @@ module Legion
 
         @token_renewers.each(&:stop)
         @token_renewers.clear
+      end
+
+      def start_svid_rotation
+        return unless Spiffe.enabled?
+
+        @svid_rotation = Spiffe::SvidRotation.new
+        @svid_rotation.start
+      rescue StandardError => e
+        Legion::Logging.warn "SPIFFE SvidRotation startup failed: #{e.message}" if defined?(Legion::Logging)
+      end
+
+      def stop_svid_rotation
+        return unless @svid_rotation
+
+        @svid_rotation.stop
+        @svid_rotation = nil
       end
     end
   end

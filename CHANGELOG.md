@@ -1,5 +1,15 @@
 # Legion::Crypt
 
+## [1.4.25] - 2026-03-28
+
+### Fixed
+- `kv_client` and `logical_client` now route through the default cluster `Vault::Client` when multi-cluster is configured, preventing 403 errors caused by the un-initialized global `::Vault` singleton (closes #1)
+
+### Added
+- Specs for `kv_client`/`logical_client` routing: 20 examples covering multi-cluster path (cluster client used, global singleton not touched) and single-server fallback path (global singleton used, `vault_client` not called) for `get`, `write`, `exist?`, `delete`, and `read` methods
+- SPIFFE/SVID support: `Spiffe::WorkloadApiClient` (Unix-domain gRPC for x509/JWT SVIDs), `Spiffe::SvidRotation` (background renewal at configurable window), `Spiffe::IdentityHelpers` mixin; wired into `Crypt.start`/`shutdown` behind `spiffe.enabled: false` feature flag
+- `spiffe` default settings block with `enabled`, `socket_path`, `trust_domain`, `workload_id`, `renewal_window`
+
 ## [1.4.24] - 2026-03-28
 
 ### Fixed
