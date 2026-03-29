@@ -19,8 +19,9 @@ RSpec.describe Legion::Crypt::Spiffe::IdentityHelpers do
     c.not_before = Time.now - 1
     c.not_after  = Time.now + 3600
     spiffe_uri = 'spiffe://test.local/workload/helper-test'
-    c.subject  = OpenSSL::X509::Name.parse("/CN=#{spiffe_uri}")
-    c.issuer   = c.subject
+    # Subject CN must be a plain string; the SPIFFE ID goes in the SAN URI extension only.
+    c.subject    = OpenSSL::X509::Name.parse('/CN=helper-test-svid')
+    c.issuer     = c.subject
     c.public_key = ec_key
     ext_factory = OpenSSL::X509::ExtensionFactory.new(c, c)
     c.add_extension(ext_factory.create_extension('subjectAltName', "URI:#{spiffe_uri}", false))

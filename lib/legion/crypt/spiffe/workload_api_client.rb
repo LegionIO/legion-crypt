@@ -282,18 +282,20 @@ module Legion
         end
 
         # Build a self-signed X.509 SVID for use when SPIRE is not available.
+        # The SPIFFE ID is placed in the SAN URI extension per the SPIFFE spec.
+        # The Subject CN is a plain workload name (no URI) so OpenSSL parses cleanly.
         def self_signed_fallback
           key  = OpenSSL::PKey::EC.generate('prime256v1')
           cert = OpenSSL::X509::Certificate.new
-          cert.version   = 2
-          cert.serial    = OpenSSL::BN.rand(128)
+          cert.version    = 2
+          cert.serial     = OpenSSL::BN.rand(128)
           cert.not_before = Time.now
           cert.not_after  = Time.now + 3600
 
           spiffe_id_str = "#{SPIFFE_SCHEME}://#{@trust_domain}/workload/legion"
-          subject       = OpenSSL::X509::Name.parse("/CN=#{spiffe_id_str}")
-          cert.subject  = subject
-          cert.issuer   = subject
+          subject         = OpenSSL::X509::Name.parse('/CN=legion-fallback-svid')
+          cert.subject    = subject
+          cert.issuer     = subject
           cert.public_key = key
 
           ext_factory = OpenSSL::X509::ExtensionFactory.new(cert, cert)
@@ -345,19 +347,22 @@ module Legion
 
         alias extract_proto_bytes extract_proto_field
 
-        def decode_varint(bytes, pos)
-          result = 0
-          shift  = 0
+        # Decode a protobuf varint starting at +start+ in +bytes+.
+        # Returns [decoded_value, bytes_consumed].
+        def decode_varint(bytes, start)
+          result  = 0
+          shift   = 0
+          current = start
           loop do
-            byte = bytes.getbyte(pos)
-            return [result, pos] if byte.nil?
+            byte = bytes.getbyte(current)
+            return [result, 0] if byte.nil?
 
-            pos    += 1
-            result |= (byte & 0x7F) << shift
-            shift  += 7
+            current += 1
+            result  |= (byte & 0x7F) << shift
+            shift   += 7
             break unless (byte & 0x80).nonzero?
           end
-          [result, pos - (shift / 7)]
+          [result, current - start]
         end
 
         # Extract the `exp` claim from the JWT payload without verifying the signature.
