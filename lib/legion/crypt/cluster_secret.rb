@@ -75,11 +75,11 @@ module Legion
       end
 
       def force_cluster_secret
-        Legion::Settings[:crypt][:force_cluster_secret] || true
+        Legion::Settings[:crypt].fetch(:force_cluster_secret, false)
       end
 
       def settings_push_vault
-        Legion::Settings[:crypt][:vault][:push_cs_to_vault] || true
+        Legion::Settings[:crypt][:vault].fetch(:push_cs_to_vault, false)
       end
 
       def only_member?

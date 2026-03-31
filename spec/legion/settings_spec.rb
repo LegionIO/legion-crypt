@@ -67,12 +67,12 @@ RSpec.describe Legion::Crypt::Settings do
       expect(vault[:renewer]).to eq(true)
     end
 
-    it 'has push_cluster_secret enabled' do
-      expect(vault[:push_cluster_secret]).to eq(true)
+    it 'has push_cluster_secret disabled' do
+      expect(vault[:push_cluster_secret]).to eq(false)
     end
 
-    it 'has read_cluster_secret enabled' do
-      expect(vault[:read_cluster_secret]).to eq(true)
+    it 'has read_cluster_secret disabled' do
+      expect(vault[:read_cluster_secret]).to eq(false)
     end
 
     it 'has kv_path' do

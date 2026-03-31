@@ -1,5 +1,12 @@
 # Legion::Crypt
 
+## [1.4.29] - 2026-03-31
+
+### Changed
+- `force_cluster_secret` and `settings_push_vault` default to `false` instead of always returning `true`
+- Default settings: `push_cluster_secret` and `read_cluster_secret` now default to `false`
+- Both methods now use `fetch` with explicit default, fixing `|| true` bug that made the settings impossible to disable
+
 ## [1.4.28] - 2026-03-31
 
 ### Fixed

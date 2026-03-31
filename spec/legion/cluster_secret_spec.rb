@@ -35,11 +35,11 @@ RSpec.describe Legion::Crypt::ClusterSecret do
   # end
 
   it '.force_cluster_secret' do
-    expect(@cs.force_cluster_secret).to eq true
+    expect(@cs.force_cluster_secret).to eq false
   end
 
   it '.settings_push_vault' do
-    expect(@cs.settings_push_vault).to eq true
+    expect(@cs.settings_push_vault).to eq false
   end
 
   it '.only_member?' do
