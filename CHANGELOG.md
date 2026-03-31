@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.4.28] - 2026-03-31
+
+### Fixed
+- `Helper#vault_write` now accepts keyword args (`**data`) and splats to `Crypt.write`, fixing `ArgumentError` on Ruby 3.4 when writing to Vault KV
+
 ## [1.4.27] - 2026-03-31
 
 ### Fixed

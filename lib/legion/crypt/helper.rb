@@ -11,8 +11,8 @@ module Legion
         Legion::Crypt.get(vault_path(path))
       end
 
-      def vault_write(path, data)
-        Legion::Crypt.write(vault_path(path), data)
+      def vault_write(path, **data)
+        Legion::Crypt.write(vault_path(path), **data)
       end
 
       def vault_exist?(path = nil)

@@ -46,8 +46,8 @@ RSpec.describe Legion::Crypt::Helper do
 
   describe '#vault_write' do
     it 'delegates to Legion::Crypt.write with namespace' do
-      expect(Legion::Crypt).to receive(:write).with('microsoft_teams/auth', { token: 'abc' })
-      subject.vault_write('auth', { token: 'abc' })
+      expect(Legion::Crypt).to receive(:write).with('microsoft_teams/auth', token: 'abc')
+      subject.vault_write('auth', token: 'abc')
     end
   end
 
