@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.4.27] - 2026-03-31
+
+### Fixed
+- `connect_vault` now sets `::Vault.namespace` from `vault_namespace` setting, fixing 403 errors for non-cluster Vault connections in namespaced environments
+- Extracted `resolve_vault_address` and `log_vault_connection_error` to reduce `connect_vault` complexity
+
 ## [1.4.26] - 2026-03-28
 
 ### Fixed

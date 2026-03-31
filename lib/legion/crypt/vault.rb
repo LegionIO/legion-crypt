@@ -15,35 +15,20 @@ module Legion
       def connect_vault
         @sessions = []
         vault_settings = Legion::Settings[:crypt][:vault]
-        protocol = vault_settings[:protocol] || 'http'
-        address  = vault_settings[:address] || 'localhost'
-        port     = vault_settings[:port] || 8200
-
-        if address.match?(%r{\Ahttps?://})
-          uri = URI.parse(address)
-          protocol = uri.scheme
-          address  = uri.host
-          port     = uri.port if vault_settings[:port].nil?
-        end
-
-        ::Vault.address = "#{protocol}://#{address}:#{port}"
+        ::Vault.address = resolve_vault_address(vault_settings)
 
         Legion::Settings[:crypt][:vault][:token] = ENV['VAULT_DEV_ROOT_TOKEN_ID'] if ENV.key? 'VAULT_DEV_ROOT_TOKEN_ID'
         return nil if Legion::Settings[:crypt][:vault][:token].nil?
 
         ::Vault.token = Legion::Settings[:crypt][:vault][:token]
+        namespace = vault_settings[:vault_namespace]
+        ::Vault.namespace = namespace if namespace
         if vault_healthy?
           Legion::Settings[:crypt][:vault][:connected] = true
-          Legion::Logging.info "Vault connected at #{::Vault.address}" if defined?(Legion::Logging)
+          Legion::Logging.info "Vault connected at #{::Vault.address} (namespace=#{namespace || 'none'})" if defined?(Legion::Logging)
         end
       rescue StandardError => e
-        if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
-          Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
-        elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:error)
-          Legion::Logging.error "Vault connection failed: #{e.class}=#{e.message}\n#{Array(e.backtrace).first(10).join("\n")}"
-        else
-          warn "Vault connection failed: #{e.class}=#{e.message}"
-        end
+        log_vault_connection_error(e)
         Legion::Settings[:crypt][:vault][:connected] = false
         false
       end
@@ -204,6 +189,31 @@ module Legion
 
         log_vault_debug("Vault read: #{full_path} detected KV v2 envelope, unwrapping :data key")
         data[:data]
+      end
+
+      def resolve_vault_address(vault_settings)
+        protocol = vault_settings[:protocol] || 'http'
+        address  = vault_settings[:address] || 'localhost'
+        port     = vault_settings[:port] || 8200
+
+        if address.match?(%r{\Ahttps?://})
+          uri = URI.parse(address)
+          protocol = uri.scheme
+          address  = uri.host
+          port     = uri.port if vault_settings[:port].nil?
+        end
+
+        "#{protocol}://#{address}:#{port}"
+      end
+
+      def log_vault_connection_error(error)
+        if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
+          Legion::Logging.log_exception(error, lex: 'crypt', component_type: :helper)
+        elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:error)
+          Legion::Logging.error "Vault connection failed: #{error.class}=#{error.message}\n#{Array(error.backtrace).first(10).join("\n")}"
+        else
+          warn "Vault connection failed: #{error.class}=#{error.message}"
+        end
       end
 
       def log_vault_debug(message)
