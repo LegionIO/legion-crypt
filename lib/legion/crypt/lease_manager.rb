@@ -181,6 +181,8 @@ module Legion
 
       def renew_lease(name, lease)
         response = sys.renew(lease[:lease_id])
+        lease[:lease_duration] = response.lease_duration if response.respond_to?(:lease_duration)
+        lease[:renewable] = response.renewable? if response.respond_to?(:renewable?)
         lease[:expires_at] = Time.now + (response.lease_duration || 0)
         log.info("LeaseManager: renewed lease '#{name}'")
 

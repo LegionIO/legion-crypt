@@ -37,6 +37,7 @@ RSpec.describe Legion::Crypt::LdapAuth do
   before do
     allow(Vault::Client).to receive(:new).and_return(mock_vault_client)
     allow(mock_vault_client).to receive(:namespace=)
+    allow(mock_vault_client).to receive(:token=)
     allow(mock_vault_client).to receive(:logical).and_return(mock_logical)
     allow(mock_logical).to receive(:write).and_return(mock_secret)
     allow(mock_secret).to receive(:auth).and_return(mock_auth)
@@ -63,6 +64,11 @@ RSpec.describe Legion::Crypt::LdapAuth do
       expect(test_clusters[:one][:connected]).to be(true)
     end
 
+    it 'updates the cached vault client token' do
+      test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
+      expect(mock_vault_client).to have_received(:token=).with('new-vault-token')
+    end
+
     it 'returns a result hash with token, lease_duration, renewable, and policies' do
       result = test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
       expect(result).to include(
@@ -78,13 +84,13 @@ RSpec.describe Legion::Crypt::LdapAuth do
       expect(result[:token]).to eq('new-vault-token')
     end
 
-    it 'sets the top-level vault connected flag when Legion::Settings is defined' do
+    it 'does not set the top-level vault connected flag for multi-cluster LDAP auth' do
       vault_hash = { connected: false }
       crypt_hash = { vault: vault_hash }
       allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(crypt_hash)
 
       test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
-      expect(vault_hash[:connected]).to be(true)
+      expect(vault_hash[:connected]).to be(false)
     end
   end
 

@@ -15,7 +15,7 @@ RSpec.describe Legion::Crypt::TokenRenewer do
   let(:vault_client) { instance_double(Vault::Client) }
   let(:auth_token) { double('AuthToken') }
   let(:renew_result) do
-    double('RenewResult', auth: double('Auth', lease_duration: 200, client_token: 'hvs.renewed'))
+    double('RenewResult', auth: double('Auth', lease_duration: 200, client_token: 'hvs.renewed', renewable?: false))
   end
 
   let(:renewer) { described_class.new(cluster_name: cluster_name, config: config, vault_client: vault_client) }
@@ -40,6 +40,7 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       result = renewer.renew_token
       expect(result).to be true
       expect(config[:lease_duration]).to eq(200)
+      expect(config[:renewable]).to be(false)
     end
 
     it 'returns false when renewal fails' do
@@ -75,9 +76,9 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       expect(renewer.sleep_duration).to eq(75)
     end
 
-    it 'returns at least MIN_SLEEP seconds' do
+    it 'uses the ratio for short-lived tokens so renewal happens before expiry' do
       config[:lease_duration] = 10
-      expect(renewer.sleep_duration).to eq(30)
+      expect(renewer.sleep_duration).to eq(7)
     end
   end
 

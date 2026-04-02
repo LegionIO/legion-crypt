@@ -86,8 +86,26 @@ module Legion
 
       def mark_vault_connected
         return unless defined?(Legion::Settings)
+        return if clusters.any?
 
         Legion::Settings[:crypt][:vault][:connected] = true
+      end
+
+      def selected_connected_cluster_name(name = nil)
+        active_clusters = connected_clusters
+        return nil if active_clusters.empty?
+
+        if name
+          cluster_name = name.to_sym
+          raise ArgumentError, "Vault cluster not connected: #{cluster_name}" unless active_clusters.key?(cluster_name)
+
+          return cluster_name
+        end
+
+        default_name = vault_settings[:default]&.to_sym
+        return default_name if default_name && active_clusters.key?(default_name)
+
+        active_clusters.keys.first
       end
 
       def resolve_cluster_name(name)

@@ -47,10 +47,10 @@ module Legion
         raise
       end
 
-      def read(path, type = 'legion')
-        full_path = type.nil? || type.empty? ? "#{type}/#{path}" : path
-        log_read_context(full_path)
-        lease = logical_client.read(full_path)
+      def read(path, type = 'legion', cluster_name: nil)
+        full_path = type.nil? || type.empty? ? path : "#{type}/#{path}"
+        log_read_context(full_path, cluster_name: cluster_name)
+        lease = logical_client(cluster_name: cluster_name).read(full_path)
         if lease.nil?
           log_vault_debug("Vault read: #{full_path} returned nil")
           return nil
@@ -65,9 +65,9 @@ module Legion
         raise
       end
 
-      def get(path)
+      def get(path, cluster_name: nil)
         log.debug "Vault kv get: path=#{path}"
-        result = kv_client.read(path)
+        result = kv_client(cluster_name: cluster_name).read(path)
         if result.nil?
           log.debug "Vault kv get: #{path} returned nil"
           return nil
@@ -80,17 +80,17 @@ module Legion
         raise
       end
 
-      def write(path, **hash)
+      def write(path, cluster_name: nil, **hash)
         log.info "Vault kv write requested path=#{path}"
-        kv_client.write(path, **hash)
+        kv_client(cluster_name: cluster_name).write(path, **hash)
         log.info "Vault kv write complete path=#{path}"
       rescue StandardError => e
         handle_exception(e, level: :error, operation: 'crypt.vault.write', path: path)
         raise
       end
 
-      def delete(path)
-        logical_client.delete(path)
+      def delete(path, cluster_name: nil)
+        logical_client(cluster_name: cluster_name).delete(path)
         log.info "Vault delete complete path=#{path}"
         { success: true, path: path }
       rescue StandardError => e
@@ -98,8 +98,8 @@ module Legion
         { success: false, path: path, error: e.message }
       end
 
-      def exist?(path)
-        !kv_client.read_metadata(path).nil?
+      def exist?(path, cluster_name: nil)
+        !kv_client(cluster_name: cluster_name).read_metadata(path).nil?
       end
 
       def add_session(path:)
@@ -165,30 +165,41 @@ module Legion
 
       private
 
-      def kv_client
+      def kv_client(cluster_name: nil)
         if respond_to?(:connected_clusters) && connected_clusters.any?
-          vault_client.kv(settings[:vault][:kv_path])
+          connected_vault_client(cluster_name).kv(settings[:kv_path])
         else
-          ::Vault.kv(settings[:vault][:kv_path])
+          raise ArgumentError, "Vault cluster not connected: #{cluster_name}" if cluster_name
+
+          ::Vault.kv(settings[:kv_path])
         end
       end
 
-      def logical_client
+      def logical_client(cluster_name: nil)
         if respond_to?(:connected_clusters) && connected_clusters.any?
-          vault_client.logical
+          connected_vault_client(cluster_name).logical
         else
+          raise ArgumentError, "Vault cluster not connected: #{cluster_name}" if cluster_name
+
           ::Vault.logical
         end
       end
 
-      def log_read_context(full_path)
+      def log_read_context(full_path, cluster_name: nil)
         namespace = if respond_to?(:connected_clusters) && connected_clusters.any?
-                      client = vault_client
+                      client = connected_vault_client(cluster_name)
                       client.respond_to?(:namespace) ? client.namespace : 'n/a'
                     else
                       'n/a (global client)'
                     end
         log.debug "Vault read: path=#{full_path}, namespace=#{namespace}"
+      end
+
+      def connected_vault_client(cluster_name = nil)
+        selected_cluster = selected_connected_cluster_name(cluster_name)
+        raise ArgumentError, "Vault cluster not connected: #{cluster_name}" if selected_cluster.nil? && cluster_name
+
+        selected_cluster ? vault_client(selected_cluster) : nil
       end
 
       def unwrap_kv_v2(data, full_path)

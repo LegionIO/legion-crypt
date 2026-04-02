@@ -48,6 +48,7 @@ module Legion
       def renew_token
         result = @vault_client.auth_token.renew_self
         @config[:lease_duration] = result.auth.lease_duration
+        @config[:renewable] = result.auth.renewable? if result.auth.respond_to?(:renewable?)
         log_info("token renewed, ttl=#{result.auth.lease_duration}s")
         true
       rescue StandardError => e
@@ -78,7 +79,10 @@ module Legion
       end
 
       def sleep_duration
-        duration = (@config[:lease_duration].to_i * RENEWAL_RATIO).to_i
+        lease_duration = @config[:lease_duration].to_i
+        duration = [(lease_duration * RENEWAL_RATIO).to_i, 1].max
+        return [duration, lease_duration - 1].min if lease_duration.positive? && lease_duration < MIN_SLEEP
+
         [duration, MIN_SLEEP].max
       end
 

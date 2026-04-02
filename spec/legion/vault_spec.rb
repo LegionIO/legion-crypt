@@ -103,9 +103,6 @@ RSpec.describe Legion::Crypt::Vault do
       obj = Object.new
       obj.extend(Legion::Crypt::VaultCluster)
       obj.extend(Legion::Crypt::Vault)
-      # settings must return the full crypt hash so settings[:vault][:kv_path] resolves
-      obj.define_singleton_method(:settings) { Legion::Settings[:crypt] }
-      obj.define_singleton_method(:vault_settings) { Legion::Settings[:crypt][:vault] }
       obj.sessions = []
       obj
     end
@@ -113,7 +110,8 @@ RSpec.describe Legion::Crypt::Vault do
     context 'when clusters are connected' do
       before do
         allow(host).to receive(:connected_clusters).and_return({ primary: { token: 'tok', connected: true } })
-        allow(host).to receive(:vault_client).with(no_args).and_return(mock_cluster_client)
+        allow(host).to receive(:selected_connected_cluster_name).with(nil).and_return(:primary)
+        allow(host).to receive(:vault_client).with(:primary).and_return(mock_cluster_client)
       end
 
       describe '#kv_client' do
@@ -193,6 +191,44 @@ RSpec.describe Legion::Crypt::Vault do
           allow(mock_logical).to receive(:read).and_return(lease)
           result = host.read('database/creds/myrole', nil)
           expect(result).to eq({ token: 'abc' })
+        end
+      end
+
+      describe 'explicit cluster selection' do
+        let(:mock_secondary_kv) { double('kv-secondary') }
+        let(:mock_secondary_logical) { double('logical-secondary') }
+        let(:mock_secondary_client) do
+          dbl = instance_double(Vault::Client)
+          allow(dbl).to receive(:kv).with(kv_path).and_return(mock_secondary_kv)
+          allow(dbl).to receive(:logical).and_return(mock_secondary_logical)
+          dbl
+        end
+
+        before do
+          allow(host).to receive(:connected_clusters).and_return(
+            {
+              primary:   { token: 'tok', connected: true },
+              secondary: { token: 'tok-2', connected: true }
+            }
+          )
+          allow(host).to receive(:selected_connected_cluster_name).with(:secondary).and_return(:secondary)
+          allow(host).to receive(:vault_client).with(:secondary).and_return(mock_secondary_client)
+        end
+
+        it 'routes get through the requested cluster client' do
+          secret = double('secret', data: { value: 'secondary' })
+          allow(mock_secondary_kv).to receive(:read).with('mypath').and_return(secret)
+
+          expect(host.get('mypath', cluster_name: :secondary)).to eq({ value: 'secondary' })
+        end
+
+        it 'raises when the requested cluster is not connected' do
+          allow(host).to receive(:selected_connected_cluster_name).with(:missing)
+                     .and_raise(ArgumentError, 'Vault cluster not connected: missing')
+
+          expect do
+            host.get('mypath', cluster_name: :missing)
+          end.to raise_error(ArgumentError, /not connected/)
         end
       end
     end

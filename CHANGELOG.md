@@ -5,6 +5,7 @@
 ### Fixed
 - Cluster-secret Vault synchronization now uses the documented `push_cluster_secret` setting, stores the new secret before pushing it, aligns Vault read/write path and field names, and invalidates cached derived key material on rotation
 - External JWT/JWKS verification now fails closed on missing issuer or audience expectations, keeps reserved claims library-controlled, requires HTTPS JWKS transport, and avoids repeated fresh-cache re-fetches for unknown `kid` values
+- Multi-cluster Vault auth and helper routing now update live LDAP client tokens, avoid treating cluster connectivity as global Vault connectivity, allow explicit cluster-targeted helper calls, refresh lease metadata on renewal, and schedule short-lived token renewals before expiry
 
 ### Changed
 - Adopted `Legion::Logging::Helper` across `lib/` so library logs use structured component tagging instead of direct `Legion::Logging.*` calls

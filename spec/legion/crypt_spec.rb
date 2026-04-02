@@ -130,6 +130,23 @@ RSpec.describe Legion::Crypt do
       Legion::Crypt.shutdown
       expect(Legion::Crypt::LeaseManager.instance).to have_received(:shutdown)
     end
+
+    it 'prefers the connected cluster client over the top-level vault flag' do
+      leases = { 'test' => { 'path' => 'secret/test' } }
+      secondary_client = instance_double(Vault::Client)
+      settings_override = Legion::Settings[:crypt].merge(
+        vault: Legion::Settings[:crypt][:vault].merge(leases: leases, connected: true)
+      )
+      allow(Legion::Crypt::LeaseManager.instance).to receive(:fetched_count).and_return(1)
+      allow(Legion::Crypt).to receive(:settings).and_return(settings_override)
+      allow(Legion::Crypt).to receive(:connected_clusters).and_return({ secondary: { token: 'tok-2', connected: true } })
+      allow(Legion::Crypt).to receive(:selected_connected_cluster_name).and_return(:secondary)
+      allow(Legion::Crypt).to receive(:vault_client).with(:secondary).and_return(secondary_client)
+
+      Legion::Crypt.send(:start_lease_manager)
+
+      expect(Legion::Crypt::LeaseManager.instance).to have_received(:start).with(leases, vault_client: secondary_client)
+    end
   end
 
   describe '.start with kerberos clusters' do

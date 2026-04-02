@@ -319,6 +319,27 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
   end
 
+  describe '#renew_lease' do
+    before { manager.start(lease_definitions) }
+
+    it 'refreshes lease_duration and renewable from the renewal response' do
+      renew_response = double('Vault::Secret',
+                              data:           { username: 'renewed_user', password: 'renewed_pass' },
+                              lease_id:       'rabbitmq/creds/legion-role/abc123',
+                              lease_duration: 1200,
+                              renewable?:     false)
+      sys_double = instance_double(Vault::Sys)
+      allow(Vault).to receive(:sys).and_return(sys_double)
+      allow(sys_double).to receive(:renew).and_return(renew_response)
+
+      manager.send(:renew_lease, 'rabbitmq', manager.active_leases['rabbitmq'])
+
+      expect(manager.active_leases['rabbitmq'][:lease_duration]).to eq(1200)
+      expect(manager.active_leases['rabbitmq'][:renewable]).to be(false)
+      expect(manager.fetch('rabbitmq', :username)).to eq('renewed_user')
+    end
+  end
+
   describe '#shutdown' do
     before { manager.start(lease_definitions) }
 

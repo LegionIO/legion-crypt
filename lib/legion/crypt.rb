@@ -131,22 +131,15 @@ module Legion
       def start_lease_manager
         leases = settings.dig(:vault, :leases) || {}
         return if leases.empty?
-        return unless settings.dig(:vault, :connected) || connected_clusters.any?
+        return unless connected_clusters.any? || settings.dig(:vault, :connected)
 
         client = nil
 
-        if settings.dig(:vault, :connected)
-          client = vault_client
-        elsif connected_clusters.any?
-          default_cluster = vault_settings[:default]
-          selected_cluster =
-            if default_cluster && connected_clusters.include?(default_cluster.to_sym)
-              default_cluster.to_sym
-            else
-              connected_clusters.keys.first
-            end
-
+        if connected_clusters.any?
+          selected_cluster = selected_connected_cluster_name
           client = selected_cluster ? vault_client(selected_cluster) : nil
+        elsif settings.dig(:vault, :connected)
+          client = vault_client
         end
         lease_manager = Legion::Crypt::LeaseManager.instance
         lease_manager.start(leases, vault_client: client)
