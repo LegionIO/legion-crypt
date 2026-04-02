@@ -70,7 +70,7 @@ module Legion
         connected = results.select { |_, v| v }
         log.info "Vault cluster connect complete connected=#{connected.size} attempted=#{results.size}"
         log_vault_debug("connect_all_clusters: #{connected.size}/#{results.size} connected")
-        mark_vault_connected if connected.any?
+        sync_vault_connected(connected.any?)
         results
       end
 
@@ -84,11 +84,10 @@ module Legion
         raise
       end
 
-      def mark_vault_connected
+      def sync_vault_connected(connected)
         return unless defined?(Legion::Settings)
-        return if clusters.any?
 
-        Legion::Settings[:crypt][:vault][:connected] = true
+        Legion::Settings[:crypt][:vault][:connected] = connected
       end
 
       def selected_connected_cluster_name(name = nil)

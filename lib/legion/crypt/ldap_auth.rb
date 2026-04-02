@@ -18,7 +18,6 @@ module Legion
         clusters[cluster_name][:token] = token
         clusters[cluster_name][:connected] = true
         client.token = token if client.respond_to?(:token=)
-        mark_vault_connected
 
         log.info "LDAP login success: user=#{username}, cluster=#{cluster_name}"
         { token: token, lease_duration: auth.lease_duration,
