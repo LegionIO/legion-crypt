@@ -183,8 +183,8 @@ module Legion
           log.warn 'LeaseManager renewal thread did not stop within timeout'
         else
           @state_mutex.synchronize { @renewal_thread = nil }
+          log.debug 'LeaseManager renewal thread stopped'
         end
-        log.debug 'LeaseManager renewal thread stopped'
       end
 
       def renewal_loop
