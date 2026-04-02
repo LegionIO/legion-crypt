@@ -19,11 +19,12 @@ module Legion
 
       def self.spiffe
         {
-          enabled:        false,
-          socket_path:    '/tmp/spire-agent/public/api.sock',
-          trust_domain:   'legion.internal',
-          workload_id:    nil,
-          renewal_window: 0.5
+          enabled:             false,
+          socket_path:         '/tmp/spire-agent/public/api.sock',
+          trust_domain:        'legion.internal',
+          workload_id:         nil,
+          renewal_window:      0.5,
+          allow_x509_fallback: false
         }
       end
 

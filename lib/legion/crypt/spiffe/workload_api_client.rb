@@ -27,14 +27,15 @@ module Legion
 
         # Handshake + settings frames required to open an HTTP/2 connection.
         HTTP2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-        HTTP2_SETTINGS_FRAME = [0, 4, 0, 0, 0, 0].pack('NnCCNN')
+        HTTP2_SETTINGS_FRAME = "\x00\x00\x00\x04\x00\x00\x00\x00\x00".b
 
         CONNECT_TIMEOUT = 5
         READ_TIMEOUT    = 10
 
-        def initialize(socket_path: nil, trust_domain: nil)
-          @socket_path  = socket_path  || Legion::Crypt::Spiffe.socket_path
-          @trust_domain = trust_domain || Legion::Crypt::Spiffe.trust_domain
+        def initialize(socket_path: nil, trust_domain: nil, allow_x509_fallback: nil)
+          @socket_path         = socket_path  || Legion::Crypt::Spiffe.socket_path
+          @trust_domain        = trust_domain || Legion::Crypt::Spiffe.trust_domain
+          @allow_x509_fallback = allow_x509_fallback.nil? ? Legion::Crypt::Spiffe.allow_x509_fallback? : allow_x509_fallback
         end
 
         # Fetch an X.509 SVID from the SPIRE Workload API.
@@ -46,7 +47,12 @@ module Legion
           parse_x509_svid_response(raw)
         rescue WorkloadApiError, IOError, Errno::ENOENT, Errno::ECONNREFUSED, Errno::EPIPE => e
           handle_exception(e, level: :warn, operation: 'crypt.spiffe.workload_api_client.fetch_x509_svid',
-                           socket_path: @socket_path, fallback: true)
+                           socket_path: @socket_path, fallback: @allow_x509_fallback)
+          unless @allow_x509_fallback
+            log.error("[SPIFFE] Workload API unavailable (#{e.message}); X.509 fallback disabled")
+            raise SvidError, "Failed to fetch X.509 SVID: #{e.message}"
+          end
+
           log.warn("[SPIFFE] Workload API unavailable (#{e.message}); using self-signed fallback")
           self_signed_fallback
         rescue StandardError => e
@@ -276,7 +282,8 @@ module Legion
             cert_pem:   cert.to_pem,
             key_pem:    key.private_to_pem,
             bundle_pem: bundle_pem,
-            expiry:     cert.not_after
+            expiry:     cert.not_after,
+            source:     :spire
           )
         rescue OpenSSL::X509::CertificateError, OpenSSL::PKey::PKeyError => e
           handle_exception(e, level: :error, operation: 'crypt.spiffe.workload_api_client.parse_x509_svid_response')
@@ -304,7 +311,8 @@ module Legion
             spiffe_id: spiffe_id,
             token:     token,
             audience:  audience,
-            expiry:    expiry
+            expiry:    expiry,
+            source:    :spire
           )
         rescue StandardError => e
           handle_exception(e, level: :error, operation: 'crypt.spiffe.workload_api_client.parse_jwt_svid_response',
@@ -340,7 +348,8 @@ module Legion
             cert_pem:   cert.to_pem,
             key_pem:    key.private_to_pem,
             bundle_pem: nil,
-            expiry:     cert.not_after
+            expiry:     cert.not_after,
+            source:     :fallback
           )
         rescue StandardError => e
           handle_exception(e, level: :error, operation: 'crypt.spiffe.workload_api_client.self_signed_fallback',

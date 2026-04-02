@@ -5,7 +5,7 @@ require 'legion/crypt/spiffe'
 require 'legion/crypt/spiffe/workload_api_client'
 
 RSpec.describe Legion::Crypt::Spiffe::WorkloadApiClient do
-  let(:client) { described_class.new(socket_path: '/tmp/fake.sock', trust_domain: 'test.local') }
+  let(:client) { described_class.new(socket_path: '/tmp/fake.sock', trust_domain: 'test.local', allow_x509_fallback: false) }
 
   describe '#available?' do
     it 'returns false when the socket file does not exist' do
@@ -34,9 +34,35 @@ RSpec.describe Legion::Crypt::Spiffe::WorkloadApiClient do
         allow(File).to receive(:exist?).and_return(false)
       end
 
+      it 'fails closed by default' do
+        expect { client.fetch_x509_svid }
+          .to raise_error(Legion::Crypt::Spiffe::SvidError, /Failed to fetch X.509 SVID/)
+      end
+    end
+
+    context 'when the Workload API raises a connection error' do
+      before do
+        allow(File).to receive(:exist?).with('/tmp/fake.sock').and_return(true)
+        allow(UNIXSocket).to receive(:new).and_raise(Errno::ECONNREFUSED, 'connection refused')
+      end
+
+      it 'raises when fallback is disabled' do
+        expect { client.fetch_x509_svid }
+          .to raise_error(Legion::Crypt::Spiffe::SvidError, /Failed to fetch X.509 SVID/)
+      end
+    end
+
+    context 'when explicit fallback is enabled' do
+      let(:client) { described_class.new(socket_path: '/tmp/fake.sock', trust_domain: 'test.local', allow_x509_fallback: true) }
+
+      before do
+        allow(File).to receive(:exist?).and_return(false)
+      end
+
       it 'returns a self-signed fallback SVID' do
         svid = client.fetch_x509_svid
         expect(svid).to be_a(Legion::Crypt::Spiffe::X509Svid)
+        expect(svid.source).to eq(:fallback)
       end
 
       it 'returns a valid (non-expired) fallback SVID' do
@@ -64,19 +90,6 @@ RSpec.describe Legion::Crypt::Spiffe::WorkloadApiClient do
         expect(svid.expiry).to be > Time.now
       end
     end
-
-    context 'when the Workload API raises a connection error' do
-      before do
-        allow(File).to receive(:exist?).with('/tmp/fake.sock').and_return(true)
-        allow(UNIXSocket).to receive(:new).and_raise(Errno::ECONNREFUSED, 'connection refused')
-      end
-
-      it 'falls back to self-signed SVID' do
-        svid = client.fetch_x509_svid
-        expect(svid).to be_a(Legion::Crypt::Spiffe::X509Svid)
-        expect(svid.valid?).to be true
-      end
-    end
   end
 
   describe '#fetch_jwt_svid' do
@@ -94,21 +107,40 @@ RSpec.describe Legion::Crypt::Spiffe::WorkloadApiClient do
 
   describe 'self-signed fallback' do
     it 'generates a unique serial number each call' do
+      allow(client).to receive(:instance_variable_get).with(:@allow_x509_fallback).and_return(true)
       allow(File).to receive(:exist?).and_return(false)
-      svid1 = client.fetch_x509_svid
-      svid2 = client.fetch_x509_svid
+      svid1 = described_class.new(socket_path: '/tmp/fake.sock', trust_domain: 'test.local', allow_x509_fallback: true).fetch_x509_svid
+      svid2 = described_class.new(socket_path: '/tmp/fake.sock', trust_domain: 'test.local', allow_x509_fallback: true).fetch_x509_svid
       cert1 = OpenSSL::X509::Certificate.new(svid1.cert_pem)
       cert2 = OpenSSL::X509::Certificate.new(svid2.cert_pem)
       expect(cert1.serial).not_to eq(cert2.serial)
     end
 
     it 'embeds the SPIFFE URI SAN in the fallback cert' do
+      fallback_client = described_class.new(socket_path: '/tmp/fake.sock', trust_domain: 'test.local', allow_x509_fallback: true)
       allow(File).to receive(:exist?).and_return(false)
-      svid = client.fetch_x509_svid
+      svid = fallback_client.fetch_x509_svid
       cert = OpenSSL::X509::Certificate.new(svid.cert_pem)
       san  = cert.extensions.find { |e| e.oid == 'subjectAltName' }
       expect(san).not_to be_nil
       expect(san.value).to include('spiffe://test.local')
+    end
+  end
+
+  describe 'HTTP/2 handshake' do
+    it 'uses a valid 9-byte HTTP/2 SETTINGS frame' do
+      expect(described_class::HTTP2_SETTINGS_FRAME.bytesize).to eq(9)
+      expect(described_class::HTTP2_SETTINGS_FRAME.bytes).to eq([0, 0, 0, 4, 0, 0, 0, 0, 0])
+    end
+
+    it 'writes the HTTP/2 preface and settings frame when connecting' do
+      fake_sock = instance_double(UNIXSocket, flush: nil)
+      allow(File).to receive(:exist?).with('/tmp/fake.sock').and_return(true)
+      allow(UNIXSocket).to receive(:new).with('/tmp/fake.sock').and_return(fake_sock)
+      expect(fake_sock).to receive(:write).with(described_class::HTTP2_PREFACE).ordered
+      expect(fake_sock).to receive(:write).with(described_class::HTTP2_SETTINGS_FRAME).ordered
+
+      client.send(:connect_socket)
     end
   end
 

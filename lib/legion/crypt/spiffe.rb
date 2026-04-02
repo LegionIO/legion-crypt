@@ -30,7 +30,7 @@ module Legion
       end
 
       # Parsed X.509 SVID (SPIFFE Verifiable Identity Document).
-      X509Svid = Struct.new(:spiffe_id, :cert_pem, :key_pem, :bundle_pem, :expiry) do
+      X509Svid = Struct.new(:spiffe_id, :cert_pem, :key_pem, :bundle_pem, :expiry, :source) do
         def expired?
           Time.now >= expiry
         end
@@ -46,7 +46,7 @@ module Legion
       end
 
       # Parsed JWT SVID.
-      JwtSvid = Struct.new(:spiffe_id, :token, :audience, :expiry) do
+      JwtSvid = Struct.new(:spiffe_id, :token, :audience, :expiry, :source) do
         def expired?
           Time.now >= expiry
         end
@@ -116,6 +116,14 @@ module Legion
 
           spiffe = security[:spiffe] || security['spiffe'] || {}
           spiffe[:workload_id] || spiffe['workload_id']
+        end
+
+        def allow_x509_fallback?
+          security = safe_security_settings
+          return false if security.nil?
+
+          spiffe = security[:spiffe] || security['spiffe'] || {}
+          spiffe[:allow_x509_fallback] || spiffe['allow_x509_fallback'] || false
         end
 
         private
