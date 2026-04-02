@@ -5,6 +5,7 @@ require 'uri'
 require 'json'
 require 'openssl'
 require 'jwt'
+require 'legion/logging/helper'
 
 module Legion
   module Crypt
@@ -15,18 +16,21 @@ module Legion
       @mutex = Mutex.new
 
       class << self
+        include Legion::Logging::Helper
+
         def fetch_keys(jwks_url)
           @mutex.synchronize do
-            Legion::Logging.debug "JWKS fetch: #{jwks_url}" if defined?(Legion::Logging)
+            log.debug "JWKS fetch: #{jwks_url}"
             response = http_get(jwks_url)
             jwks_data = parse_response(response)
             keys = parse_jwks(jwks_data)
 
             @cache[jwks_url] = { keys: keys, fetched_at: Time.now }
+            log.info "JWKS fetched url=#{jwks_url} keys=#{keys.size}"
             keys
           end
         rescue StandardError => e
-          Legion::Logging.warn "JWKS fetch failed for #{jwks_url}: #{e.message}" if defined?(Legion::Logging)
+          handle_exception(e, level: :warn, operation: 'crypt.jwks.fetch_keys', jwks_url: jwks_url)
           raise
         end
 
@@ -36,7 +40,7 @@ module Legion
           if cached && !expired?(cached[:fetched_at])
             key = cached[:keys][kid]
             if key
-              Legion::Logging.debug "JWKS cache hit: kid=#{kid}" if defined?(Legion::Logging)
+              log.debug "JWKS cache hit: kid=#{kid}"
               return key
             end
           end
@@ -50,6 +54,7 @@ module Legion
 
         def clear_cache
           @mutex.synchronize { @cache = {} }
+          log.info 'JWKS cache cleared'
         end
 
         private
@@ -83,6 +88,7 @@ module Legion
 
           parsed
         rescue ::JSON::ParserError => e
+          handle_exception(e, level: :warn, operation: 'crypt.jwks.parse_response')
           raise Legion::Crypt::JWT::Error, "invalid JWKS response: #{e.message}"
         end
 
@@ -96,7 +102,7 @@ module Legion
             jwk = ::JWT::JWK.new(jwk_hash)
             keys[kid] = jwk.public_key
           rescue StandardError => e
-            Legion::Logging.debug("Legion::Crypt::JwksClient#parse_jwks skipping malformed key kid=#{kid}: #{e.message}") if defined?(Legion::Logging)
+            handle_exception(e, level: :debug, operation: 'crypt.jwks.parse_jwks', kid: kid)
             next
           end
 

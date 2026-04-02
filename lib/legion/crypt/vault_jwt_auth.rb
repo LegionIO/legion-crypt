@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
+
 module Legion
   module Crypt
     # Vault JWT auth backend integration.
@@ -18,6 +20,8 @@ module Legion
 
       class AuthError < StandardError; end
 
+      extend Legion::Logging::Helper
+
       # Authenticate to Vault using a JWT token.
       # Returns a Vault token string on success.
       #
@@ -28,6 +32,7 @@ module Legion
       def self.login(jwt:, role: DEFAULT_ROLE, auth_path: DEFAULT_AUTH_PATH)
         raise AuthError, 'Vault is not connected' unless vault_connected?
 
+        log.info "[crypt:vault_jwt] authenticating role=#{role} auth_path=#{auth_path}"
         response = ::Vault.logical.write(
           auth_path,
           role: role,
@@ -44,11 +49,18 @@ module Legion
           metadata:       response.auth.metadata
         }
       rescue ::Vault::HTTPClientError => e
-        Legion::Logging.warn "Vault JWT auth failed (client error): role=#{role}, #{e.message}" if defined?(Legion::Logging)
+        handle_exception(e, level: :warn, operation: 'crypt.vault_jwt_auth.login', role: role, auth_path: auth_path,
+                            category: 'client_error')
         raise AuthError, "Vault JWT auth failed: #{e.message}"
       rescue ::Vault::HTTPServerError => e
-        Legion::Logging.warn "Vault JWT auth failed (server error): role=#{role}, #{e.message}" if defined?(Legion::Logging)
+        handle_exception(e, level: :warn, operation: 'crypt.vault_jwt_auth.login', role: role, auth_path: auth_path,
+                            category: 'server_error')
         raise AuthError, "Vault server error during JWT auth: #{e.message}"
+      rescue StandardError => e
+        handle_exception(e, level: :error, operation: 'crypt.vault_jwt_auth.login', role: role, auth_path: auth_path)
+        raise if e.is_a?(AuthError)
+
+        raise AuthError, "Vault JWT auth failed: #{e.message}"
       end
 
       # Authenticate and set the Vault client token for subsequent operations.
@@ -58,7 +70,7 @@ module Legion
       def self.login!(jwt:, role: DEFAULT_ROLE, auth_path: DEFAULT_AUTH_PATH)
         result = login(jwt: jwt, role: role, auth_path: auth_path)
         ::Vault.token = result[:token]
-        Legion::Logging.info "[crypt:vault_jwt] authenticated via JWT auth, policies=#{result[:policies].join(',')}"
+        log.info "[crypt:vault_jwt] authenticated via JWT auth, policies=#{result[:policies].join(',')}"
         result
       end
 
@@ -70,6 +82,7 @@ module Legion
       # @param role [String] Vault JWT auth role name
       # @return [Hash] Same as login
       def self.worker_login(worker_id:, owner_msid:, role: DEFAULT_ROLE)
+        log.info "[crypt:vault_jwt] worker login requested role=#{role} worker_id=#{worker_id}"
         jwt = Legion::Crypt::JWT.issue(
           { worker_id: worker_id, sub: owner_msid, scope: 'vault', aud: 'legion' },
           signing_key: Legion::Crypt.cluster_secret,
@@ -85,7 +98,7 @@ module Legion
           defined?(Legion::Settings) &&
           Legion::Settings[:crypt][:vault][:connected] == true
       rescue StandardError => e
-        Legion::Logging.debug("Legion::Crypt::VaultJwtAuth#vault_connected? failed: #{e.message}") if defined?(Legion::Logging)
+        handle_exception(e, level: :debug, operation: 'crypt.vault_jwt_auth.vault_connected?')
         false
       end
 

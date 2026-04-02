@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
+
 module Legion
   module Crypt
     module KerberosAuth
@@ -9,6 +11,7 @@ module Legion
       DEFAULT_AUTH_PATH = 'auth/kerberos/login'
 
       @kerberos_principal = nil
+      extend Legion::Logging::Helper
 
       class << self
         attr_reader :kerberos_principal
@@ -17,6 +20,7 @@ module Legion
       def self.login(vault_client:, service_principal:, auth_path: DEFAULT_AUTH_PATH)
         raise GemMissingError, 'lex-kerberos gem is required for Kerberos auth' unless spnego_available?
 
+        log.info "KerberosAuth login requested auth_path=#{auth_path}"
         log_debug("login: SPN=#{service_principal}, auth_path=#{auth_path}")
         addr = vault_client.respond_to?(:address) ? vault_client.address : 'n/a'
         ns   = vault_client.respond_to?(:namespace) ? vault_client.namespace.inspect : 'n/a'
@@ -30,6 +34,7 @@ module Legion
         @kerberos_principal = result[:metadata]&.dig('username') || result[:metadata]&.dig(:username)
         log_debug("login: authenticated as #{@kerberos_principal.inspect}, policies=#{result[:policies].inspect}")
         log_debug("login: renewable=#{result[:renewable]}, ttl=#{result[:lease_duration]}s")
+        log.info "KerberosAuth login success principal=#{@kerberos_principal || 'unknown'} auth_path=#{auth_path}"
         result
       end
 
@@ -39,7 +44,8 @@ module Legion
         @spnego_available = begin
           require 'legion/extensions/kerberos/helpers/spnego'
           true
-        rescue LoadError
+        rescue LoadError => e
+          handle_exception(e, level: :debug, operation: 'crypt.kerberos_auth.spnego_available')
           # check if constant was already defined (e.g. stubbed in tests or loaded via another path)
           defined?(Legion::Extensions::Kerberos::Helpers::Spnego) ? true : false
         end
@@ -51,7 +57,7 @@ module Legion
       end
 
       def self.log_debug(message)
-        Legion::Logging.debug("KerberosAuth: #{message}") if defined?(Legion::Logging)
+        log.debug("KerberosAuth: #{message}")
       end
       private_class_method :log_debug
 
@@ -63,7 +69,11 @@ module Legion
           result = helper.obtain_spnego_token(service_principal: service_principal)
           raise AuthError, "SPNEGO token acquisition failed: #{result[:error]}" unless result[:success]
 
+          log.info 'KerberosAuth obtained SPNEGO token'
           result[:token]
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.kerberos_auth.obtain_token', auth_method: 'kerberos')
+          raise
         end
 
         def exchange_token(vault_client, spnego_token, auth_path)
@@ -90,8 +100,12 @@ module Legion
             metadata:       auth.metadata
           }
         rescue ::Vault::HTTPClientError => e
+          handle_exception(e, level: :warn, operation: 'crypt.kerberos_auth.exchange_token', auth_path: auth_path)
           log_debug("exchange_token: HTTP error: #{e.message}")
           raise AuthError, "Vault Kerberos auth failed: #{e.message}"
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.kerberos_auth.exchange_token', auth_path: auth_path)
+          raise
         end
       end
     end

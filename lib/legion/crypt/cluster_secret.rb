@@ -1,17 +1,20 @@
 # frozen_string_literal: true
 
 require 'securerandom'
+require 'legion/logging/helper'
 
 module Legion
   module Crypt
     module ClusterSecret
+      include Legion::Logging::Helper
+
       def find_cluster_secret
         %i[from_settings from_vault from_transport generate_secure_random].each do |method|
           result = send(method)
           next if result.nil?
 
           unless validate_hex(result)
-            Legion::Logging.warn("Legion::Crypt.#{method} gave a value but it isn't a valid hex")
+            log.warn("Legion::Crypt.#{method} gave a value but it isn't a valid hex")
             next
           end
 
@@ -22,6 +25,7 @@ module Legion
 
         key = generate_secure_random
         set_cluster_secret(key)
+        log.info 'Cluster secret generated locally because this node is the only member'
         key
       end
 
@@ -33,7 +37,7 @@ module Legion
 
         get('crypt')[:cluster_secret]
       rescue StandardError => e
-        Legion::Logging.warn("Legion::Crypt::ClusterSecret#from_vault failed: #{e.message}") if defined?(Legion::Logging)
+        handle_exception(e, level: :warn, operation: 'crypt.cluster_secret.from_vault')
         nil
       end
 
@@ -46,8 +50,8 @@ module Legion
         return nil unless Legion::Settings[:transport][:connected]
 
         require 'legion/transport/messages/request_cluster_secret'
-        Legion::Logging.info 'Requesting cluster secret via public key'
-        Legion::Logging.warn 'cluster_secret already set but we are requesting a new value' unless from_settings.nil?
+        log.info 'Requesting cluster secret via public key'
+        log.warn 'cluster_secret already set but we are requesting a new value' unless from_settings.nil?
         start = Time.now
         Legion::Transport::Messages::RequestClusterSecret.new.publish
         sleep_time = 0.001
@@ -57,20 +61,14 @@ module Legion
         end
 
         unless from_settings.nil?
-          Legion::Logging.info "Received cluster secret in #{((Time.new - start) * 1000.0).round}ms"
+          log.info "Received cluster secret in #{((Time.new - start) * 1000.0).round}ms"
           return from_settings
         end
 
-        Legion::Logging.error 'Cluster secret is still unknown!'
+        log.error 'Cluster secret is still unknown!'
         nil
       rescue StandardError => e
-        if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
-          Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
-        elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:error)
-          Legion::Logging.error "from_transport failed: #{e.class}=#{e.message}\n#{Array(e.backtrace).first(10).join("\n")}"
-        else
-          warn "from_transport failed: #{e.class}=#{e.message}\n#{Array(e.backtrace).first(10).join("\n")}"
-        end
+        handle_exception(e, level: :error, operation: 'crypt.cluster_secret.from_transport')
         nil
       end
 
@@ -85,7 +83,7 @@ module Legion
       def only_member?
         Legion::Transport::Queue.new('node.crypt', passive: true).consumer_count.zero?
       rescue StandardError => e
-        Legion::Logging.warn("Legion::Crypt::ClusterSecret#only_member? failed: #{e.message}") if defined?(Legion::Logging)
+        handle_exception(e, level: :warn, operation: 'crypt.cluster_secret.only_member?')
         nil
       end
 
@@ -96,15 +94,16 @@ module Legion
         push_cs_to_vault if push_to_vault && settings_push_vault
 
         Legion::Settings[:crypt][:cluster_secret] = value
+        log.info "Cluster secret loaded into settings push_to_vault=#{push_to_vault}"
       end
 
       def push_cs_to_vault
         return false unless Legion::Settings[:crypt][:vault][:connected] && Legion::Settings[:crypt][:cluster_secret]
 
-        Legion::Logging.info 'Pushing Cluster Secret to Vault'
+        log.info 'Pushing Cluster Secret to Vault'
         Legion::Crypt.write('cluster', secret: Legion::Settings[:crypt][:cluster_secret])
       rescue StandardError => e
-        Legion::Logging.warn("push_cs_to_vault failed: #{e.message}") if defined?(Legion::Logging)
+        handle_exception(e, level: :warn, operation: 'crypt.cluster_secret.push_cs_to_vault')
         false
       end
 
@@ -123,18 +122,7 @@ module Legion
       def cs
         @cs ||= Digest::SHA256.digest(find_cluster_secret)
       rescue StandardError => e
-        if defined?(Legion::Logging) && Legion::Logging.respond_to?(:log_exception)
-          Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper)
-        elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:error)
-          backtrace = Array(e.backtrace).first(10).join("\n")
-          Legion::Logging.error "Legion::Crypt::ClusterSecret#cs failed: #{e.class}: #{e.message}\n#{backtrace}"
-        elsif defined?(Legion::Logging) && Legion::Logging.respond_to?(:warn)
-          backtrace = Array(e.backtrace).first(10).join("\n")
-          Legion::Logging.warn "Legion::Crypt::ClusterSecret#cs failed: #{e.class}: #{e.message}\n#{backtrace}"
-        else
-          backtrace = Array(e.backtrace).first(10).join("\n")
-          ::Kernel.warn "Legion::Crypt::ClusterSecret#cs failed: #{e.class}: #{e.message}\n#{backtrace}"
-        end
+        handle_exception(e, level: :error, operation: 'crypt.cluster_secret.cs')
         nil
       end
 

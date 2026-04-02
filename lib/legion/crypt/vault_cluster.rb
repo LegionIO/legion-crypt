@@ -3,6 +3,7 @@
 # Ruby 4.0 freezes OpenSSL::SSL::SSLContext::DEFAULT_PARAMS by default.
 # The vault gem (0.18.x) mutates this hash in Vault.setup! — replace it
 # with a mutable dup so the require succeeds on Ruby 4.0+.
+require 'legion/logging/helper'
 require 'openssl'
 if OpenSSL::SSL::SSLContext::DEFAULT_PARAMS.frozen?
   unfrozen = OpenSSL::SSL::SSLContext::DEFAULT_PARAMS.dup
@@ -15,6 +16,8 @@ require 'vault'
 module Legion
   module Crypt
     module VaultCluster
+      include Legion::Logging::Helper
+
       def vault_client(name = nil)
         name = resolve_cluster_name(name)
         @vault_clients ||= {}
@@ -40,6 +43,7 @@ module Legion
       end
 
       def connect_all_clusters
+        log.info "Vault cluster connect requested configured_clusters=#{clusters.size}"
         log_vault_debug("connect_all_clusters: #{clusters.size} cluster(s) configured")
         results = {}
         clusters.each do |name, config|
@@ -60,10 +64,11 @@ module Legion
         rescue StandardError => e
           config[:connected] = false
           results[name] = false
-          log_vault_error(name, e)
+          log_vault_error(name, e, operation: 'crypt.vault_cluster.connect_all_clusters')
         end
 
         connected = results.select { |_, v| v }
+        log.info "Vault cluster connect complete connected=#{connected.size} attempted=#{results.size}"
         log_vault_debug("connect_all_clusters: #{connected.size}/#{results.size} connected")
         mark_vault_connected if connected.any?
         results
@@ -95,6 +100,7 @@ module Legion
         return nil unless config.is_a?(Hash)
 
         addr = "#{config[:protocol]}://#{config[:address]}:#{config[:port]}"
+        log.info "Building Vault client address=#{addr} namespace=#{config[:namespace].inspect}"
         log_vault_debug("build_vault_client: address=#{addr}")
         client = ::Vault::Client.new(
           address: addr,
@@ -112,12 +118,9 @@ module Legion
         client
       end
 
-      def log_vault_error(name, error)
-        if defined?(Legion::Logging)
-          Legion::Logging.error("Vault cluster #{name}: #{error.message}")
-        else
-          warn("Vault cluster #{name}: #{error.message}")
-        end
+      def log_vault_error(name, error, operation: 'crypt.vault_cluster.error')
+        handle_exception(error, level: :error, operation: operation, cluster_name: name)
+        log.error("Vault cluster #{name}: #{error.message}")
       end
 
       def connect_kerberos_cluster(name, config)
@@ -136,6 +139,7 @@ module Legion
         require 'legion/crypt/kerberos_auth'
         client = vault_client(name)
         log_vault_debug("connect_kerberos_cluster[#{name}]: client.namespace=#{client.respond_to?(:namespace) ? client.namespace.inspect : 'n/a'}")
+        log.info "Connecting Vault cluster #{name} via Kerberos auth_path=#{auth_path}"
 
         result = Legion::Crypt::KerberosAuth.login(
           vault_client:      client,
@@ -152,29 +156,27 @@ module Legion
         log_cluster_connected(name, config)
         true
       rescue Legion::Crypt::KerberosAuth::GemMissingError => e
+        handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.connect_kerberos_cluster', cluster_name: name)
         log_vault_warn(name, e.message)
         config[:connected] = false
         false
       rescue Legion::Crypt::KerberosAuth::AuthError => e
+        handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.connect_kerberos_cluster', cluster_name: name)
         log_vault_warn(name, "Kerberos auth failed: #{e.message}")
         config[:connected] = false
         false
       end
 
       def log_cluster_connected(name, config)
-        Legion::Logging.info "Vault cluster connected: #{name} at #{config[:address]}" if defined?(Legion::Logging)
+        log.info "Vault cluster connected: #{name} at #{config[:address]}"
       end
 
       def log_vault_warn(name, message)
-        if defined?(Legion::Logging)
-          Legion::Logging.warn("Vault cluster #{name}: #{message}")
-        else
-          warn("Vault cluster #{name}: #{message}")
-        end
+        log.warn("Vault cluster #{name}: #{message}")
       end
 
       def log_vault_debug(message)
-        Legion::Logging.debug(message) if defined?(Legion::Logging)
+        log.debug(message)
       end
     end
   end

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
 require 'socket'
 require 'openssl'
 
@@ -17,6 +18,8 @@ module Legion
       # no socket present) the client returns a self-signed fallback SVID so
       # that callers never have to special-case the nil case.
       class WorkloadApiClient
+        include Legion::Logging::Helper
+
         # gRPC content-type and method path for the Workload API FetchX509SVID RPC.
         GRPC_CONTENT_TYPE = 'application/grpc'
         FETCH_X509_METHOD = '/spiffe.workload.SpiffeWorkloadAPI/FetchX509SVID'
@@ -38,20 +41,36 @@ module Legion
         # Returns a populated X509Svid struct.
         # Falls back to a self-signed certificate when the Workload API is unavailable.
         def fetch_x509_svid
+          log.info("[SPIFFE] Fetching X.509 SVID from Workload API socket=#{@socket_path}")
           raw = call_workload_api(FETCH_X509_METHOD, '')
           parse_x509_svid_response(raw)
         rescue WorkloadApiError, IOError, Errno::ENOENT, Errno::ECONNREFUSED, Errno::EPIPE => e
-          log_warn("[SPIFFE] Workload API unavailable (#{e.message}); using self-signed fallback")
+          handle_exception(e, level: :warn, operation: 'crypt.spiffe.workload_api_client.fetch_x509_svid',
+                           socket_path: @socket_path, fallback: true)
+          log.warn("[SPIFFE] Workload API unavailable (#{e.message}); using self-signed fallback")
           self_signed_fallback
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.spiffe.workload_api_client.fetch_x509_svid',
+                           socket_path: @socket_path)
+          log.error("[SPIFFE] X.509 SVID fetch failed: #{e.message}")
+          raise
         end
 
         # Fetch a JWT SVID from the SPIRE Workload API for the given audience.
         def fetch_jwt_svid(audience:)
+          log.info("[SPIFFE] Fetching JWT SVID from Workload API audience=#{audience}")
           payload  = encode_jwt_request(audience)
           raw      = call_workload_api(FETCH_JWT_METHOD, payload)
           parse_jwt_svid_response(raw, audience)
         rescue WorkloadApiError, IOError, Errno::ENOENT, Errno::ECONNREFUSED, Errno::EPIPE => e
-          log_warn("[SPIFFE] JWT SVID fetch failed (#{e.message})")
+          handle_exception(e, level: :warn, operation: 'crypt.spiffe.workload_api_client.fetch_jwt_svid',
+                           socket_path: @socket_path, audience: audience)
+          log.warn("[SPIFFE] JWT SVID fetch failed (#{e.message})")
+          raise SvidError, "Failed to fetch JWT SVID for audience '#{audience}': #{e.message}"
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.spiffe.workload_api_client.fetch_jwt_svid',
+                           socket_path: @socket_path, audience: audience)
+          log.error("[SPIFFE] JWT SVID fetch failed: #{e.message}")
           raise SvidError, "Failed to fetch JWT SVID for audience '#{audience}': #{e.message}"
         end
 
@@ -62,7 +81,9 @@ module Legion
           sock = UNIXSocket.new(@socket_path)
           sock.close
           true
-        rescue StandardError
+        rescue StandardError => e
+          handle_exception(e, level: :debug, operation: 'crypt.spiffe.workload_api_client.available',
+                           socket_path: @socket_path)
           false
         end
 
@@ -71,6 +92,7 @@ module Legion
         # Minimal HTTP/2 + gRPC unary call over a Unix domain socket.
         # This is intentionally simple: one request frame, one response frame.
         def call_workload_api(method_path, request_body)
+          log.debug("[SPIFFE] Calling Workload API method=#{method_path}")
           sock = connect_socket
           begin
             send_grpc_request(sock, method_path, request_body)
@@ -89,9 +111,13 @@ module Legion
           sock.write(HTTP2_SETTINGS_FRAME)
           sock.flush
           sock
-        rescue Errno::ENOENT
+        rescue Errno::ENOENT => e
+          handle_exception(e, level: :debug, operation: 'crypt.spiffe.workload_api_client.connect_socket',
+                           socket_path: @socket_path)
           raise WorkloadApiError, "SPIRE agent socket not found at '#{@socket_path}'"
         rescue Errno::ECONNREFUSED, Errno::EACCES => e
+          handle_exception(e, level: :debug, operation: 'crypt.spiffe.workload_api_client.connect_socket',
+                           socket_path: @socket_path)
           raise WorkloadApiError, "Cannot connect to SPIRE agent socket: #{e.message}"
         end
 
@@ -253,6 +279,7 @@ module Legion
             expiry:     cert.not_after
           )
         rescue OpenSSL::X509::CertificateError, OpenSSL::PKey::PKeyError => e
+          handle_exception(e, level: :error, operation: 'crypt.spiffe.workload_api_client.parse_x509_svid_response')
           raise SvidError, "Failed to parse X.509 SVID: #{e.message}"
         end
 
@@ -279,12 +306,17 @@ module Legion
             audience:  audience,
             expiry:    expiry
           )
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.spiffe.workload_api_client.parse_jwt_svid_response',
+                           audience: audience)
+          raise
         end
 
         # Build a self-signed X.509 SVID for use when SPIRE is not available.
         # The SPIFFE ID is placed in the SAN URI extension per the SPIFFE spec.
         # The Subject CN is a plain workload name (no URI) so OpenSSL parses cleanly.
         def self_signed_fallback
+          log.info("[SPIFFE] Generating self-signed fallback SVID trust_domain=#{@trust_domain}")
           key  = OpenSSL::PKey::EC.generate('prime256v1')
           cert = OpenSSL::X509::Certificate.new
           cert.version    = 2
@@ -310,6 +342,11 @@ module Legion
             bundle_pem: nil,
             expiry:     cert.not_after
           )
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.spiffe.workload_api_client.self_signed_fallback',
+                           trust_domain: @trust_domain)
+          log.error("[SPIFFE] Self-signed fallback generation failed: #{e.message}")
+          raise
         end
 
         # --- Minimal protobuf decoder ---
@@ -373,17 +410,15 @@ module Legion
           payload_json = Base64.urlsafe_decode64("#{parts[1]}==")
           claims = begin
             Legion::JSON.parse(payload_json)
-          rescue StandardError
+          rescue StandardError => e
+            handle_exception(e, level: :debug, operation: 'crypt.spiffe.workload_api_client.extract_jwt_expiry')
             {}
           end
           exp = claims['exp'] || claims[:exp]
           exp ? Time.at(exp.to_i) : Time.now + 3600
-        rescue StandardError
+        rescue StandardError => e
+          handle_exception(e, level: :debug, operation: 'crypt.spiffe.workload_api_client.extract_jwt_expiry')
           Time.now + 3600
-        end
-
-        def log_warn(message)
-          Legion::Logging.warn(message) if defined?(Legion::Logging)
         end
       end
     end

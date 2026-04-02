@@ -1,10 +1,13 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
 require 'legion/crypt/kerberos_auth'
 
 module Legion
   module Crypt
     class TokenRenewer
+      include Legion::Logging::Helper
+
       INITIAL_BACKOFF = 30
       MAX_BACKOFF     = 600
       MIN_SLEEP       = 30
@@ -25,13 +28,14 @@ module Legion
         @stop = false
         @thread = Thread.new { renewal_loop }
         @thread.name = "vault-renewer-#{@cluster_name}"
-        log_debug('token renewal thread started')
+        log_info('token renewal thread started')
       end
 
       def stop
         @stop = true
         @thread&.wakeup
-      rescue ThreadError
+      rescue ThreadError => e
+        handle_exception(e, level: :debug, operation: 'crypt.token_renewer.stop', cluster_name: @cluster_name)
         nil
       ensure
         stop_thread_and_revoke
@@ -44,9 +48,10 @@ module Legion
       def renew_token
         result = @vault_client.auth_token.renew_self
         @config[:lease_duration] = result.auth.lease_duration
-        log_debug("token renewed, ttl=#{result.auth.lease_duration}s")
+        log_info("token renewed, ttl=#{result.auth.lease_duration}s")
         true
       rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.token_renewer.renew_token', cluster_name: @cluster_name)
         log_warn("token renewal failed: #{e.message}")
         false
       end
@@ -67,6 +72,7 @@ module Legion
         log_info('re-authenticated via Kerberos')
         true
       rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.token_renewer.reauth_kerberos', cluster_name: @cluster_name)
         log_warn("Kerberos re-auth failed: #{e.message}")
         false
       end
@@ -99,6 +105,7 @@ module Legion
           end
         end
       rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.token_renewer.renewal_loop', cluster_name: @cluster_name)
         log_warn("renewal loop error: #{e.message}")
         retry unless @stop
       end
@@ -128,6 +135,7 @@ module Legion
       def stop_thread_and_revoke
         return unless @thread
 
+        log_info('stopping token renewal thread')
         @thread.join(5)
         thread_still_running = @thread.alive?
         @thread = nil
@@ -147,19 +155,20 @@ module Legion
         @vault_client.auth_token.revoke_self
         log_info('Vault token revoked')
       rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.token_renewer.revoke_token', cluster_name: @cluster_name)
         log_warn("Vault token revoke failed: #{e.message}")
       end
 
       def log_debug(message)
-        Legion::Logging.debug("TokenRenewer[#{@cluster_name}]: #{message}") if defined?(Legion::Logging)
+        log.debug("TokenRenewer[#{@cluster_name}]: #{message}")
       end
 
       def log_info(message)
-        Legion::Logging.info("TokenRenewer[#{@cluster_name}]: #{message}") if defined?(Legion::Logging)
+        log.info("TokenRenewer[#{@cluster_name}]: #{message}")
       end
 
       def log_warn(message)
-        Legion::Logging.warn("TokenRenewer[#{@cluster_name}]: #{message}") if defined?(Legion::Logging)
+        log.warn("TokenRenewer[#{@cluster_name}]: #{message}")
       end
     end
   end

@@ -1,11 +1,13 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
 require 'singleton'
 
 module Legion
   module Crypt
     class LeaseManager
       include Singleton
+      include Legion::Logging::Helper
 
       RENEWAL_CHECK_INTERVAL = 5
 
@@ -21,6 +23,7 @@ module Legion
         @vault_client = vault_client
         return if definitions.nil? || definitions.empty?
 
+        log.info "LeaseManager start requested definitions=#{definitions.size}"
         definitions.each do |name, opts|
           path = opts['path'] || opts[:path]
           next unless path
@@ -35,7 +38,7 @@ module Legion
           begin
             response = logical.read(path)
             unless response
-              log_warn("LeaseManager: no data at '#{name}' (#{path}) — path may not exist or role not configured")
+              log.warn("LeaseManager: no data at '#{name}' (#{path}) — path may not exist or role not configured")
               next
             end
 
@@ -47,9 +50,10 @@ module Legion
               expires_at:     Time.now + (response.lease_duration || 0),
               fetched_at:     Time.now
             }
-            log_debug("LeaseManager: fetched lease for '#{name}' from #{path}")
+            log.info("LeaseManager: fetched lease for '#{name}' from #{path}")
           rescue StandardError => e
-            log_warn("LeaseManager: failed to fetch lease '#{name}' from #{path}: #{e.message}")
+            handle_exception(e, level: :warn, operation: 'crypt.lease_manager.start', lease_name: name, path: path)
+            log.warn("LeaseManager: failed to fetch lease '#{name}' from #{path}: #{e.message}")
           end
         end
       end
@@ -88,7 +92,7 @@ module Legion
           write_setting(path, value)
         end
 
-        log_debug("Lease '#{name}' rotated — updated #{refs.size} settings reference(s)")
+        log.info("Lease '#{name}' rotated — updated #{refs.size} settings reference(s)")
       end
 
       def start_renewal_thread
@@ -96,6 +100,7 @@ module Legion
 
         @running = true
         @renewal_thread = Thread.new { renewal_loop }
+        log.info 'LeaseManager renewal thread started'
       end
 
       def renewal_thread_alive?
@@ -103,6 +108,7 @@ module Legion
       end
 
       def shutdown
+        log.info 'LeaseManager shutdown requested'
         stop_renewal_thread
 
         @active_leases.each do |name, meta|
@@ -113,7 +119,8 @@ module Legion
             sys.revoke(lease_id)
             log_debug("LeaseManager: revoked lease '#{name}' (#{lease_id})")
           rescue StandardError => e
-            log_warn("LeaseManager: failed to revoke lease '#{name}' (#{lease_id}): #{e.message}")
+            handle_exception(e, level: :warn, operation: 'crypt.lease_manager.shutdown', lease_name: name)
+            log.warn("LeaseManager: failed to revoke lease '#{name}' (#{lease_id}): #{e.message}")
           end
         end
 
@@ -121,6 +128,7 @@ module Legion
         @active_leases.clear
         @refs.clear
         @vault_client = nil
+        log.info 'LeaseManager shutdown complete'
       end
 
       def reset!
@@ -148,6 +156,7 @@ module Legion
           @renewal_thread.join(2)
         end
         @renewal_thread = nil
+        log.debug 'LeaseManager renewal thread stopped'
       end
 
       def renewal_loop
@@ -156,7 +165,8 @@ module Legion
           renew_approaching_leases if @running
         end
       rescue StandardError => e
-        log_warn("LeaseManager: renewal loop error: #{e.message}")
+        handle_exception(e, level: :error, operation: 'crypt.lease_manager.renewal_loop')
+        log.error("LeaseManager: renewal loop error: #{e.message}")
         retry if @running
       end
 
@@ -172,13 +182,15 @@ module Legion
       def renew_lease(name, lease)
         response = sys.renew(lease[:lease_id])
         lease[:expires_at] = Time.now + (response.lease_duration || 0)
+        log.info("LeaseManager: renewed lease '#{name}'")
 
         if response.data && response.data != @lease_cache[name]
           @lease_cache[name] = response.data
           push_to_settings(name)
         end
       rescue StandardError => e
-        log_warn("LeaseManager: failed to renew lease '#{name}': #{e.message}")
+        handle_exception(e, level: :warn, operation: 'crypt.lease_manager.renew_lease', lease_name: name)
+        log.warn("LeaseManager: failed to renew lease '#{name}': #{e.message}")
       end
 
       def lease_valid?(name)
@@ -202,7 +214,8 @@ module Legion
           sys.revoke(lease_id)
           log_debug("LeaseManager: revoked expired lease '#{name}' (#{lease_id}) before re-fetch")
         rescue StandardError => e
-          log_warn("LeaseManager: failed to revoke expired lease '#{name}' (#{lease_id}): #{e.message}")
+          handle_exception(e, level: :warn, operation: 'crypt.lease_manager.revoke_expired_lease', lease_name: name)
+          log.warn("LeaseManager: failed to revoke expired lease '#{name}' (#{lease_id}): #{e.message}")
         ensure
           @active_leases.delete(name)
           @lease_cache.delete(name)
@@ -229,23 +242,12 @@ module Legion
         end
         target[path.last] = value if target.is_a?(Hash)
       rescue StandardError => e
-        log_warn("LeaseManager: failed to write setting at #{path.join('.')}: #{e.message}")
+        handle_exception(e, level: :warn, operation: 'crypt.lease_manager.write_setting', path: path.join('.'))
+        log.warn("LeaseManager: failed to write setting at #{path.join('.')}: #{e.message}")
       end
 
       def log_debug(message)
-        if defined?(Legion::Logging)
-          Legion::Logging.debug(message)
-        else
-          $stdout.puts("[DEBUG] #{message}")
-        end
-      end
-
-      def log_warn(message)
-        if defined?(Legion::Logging)
-          Legion::Logging.warn(message)
-        else
-          warn("[WARN] #{message}")
-        end
+        log.debug(message)
       end
     end
   end

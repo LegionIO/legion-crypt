@@ -2,6 +2,7 @@
 
 require 'openssl'
 require 'base64'
+require 'legion/logging/helper'
 require 'legion/crypt/version'
 require 'legion/crypt/settings'
 require 'legion/crypt/cipher'
@@ -27,6 +28,7 @@ module Legion
     class << self
       attr_reader :sessions
 
+      include Legion::Logging::Helper
       include Legion::Crypt::Cipher
 
       unless Gem::Specification.find_by_name('vault').nil?
@@ -57,18 +59,22 @@ module Legion
       end
 
       def start
-        Legion::Logging.debug 'Legion::Crypt is running start'
+        log.info 'Legion::Crypt startup initiated'
+        log.debug 'Legion::Crypt start requested'
         ::File.write('./legionio.key', private_key) if settings[:save_private_key]
         @token_renewers ||= []
 
         if vault_settings[:clusters]&.any?
+          log.info "Legion::Crypt connecting #{vault_settings[:clusters].size} Vault cluster(s)"
           connect_all_clusters
           start_token_renewers
         else
+          log.info 'Legion::Crypt connecting primary Vault client' unless settings[:vault][:token].nil?
           connect_vault unless settings[:vault][:token].nil?
         end
         start_lease_manager
         start_svid_rotation
+        log.info 'Legion::Crypt startup completed'
       end
 
       def settings
@@ -111,11 +117,13 @@ module Legion
       end
 
       def shutdown
+        log.info 'Legion::Crypt shutdown initiated'
         Legion::Crypt::LeaseManager.instance.shutdown
         stop_token_renewers
         shutdown_renewer
         close_sessions
         stop_svid_rotation
+        log.info 'Legion::Crypt shutdown completed'
       end
 
       private
@@ -146,15 +154,16 @@ module Legion
         fetched = lease_manager.fetched_count
         defined = leases.size
         if fetched == defined
-          Legion::Logging.info "LeaseManager: #{fetched} lease(s) initialized"
+          log.info "LeaseManager: #{fetched} lease(s) initialized"
         else
-          Legion::Logging.warn "LeaseManager: #{fetched}/#{defined} lease(s) initialized (#{defined - fetched} failed)"
+          log.warn "LeaseManager: #{fetched}/#{defined} lease(s) initialized (#{defined - fetched} failed)"
         end
       rescue StandardError => e
-        Legion::Logging.warn "LeaseManager startup failed: #{e.message}"
+        handle_exception(e, level: :warn, operation: 'crypt.start_lease_manager')
       end
 
       def start_token_renewers
+        started = 0
         clusters.each do |name, config|
           next unless config[:auth_method]&.to_s == 'kerberos' && config[:connected]
 
@@ -165,28 +174,33 @@ module Legion
           )
           renewer.start
           @token_renewers << renewer
+          started += 1
         end
+        log.info "Legion::Crypt started #{started} token renewer(s)" if started.positive?
       end
 
       def stop_token_renewers
         return unless @token_renewers
 
         @token_renewers.each(&:stop)
+        log.info "Legion::Crypt stopped #{@token_renewers.size} token renewer(s)" if @token_renewers.any?
         @token_renewers.clear
       end
 
       def start_svid_rotation
         return unless Spiffe.enabled?
 
+        log.info 'Legion::Crypt starting SPIFFE SVID rotation'
         @svid_rotation = Spiffe::SvidRotation.new
         @svid_rotation.start
       rescue StandardError => e
-        Legion::Logging.warn "SPIFFE SvidRotation startup failed: #{e.message}" if defined?(Legion::Logging)
+        handle_exception(e, level: :warn, operation: 'crypt.start_svid_rotation')
       end
 
       def stop_svid_rotation
         return unless @svid_rotation
 
+        log.info 'Legion::Crypt stopping SPIFFE SVID rotation'
         @svid_rotation.stop
         @svid_rotation = nil
       end

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
 require 'openssl'
 require 'base64'
 
@@ -12,6 +13,8 @@ module Legion
       # returned by WorkloadApiClient.  No external gem is required —
       # all operations use the Ruby stdlib OpenSSL bindings.
       module IdentityHelpers
+        include Legion::Logging::Helper
+
         # Sign arbitrary data with the private key from an X.509 SVID.
         # Returns the signature as a Base64-encoded string.
         #
@@ -26,7 +29,11 @@ module Legion
           key       = OpenSSL::PKey.read(svid.key_pem)
           digest    = OpenSSL::Digest.new('SHA256')
           signature = key.sign(digest, data.b)
+          log.debug("SPIFFE signed payload with SVID id=#{svid.spiffe_id}")
           Base64.strict_encode64(signature)
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.spiffe.sign_with_svid', spiffe_id: svid&.spiffe_id&.to_s)
+          raise
         end
 
         # Verify a Base64-encoded signature produced by sign_with_svid.
@@ -43,9 +50,12 @@ module Legion
           cert      = OpenSSL::X509::Certificate.new(svid.cert_pem)
           digest    = OpenSSL::Digest.new('SHA256')
           signature = Base64.strict_decode64(signature_b64)
-          cert.public_key.verify(digest, signature, data.b)
+          result = cert.public_key.verify(digest, signature, data.b)
+          log.debug("SPIFFE signature verification completed id=#{svid.spiffe_id} valid=#{result}")
+          result
         rescue OpenSSL::PKey::PKeyError, OpenSSL::X509::CertificateError, ArgumentError => e
-          log_spiffe_warn("SVID signature verification error: #{e.message}")
+          handle_exception(e, level: :warn, operation: 'crypt.spiffe.verify_svid_signature', spiffe_id: svid&.spiffe_id&.to_s)
+          log.warn("[SPIFFE] SVID signature verification error: #{e.message}")
           false
         end
 
@@ -65,12 +75,14 @@ module Legion
 
             uri = entry.sub('URI:', '')
             return Legion::Crypt::Spiffe.parse_id(uri)
-          rescue InvalidSpiffeIdError
+          rescue InvalidSpiffeIdError => e
+            handle_exception(e, level: :debug, operation: 'crypt.spiffe.extract_spiffe_id_from_cert', san_entry: entry)
             next
           end
 
           nil
-        rescue OpenSSL::X509::CertificateError
+        rescue OpenSSL::X509::CertificateError => e
+          handle_exception(e, level: :debug, operation: 'crypt.spiffe.extract_spiffe_id_from_cert')
           nil
         end
 
@@ -90,7 +102,8 @@ module Legion
 
           leaf = OpenSSL::X509::Certificate.new(cert_pem)
           store.verify(leaf)
-        rescue OpenSSL::X509::CertificateError, OpenSSL::X509::StoreError
+        rescue OpenSSL::X509::CertificateError, OpenSSL::X509::StoreError => e
+          handle_exception(e, level: :warn, operation: 'crypt.spiffe.trusted_cert?', spiffe_id: svid&.spiffe_id&.to_s)
           false
         end
 
@@ -117,12 +130,6 @@ module Legion
           else
             base
           end
-        end
-
-        private
-
-        def log_spiffe_warn(message)
-          Legion::Logging.warn("[SPIFFE] #{message}") if defined?(Legion::Logging)
         end
       end
     end

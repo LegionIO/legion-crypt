@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
 require 'uri'
 require 'openssl'
 
@@ -56,6 +57,8 @@ module Legion
       end
 
       class << self
+        include Legion::Logging::Helper
+
         # Parse a SPIFFE ID string into a SpiffeId struct.
         # Raises InvalidSpiffeIdError on malformed input.
         def parse_id(spiffe_id_string)
@@ -69,13 +72,15 @@ module Legion
             path:         uri.path.empty? ? '/' : uri.path
           )
         rescue URI::InvalidURIError => e
+          handle_exception(e, level: :warn, operation: 'crypt.spiffe.parse_id', spiffe_id: spiffe_id_string)
           raise InvalidSpiffeIdError, "Invalid SPIFFE ID '#{spiffe_id_string}': #{e.message}"
         end
 
         def valid_id?(spiffe_id_string)
           parse_id(spiffe_id_string)
           true
-        rescue InvalidSpiffeIdError
+        rescue InvalidSpiffeIdError => e
+          handle_exception(e, level: :debug, operation: 'crypt.spiffe.valid_id', spiffe_id: spiffe_id_string)
           false
         end
 
@@ -130,7 +135,8 @@ module Legion
           return nil unless defined?(Legion::Settings)
 
           Legion::Settings[:security]
-        rescue StandardError
+        rescue StandardError => e
+          handle_exception(e, level: :debug, operation: 'crypt.spiffe.safe_security_settings')
           nil
         end
       end

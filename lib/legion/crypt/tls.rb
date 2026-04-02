@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
+
 module Legion
   module Crypt
     module TLS
@@ -8,6 +10,8 @@ module Legion
         6380   => 'redis',
         11_207 => 'memcached'
       }.freeze
+
+      extend Legion::Logging::Helper
 
       class << self
         def resolve(tls_config, port: nil)
@@ -34,6 +38,8 @@ module Legion
             verify = :peer
           end
 
+          log.info "TLS resolved enabled=#{enabled} verify=#{verify} auto_detected=#{auto_detected}"
+
           {
             enabled:       enabled,
             verify:        verify,
@@ -42,6 +48,9 @@ module Legion
             key:           key,
             auto_detected: auto_detected
           }
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.tls.resolve', port: port)
+          raise
         end
 
         def migrate_legacy(config)
@@ -79,14 +88,13 @@ module Legion
           else
             value
           end
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.tls.resolve_uri')
+          raise
         end
 
         def log_warn(msg)
-          if defined?(Legion::Logging)
-            Legion::Logging.warn(msg)
-          else
-            warn msg
-          end
+          log.warn(msg)
         end
       end
     end
