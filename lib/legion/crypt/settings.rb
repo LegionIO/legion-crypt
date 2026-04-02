@@ -1,8 +1,12 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
+
 module Legion
   module Crypt
     module Settings
+      extend Legion::Logging::Helper
+
       def self.tls
         {
           enabled: false,
@@ -15,11 +19,12 @@ module Legion
 
       def self.spiffe
         {
-          enabled:        false,
-          socket_path:    '/tmp/spire-agent/public/api.sock',
-          trust_domain:   'legion.internal',
-          workload_id:    nil,
-          renewal_window: 0.5
+          enabled:             false,
+          socket_path:         '/tmp/spire-agent/public/api.sock',
+          trust_domain:        'legion.internal',
+          workload_id:         nil,
+          renewal_window:      0.5,
+          allow_x509_fallback: false
         }
       end
 
@@ -75,12 +80,13 @@ module Legion
 end
 
 begin
-  Legion::Settings.merge_settings('crypt', Legion::Crypt::Settings.default) if Legion.const_defined?('Settings')
+  if Legion.const_defined?('Settings')
+    Legion::Settings.merge_settings('crypt', Legion::Crypt::Settings.default)
+    Legion::Crypt::Settings.log.info('Legion::Crypt settings defaults merged')
+  end
 rescue StandardError => e
-  if Legion.const_defined?('Logging') && Legion::Logging.respond_to?(:log_exception)
-    Legion::Logging.log_exception(e, lex: 'crypt', component_type: :helper, level: :fatal)
-  elsif Legion.const_defined?('Logging') && Legion::Logging.respond_to?(:fatal)
-    Legion::Logging.fatal("crypt settings merge error: #{e.class}: #{e.message}\n#{Array(e.backtrace).join("\n")}")
+  if Legion::Crypt::Settings.respond_to?(:handle_exception)
+    Legion::Crypt::Settings.handle_exception(e, level: :fatal, operation: 'crypt.settings.merge_defaults')
   else
     puts e.message
     puts e.backtrace

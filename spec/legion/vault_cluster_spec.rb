@@ -296,7 +296,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
     end
 
     context 'when a token-based cluster connects successfully' do
-      it 'sets Legion::Settings[:crypt][:vault][:connected] to true' do
+      it 'sets Legion::Settings[:crypt][:vault][:connected] in multi-cluster mode' do
         vault_hash = { connected: false }
         crypt_hash = { vault: vault_hash }
         stub_const('Legion::Settings', Module.new do
@@ -310,8 +310,8 @@ RSpec.describe Legion::Crypt::VaultCluster do
     end
   end
 
-  describe '#mark_vault_connected (via connect_all_clusters)' do
-    it 'sets the top-level vault connected flag when Legion::Settings is defined' do
+  describe '#sync_vault_connected (via connect_all_clusters)' do
+    it 'updates the top-level vault connected flag in multi-cluster mode' do
       vault_hash = { connected: false }
       crypt_hash = { vault: vault_hash }
 

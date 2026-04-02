@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
+
 module Legion
   module Crypt
     module TLS
@@ -8,6 +10,8 @@ module Legion
         6380   => 'redis',
         11_207 => 'memcached'
       }.freeze
+
+      extend Legion::Logging::Helper
 
       class << self
         def resolve(tls_config, port: nil)
@@ -19,7 +23,7 @@ module Legion
           if enabled.nil? && port && TLS_PORTS.key?(port.to_i)
             enabled = true
             auto_detected = true
-            log_warn("TLS auto-enabled for port #{port}")
+            log.warn("TLS auto-enabled for port #{port}")
           end
 
           enabled = false if enabled.nil?
@@ -30,9 +34,11 @@ module Legion
           key    = resolve_uri(config[:key])
 
           if verify == :mutual && (cert.nil? || key.nil?)
-            log_warn('TLS mutual requested but cert or key missing, downgrading to peer')
+            log.warn('TLS mutual requested but cert or key missing, downgrading to peer')
             verify = :peer
           end
+
+          log.info "TLS resolved enabled=#{enabled} verify=#{verify} auto_detected=#{auto_detected}"
 
           {
             enabled:       enabled,
@@ -42,6 +48,9 @@ module Legion
             key:           key,
             auto_detected: auto_detected
           }
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.tls.resolve', port: port)
+          raise
         end
 
         def migrate_legacy(config)
@@ -79,14 +88,9 @@ module Legion
           else
             value
           end
-        end
-
-        def log_warn(msg)
-          if defined?(Legion::Logging)
-            Legion::Logging.warn(msg)
-          else
-            warn msg
-          end
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.tls.resolve_uri')
+          raise
         end
       end
     end

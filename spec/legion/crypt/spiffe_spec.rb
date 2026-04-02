@@ -147,6 +147,21 @@ RSpec.describe Legion::Crypt::Spiffe do
     end
   end
 
+  describe '.allow_x509_fallback?' do
+    it 'returns false by default when settings are absent' do
+      hide_const('Legion::Settings')
+      expect(described_class.allow_x509_fallback?).to be false
+    end
+
+    it 'reads the fallback flag from settings when present' do
+      stub_const('Legion::Settings', Module.new)
+      allow(Legion::Settings).to receive(:[]).with(:security).and_return(
+        { spiffe: { allow_x509_fallback: true } }
+      )
+      expect(described_class.allow_x509_fallback?).to be true
+    end
+  end
+
   describe 'SpiffeId' do
     let(:id) { described_class.parse_id('spiffe://example.org/ns/prod/sa/worker') }
 

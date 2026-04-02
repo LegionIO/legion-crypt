@@ -15,7 +15,7 @@ RSpec.describe Legion::Crypt::TokenRenewer do
   let(:vault_client) { instance_double(Vault::Client) }
   let(:auth_token) { double('AuthToken') }
   let(:renew_result) do
-    double('RenewResult', auth: double('Auth', lease_duration: 200, client_token: 'hvs.renewed'))
+    double('RenewResult', auth: double('Auth', lease_duration: 200, client_token: 'hvs.renewed', renewable?: false))
   end
 
   let(:renewer) { described_class.new(cluster_name: cluster_name, config: config, vault_client: vault_client) }
@@ -40,6 +40,7 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       result = renewer.renew_token
       expect(result).to be true
       expect(config[:lease_duration]).to eq(200)
+      expect(config[:renewable]).to be(false)
     end
 
     it 'returns false when renewal fails' do
@@ -75,9 +76,9 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       expect(renewer.sleep_duration).to eq(75)
     end
 
-    it 'returns at least MIN_SLEEP seconds' do
+    it 'uses the ratio for short-lived tokens so renewal happens before expiry' do
       config[:lease_duration] = 10
-      expect(renewer.sleep_duration).to eq(30)
+      expect(renewer.sleep_duration).to eq(7)
     end
   end
 
@@ -90,6 +91,19 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       expect(renewer.running?).to be true
       renewer.stop
       expect(renewer.running?).to be false
+    end
+
+    it 'does not start a second renewal thread when already running' do
+      allow(auth_token).to receive(:renew_self).and_return(renew_result)
+      allow(vault_client).to receive(:token).and_return('hvs.initial-token')
+      allow(auth_token).to receive(:revoke_self)
+
+      renewer.start
+      first_thread = renewer.instance_variable_get(:@thread)
+      renewer.start
+
+      expect(renewer.instance_variable_get(:@thread)).to eq(first_thread)
+      renewer.stop
     end
   end
 
@@ -167,6 +181,18 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       renewer.next_backoff
       renewer.reset_backoff
       expect(renewer.next_backoff).to eq(30)
+    end
+  end
+
+  describe '#stop_thread_and_revoke' do
+    it 'keeps the thread reference when the join times out' do
+      stuck_thread = instance_double(Thread, alive?: true)
+      allow(stuck_thread).to receive(:join)
+      renewer.instance_variable_set(:@thread, stuck_thread)
+
+      renewer.send(:stop_thread_and_revoke)
+
+      expect(renewer.instance_variable_get(:@thread)).to eq(stuck_thread)
     end
   end
 end

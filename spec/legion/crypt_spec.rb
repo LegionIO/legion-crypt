@@ -22,11 +22,11 @@ RSpec.describe Legion::Crypt do
   describe '.verify_external_token' do
     it 'delegates to JWT.verify_with_jwks' do
       expect(Legion::Crypt::JWT).to receive(:verify_with_jwks)
-        .with('token', jwks_url: 'https://example.com/keys', issuers: ['iss'])
+        .with('token', jwks_url: 'https://example.com/keys', issuers: ['iss'], audience: 'aud')
         .and_return({ sub: 'test' })
 
       result = Legion::Crypt.verify_external_token(
-        'token', jwks_url: 'https://example.com/keys', issuers: ['iss']
+        'token', jwks_url: 'https://example.com/keys', issuers: ['iss'], audience: 'aud'
       )
       expect(result[:sub]).to eq('test')
     end
@@ -63,6 +63,28 @@ RSpec.describe Legion::Crypt do
 
     it ':clusters returns a hash' do
       expect(Legion::Crypt.clusters).to be_a(Hash)
+    end
+  end
+
+  describe '.vault_connected?' do
+    it 'returns true when the top-level vault flag is set' do
+      allow(Legion::Crypt).to receive(:settings).and_return({ vault: { connected: true } })
+
+      expect(Legion::Crypt.vault_connected?).to be(true)
+    end
+
+    it 'returns true when any clustered Vault client is connected' do
+      allow(Legion::Crypt).to receive(:settings).and_return({ vault: { connected: false } })
+      allow(Legion::Crypt).to receive(:connected_clusters).and_return({ primary: { connected: true, token: 'abc' } })
+
+      expect(Legion::Crypt.vault_connected?).to be(true)
+    end
+
+    it 'returns false when neither the top-level flag nor clusters are connected' do
+      allow(Legion::Crypt).to receive(:settings).and_return({ vault: { connected: false } })
+      allow(Legion::Crypt).to receive(:connected_clusters).and_return({})
+
+      expect(Legion::Crypt.vault_connected?).to be(false)
     end
   end
 
@@ -129,6 +151,23 @@ RSpec.describe Legion::Crypt do
     it 'shuts down LeaseManager during shutdown' do
       Legion::Crypt.shutdown
       expect(Legion::Crypt::LeaseManager.instance).to have_received(:shutdown)
+    end
+
+    it 'prefers the connected cluster client over the top-level vault flag' do
+      leases = { 'test' => { 'path' => 'secret/test' } }
+      secondary_client = instance_double(Vault::Client)
+      settings_override = Legion::Settings[:crypt].merge(
+        vault: Legion::Settings[:crypt][:vault].merge(leases: leases, connected: true)
+      )
+      allow(Legion::Crypt::LeaseManager.instance).to receive(:fetched_count).and_return(1)
+      allow(Legion::Crypt).to receive(:settings).and_return(settings_override)
+      allow(Legion::Crypt).to receive(:connected_clusters).and_return({ secondary: { token: 'tok-2', connected: true } })
+      allow(Legion::Crypt).to receive(:selected_connected_cluster_name).and_return(:secondary)
+      allow(Legion::Crypt).to receive(:vault_client).with(:secondary).and_return(secondary_client)
+
+      Legion::Crypt.send(:start_lease_manager)
+
+      expect(Legion::Crypt::LeaseManager.instance).to have_received(:start).with(leases, vault_client: secondary_client)
     end
   end
 
@@ -201,6 +240,26 @@ RSpec.describe Legion::Crypt do
       Legion::Crypt.start
       Legion::Crypt.shutdown
       expect(mock_renewer).to have_received(:stop)
+    end
+
+    it 'ignores repeated start calls once the lifecycle is already running' do
+      Legion::Settings[:crypt][:vault][:clusters] = {
+        primary: {
+          protocol: 'https', address: 'vault.example.com', port: 8200,
+          auth_method: 'kerberos', connected: true, token: 'hvs.krb-token',
+          lease_duration: 3600, renewable: true,
+          kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
+        }
+      }
+      mock_client = instance_double(Vault::Client)
+      allow(Vault::Client).to receive(:new).and_return(mock_client)
+      allow(mock_client).to receive(:namespace=)
+      allow(Legion::Crypt::TokenRenewer).to receive(:new).and_return(mock_renewer)
+
+      Legion::Crypt.start
+      Legion::Crypt.start
+
+      expect(Legion::Crypt::TokenRenewer).to have_received(:new).once
     end
   end
 end

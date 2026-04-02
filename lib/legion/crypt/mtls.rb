@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
 require 'socket'
 
 module Legion
@@ -7,6 +8,7 @@ module Legion
     module Mtls
       DEFAULT_PKI_PATH = 'pki/issue/legion-internal'
       DEFAULT_TTL      = '24h'
+      extend Legion::Logging::Helper
 
       class << self
         def enabled?
@@ -29,6 +31,7 @@ module Legion
 
         def issue_cert(common_name:, ttl: nil)
           resolved_ttl = ttl || cert_ttl_setting || DEFAULT_TTL
+          log.info "[mTLS] certificate issue requested common_name=#{common_name} ttl=#{resolved_ttl}"
 
           response = ::Vault.logical.write(
             pki_path,
@@ -49,10 +52,16 @@ module Legion
             serial:   data[:serial_number],
             expiry:   Time.at(data[:expiration].to_i)
           }
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.mtls.issue_cert', common_name: common_name, ttl: resolved_ttl)
+          raise
         end
 
         def local_ip
           Socket.ip_address_list.find { |a| a.ipv4? && !a.ipv4_loopback? }&.ip_address || '127.0.0.1'
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.mtls.local_ip')
+          '127.0.0.1'
         end
 
         private
@@ -61,7 +70,8 @@ module Legion
           return nil unless defined?(Legion::Settings)
 
           Legion::Settings[:security]
-        rescue StandardError
+        rescue StandardError => e
+          handle_exception(e, level: :debug, operation: 'crypt.mtls.safe_security_settings')
           nil
         end
 
@@ -71,6 +81,9 @@ module Legion
 
           mtls = security[:mtls] || security['mtls'] || {}
           mtls[:cert_ttl] || mtls['cert_ttl']
+        rescue StandardError => e
+          handle_exception(e, level: :debug, operation: 'crypt.mtls.cert_ttl_setting')
+          nil
         end
       end
     end

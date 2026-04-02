@@ -1,5 +1,27 @@
 # Legion::Crypt
 
+## [1.5.0] - 2026-04-02
+
+### Fixed
+- Cluster-secret Vault synchronization now uses the documented `push_cluster_secret` setting, stores the new secret before pushing it, aligns Vault read/write path and field names, and invalidates cached derived key material on rotation
+- External JWT/JWKS verification now fails closed on missing issuer or audience expectations, keeps reserved claims library-controlled, requires HTTPS JWKS transport, and avoids repeated fresh-cache re-fetches for unknown `kid` values
+- Shared symmetric encryption now emits authenticated AES-256-GCM payloads for new ciphertexts while preserving decrypt compatibility with legacy AES-256-CBC payloads
+- RSA keypair helper encryption now uses explicit OAEP padding for new ciphertexts while preserving decrypt compatibility with legacy PKCS#1 v1.5 payloads
+- Multi-cluster Vault auth and helper routing now update live LDAP client tokens, keep per-cluster LDAP state local to the addressed cluster, sync the top-level Vault connected flag from cluster connectivity checks, allow explicit cluster-targeted helper calls, refresh lease metadata on renewal, and schedule short-lived token renewals before expiry
+- SPIFFE X.509 fetch now fails closed by default, uses an explicit `allow_x509_fallback` development switch for self-signed fallback SVIDs, tags returned SVIDs with their source, and sends a valid 9-byte HTTP/2 SETTINGS frame during Workload API connection setup
+- Ed25519 helper key persistence now uses the supported `Legion::Crypt` API with normalized KV paths, and tenant erasure verification no longer reports success when Vault access itself failed
+- Background worker lifecycle is now serialized and cooperative: repeated `Legion::Crypt.start` calls no longer spawn duplicate workers, renewal/rotation threads no longer use `Thread#kill`, and timed-out joins keep their live thread references instead of dropping them
+
+### Changed
+- Adopted `Legion::Logging::Helper` across `lib/` so library logs use structured component tagging instead of direct `Legion::Logging.*` calls
+- Expanded `info`/`debug`/`error` coverage across crypt, Vault, JWT, lease, mTLS, SPIFFE, and auth flows to make background actions and failures visible without exposing secrets
+- Replaced manual rescue logging with `handle_exception(...)` across library code paths and left Sinatra/API integration untouched for a later pass
+- Removed remaining `log_info`/`log_warn`/`log_debug` wrapper methods in `lib/` so helper-backed logging is used directly throughout the library
+
+### Added
+- Runtime dependency on `legion-logging`
+- Compatibility shim for `Legion::Logging::Helper` so `handle_exception` and shared `log` access are available consistently during the uplift
+
 ## [1.4.29] - 2026-03-31
 
 ### Changed

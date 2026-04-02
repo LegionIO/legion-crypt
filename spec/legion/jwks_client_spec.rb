@@ -66,7 +66,7 @@ RSpec.describe Legion::Crypt::JwksClient do
         expect(key).to be_a(OpenSSL::PKey::RSA)
       end
 
-      it 'raises for an unknown kid after re-fetch' do
+      it 'raises for an unknown kid after refreshing cached keys' do
         expect(described_class).to receive(:fetch_keys).with(jwks_url).and_call_original
 
         expect { described_class.find_key(jwks_url, 'unknown-kid') }
@@ -109,6 +109,14 @@ RSpec.describe Legion::Crypt::JwksClient do
       # After clear, find_key must re-fetch
       expect(described_class).to receive(:fetch_keys).with(jwks_url).and_call_original
       described_class.find_key(jwks_url, 'test-kid-1')
+    end
+  end
+
+  describe '.http_get' do
+    it 'rejects non-HTTPS JWKS URLs' do
+      expect do
+        described_class.send(:http_get, 'http://example.com/keys')
+      end.to raise_error(Legion::Crypt::JWT::Error, /HTTPS is required/)
     end
   end
 end

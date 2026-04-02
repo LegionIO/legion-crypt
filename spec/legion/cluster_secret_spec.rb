@@ -9,17 +9,16 @@ RSpec.describe Legion::Crypt::ClusterSecret do
     @cs = Class.new
     @cs.extend Legion::Crypt::ClusterSecret
 
-    @vault_mock = Module.new do
-      def self.get(_)
-        { cluster_secret: SecureRandom.hex(32) }
-      end
-    end
-
     @original_cluster_secret = Legion::Settings[:crypt][:cluster_secret]
+    @original_cs_encrypt_ready = Legion::Settings[:crypt][:cs_encrypt_ready]
+    @original_vault_settings = Legion::Settings[:crypt][:vault].dup
   end
 
   after do
     Legion::Settings[:crypt][:cluster_secret] = @original_cluster_secret
+    Legion::Settings[:crypt][:cs_encrypt_ready] = @original_cs_encrypt_ready
+    Legion::Settings[:crypt][:vault].replace(@original_vault_settings)
+    @cs.remove_instance_variable(:@cs) if @cs.instance_variable_defined?(:@cs)
   end
 
   it '.find_cluster_secret' do
@@ -76,24 +75,26 @@ RSpec.describe Legion::Crypt::ClusterSecret do
     end
   end
 
-  describe '#set_cluster_secret stores value even when Vault push fails' do
-    let(:valid_secret) { SecureRandom.hex(16) }
+  describe '#set_cluster_secret' do
+    let(:valid_secret) { SecureRandom.hex(32) }
 
     before do
-      allow(@cs).to receive(:settings_push_vault).and_return(true)
-      allow(@cs).to receive(:push_cs_to_vault).and_raise(StandardError, 'vault 403')
+      Legion::Settings[:crypt][:vault][:connected] = true
+      Legion::Settings[:crypt][:vault][:push_cluster_secret] = true
     end
 
-    it 'raises because push_cs_to_vault propagated — demonstrating the old bug (pre-fix)' do
-      # With the old code, push_cs_to_vault raising would prevent the assignment.
-      # This spec documents that push_cs_to_vault itself now rescues internally,
-      # so set_cluster_secret always completes the Settings assignment.
-      # Here we force the raise at the set_cluster_secret level to confirm the fix
-      # is in push_cs_to_vault, not set_cluster_secret.
-      expect { @cs.set_cluster_secret(valid_secret, true) }.to raise_error(StandardError, 'vault 403')
+    it 'pushes the newly assigned secret instead of the previous settings value' do
+      previous_secret = SecureRandom.hex(32)
+      Legion::Settings[:crypt][:cluster_secret] = previous_secret
+      allow(Legion::Crypt).to receive(:write)
+
+      @cs.set_cluster_secret(valid_secret, true)
+
+      expect(Legion::Crypt).to have_received(:write).with('crypt', cluster_secret: valid_secret)
+      expect(Legion::Settings[:crypt][:cluster_secret]).to eq valid_secret
     end
 
-    context 'when push_cs_to_vault rescues internally (the fix)' do
+    context 'when push_cs_to_vault rescues internally' do
       before do
         allow(@cs).to receive(:push_cs_to_vault).and_return(false)
       end
@@ -107,6 +108,42 @@ RSpec.describe Legion::Crypt::ClusterSecret do
         @cs.set_cluster_secret(valid_secret, true)
         expect(Legion::Settings[:crypt][:cs_encrypt_ready]).to eq true
       end
+    end
+  end
+
+  describe 'Vault round trip' do
+    let(:vault_store) { {} }
+    let(:initial_secret) { SecureRandom.hex(32) }
+    let(:rotated_secret) { SecureRandom.hex(32) }
+
+    before do
+      Legion::Settings[:crypt][:vault][:connected] = true
+      Legion::Settings[:crypt][:vault][:read_cluster_secret] = true
+      Legion::Settings[:crypt][:vault][:push_cluster_secret] = true
+
+      allow(Legion::Crypt).to receive(:write) do |path, **data|
+        vault_store[path] = data
+      end
+      allow(Legion::Crypt).to receive(:exist?) do |path|
+        vault_store.key?(path)
+      end
+      allow(Legion::Crypt).to receive(:get) do |path|
+        vault_store[path]
+      end
+    end
+
+    it 'round trips the cluster secret through Vault and refreshes the derived digest' do
+      @cs.set_cluster_secret(initial_secret, true)
+      initial_digest = @cs.cs
+
+      Legion::Settings[:crypt][:cluster_secret] = nil
+      expect(@cs.from_vault).to eq initial_secret
+      expect(vault_store['crypt']).to eq(cluster_secret: initial_secret)
+
+      @cs.set_cluster_secret(rotated_secret, false)
+
+      expect(@cs.cs).to eq(Digest::SHA256.digest(rotated_secret))
+      expect(@cs.cs).not_to eq(initial_digest)
     end
   end
 

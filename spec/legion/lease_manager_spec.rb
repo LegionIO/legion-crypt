@@ -277,6 +277,20 @@ RSpec.describe Legion::Crypt::LeaseManager do
       expect(thread1).to be(thread2)
       manager.shutdown
     end
+
+    it 'keeps tracking the renewal thread if it does not stop within the timeout' do
+      stuck_thread = instance_double(Thread, alive?: true)
+      allow(stuck_thread).to receive(:wakeup)
+      allow(stuck_thread).to receive(:join)
+      manager.instance_variable_set(:@renewal_thread, stuck_thread)
+      manager.instance_variable_get(:@state_mutex).synchronize do
+        manager.instance_variable_set(:@running, true)
+      end
+
+      manager.send(:stop_renewal_thread)
+
+      expect(manager.instance_variable_get(:@renewal_thread)).to eq(stuck_thread)
+    end
   end
 
   describe '#lease_valid?' do
@@ -316,6 +330,27 @@ RSpec.describe Legion::Crypt::LeaseManager do
     it 'returns true when expires_at is nil' do
       lease = { expires_at: nil, lease_duration: 100 }
       expect(manager.send(:approaching_expiry?, lease)).to eq(true)
+    end
+  end
+
+  describe '#renew_lease' do
+    before { manager.start(lease_definitions) }
+
+    it 'refreshes lease_duration and renewable from the renewal response' do
+      renew_response = double('Vault::Secret',
+                              data:           { username: 'renewed_user', password: 'renewed_pass' },
+                              lease_id:       'rabbitmq/creds/legion-role/abc123',
+                              lease_duration: 1200,
+                              renewable?:     false)
+      sys_double = instance_double(Vault::Sys)
+      allow(Vault).to receive(:sys).and_return(sys_double)
+      allow(sys_double).to receive(:renew).and_return(renew_response)
+
+      manager.send(:renew_lease, 'rabbitmq', manager.active_leases['rabbitmq'])
+
+      expect(manager.active_leases['rabbitmq'][:lease_duration]).to eq(1200)
+      expect(manager.active_leases['rabbitmq'][:renewable]).to be(false)
+      expect(manager.fetch('rabbitmq', :username)).to eq('renewed_user')
     end
   end
 

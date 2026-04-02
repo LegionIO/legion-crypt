@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
+
 module Legion
   module Crypt
     module Spiffe
@@ -10,6 +12,8 @@ module Legion
       # defaults to 60 seconds; renewal fires when the SVID is past 50%
       # of its lifetime (configurable via security.spiffe.renewal_window).
       class SvidRotation
+        include Legion::Logging::Helper
+
         DEFAULT_CHECK_INTERVAL = 60
 
         attr_reader :check_interval, :current_svid
@@ -31,19 +35,24 @@ module Legion
           @running = true
           @thread  = Thread.new { rotation_loop }
           @thread.name = 'spiffe-svid-rotation'
-          log_info('[SPIFFE] SvidRotation started')
+          log.info '[SPIFFE] SvidRotation started'
         end
 
         def stop
           @running = false
           begin
             @thread&.wakeup
-          rescue ThreadError
+          rescue ThreadError => e
+            handle_exception(e, level: :debug, operation: 'crypt.spiffe.svid_rotation.stop')
             nil
           end
           @thread&.join(3)
-          @thread = nil
-          log_debug('[SPIFFE] SvidRotation stopped')
+          if @thread&.alive?
+            log.warn '[SPIFFE] SvidRotation thread did not stop within timeout'
+          else
+            @thread = nil
+          end
+          log.info '[SPIFFE] SvidRotation stopped'
         end
 
         def running?
@@ -56,7 +65,7 @@ module Legion
             @current_svid = svid
             @issued_at    = Time.now
           end
-          log_info("[SPIFFE] SVID rotated: id=#{svid.spiffe_id} expiry=#{svid.expiry}")
+          log.info("[SPIFFE] SVID rotated: id=#{svid.spiffe_id} expiry=#{svid.expiry}")
           svid
         end
 
@@ -85,7 +94,8 @@ module Legion
           begin
             rotate!
           rescue StandardError => e
-            log_warn("[SPIFFE] Initial SVID fetch failed: #{e.message}")
+            handle_exception(e, level: :error, operation: 'crypt.spiffe.svid_rotation.rotation_loop')
+            log.error("[SPIFFE] Initial SVID fetch failed: #{e.message}")
           end
           loop_check
         end
@@ -96,13 +106,16 @@ module Legion
             next unless @running && needs_renewal?
 
             begin
+              log.info('[SPIFFE] SVID renewal window reached, rotating current SVID')
               rotate!
             rescue StandardError => e
-              log_warn("[SPIFFE] SVID rotation failed: #{e.message}")
+              handle_exception(e, level: :error, operation: 'crypt.spiffe.svid_rotation.loop_check')
+              log.error("[SPIFFE] SVID rotation failed: #{e.message}")
             end
           end
         rescue StandardError => e
-          log_warn("[SPIFFE] SvidRotation loop error: #{e.message}")
+          handle_exception(e, level: :error, operation: 'crypt.spiffe.svid_rotation.loop_check')
+          log.error("[SPIFFE] SvidRotation loop error: #{e.message}")
           retry if @running
         end
 
@@ -124,32 +137,9 @@ module Legion
 
           spiffe = security[:spiffe] || security['spiffe'] || {}
           spiffe[:renewal_window] || spiffe['renewal_window'] || SVID_RENEWAL_RATIO
-        rescue StandardError
+        rescue StandardError => e
+          handle_exception(e, level: :debug, operation: 'crypt.spiffe.svid_rotation.renewal_window')
           SVID_RENEWAL_RATIO
-        end
-
-        def log_info(msg)
-          if defined?(Legion::Logging)
-            Legion::Logging.info(msg)
-          else
-            $stdout.puts(msg)
-          end
-        end
-
-        def log_debug(msg)
-          if defined?(Legion::Logging)
-            Legion::Logging.debug(msg)
-          else
-            $stdout.puts("[DEBUG] #{msg}")
-          end
-        end
-
-        def log_warn(msg)
-          if defined?(Legion::Logging)
-            Legion::Logging.warn(msg)
-          else
-            warn("[WARN] #{msg}")
-          end
         end
       end
     end

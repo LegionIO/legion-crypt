@@ -112,5 +112,17 @@ RSpec.describe Legion::Crypt::Spiffe::SvidRotation do
     ensure
       rotation.stop
     end
+
+    it 'keeps the thread reference when stop times out' do
+      stuck_thread = instance_double(Thread, alive?: true)
+      allow(stuck_thread).to receive(:wakeup)
+      allow(stuck_thread).to receive(:join)
+      rotation.instance_variable_set(:@thread, stuck_thread)
+      rotation.instance_variable_set(:@running, true)
+
+      rotation.stop
+
+      expect(rotation.instance_variable_get(:@thread)).to eq(stuck_thread)
+    end
   end
 end

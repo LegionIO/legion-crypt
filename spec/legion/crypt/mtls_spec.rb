@@ -19,6 +19,7 @@ RSpec.describe Legion::Crypt::Mtls do
 
   before do
     stub_const('Legion::Settings', Module.new)
+    allow(Legion::Settings).to receive(:[]).and_return(nil)
     allow(Legion::Settings).to receive(:[]).with(:security).and_return(
       { mtls: { enabled: false, vault_pki_path: 'pki/issue/legion-internal', cert_ttl: '24h' } }
     )

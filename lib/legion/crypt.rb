@@ -2,6 +2,7 @@
 
 require 'openssl'
 require 'base64'
+require 'legion/logging/helper'
 require 'legion/crypt/version'
 require 'legion/crypt/settings'
 require 'legion/crypt/cipher'
@@ -27,6 +28,7 @@ module Legion
     class << self
       attr_reader :sessions
 
+      include Legion::Logging::Helper
       include Legion::Crypt::Cipher
 
       unless Gem::Specification.find_by_name('vault').nil?
@@ -57,18 +59,30 @@ module Legion
       end
 
       def start
-        Legion::Logging.debug 'Legion::Crypt is running start'
-        ::File.write('./legionio.key', private_key) if settings[:save_private_key]
-        @token_renewers ||= []
+        lifecycle_mutex.synchronize do
+          if @started
+            log.info 'Legion::Crypt start ignored because the lifecycle is already running'
+            return
+          end
 
-        if vault_settings[:clusters]&.any?
-          connect_all_clusters
-          start_token_renewers
-        else
-          connect_vault unless settings[:vault][:token].nil?
+          log.info 'Legion::Crypt startup initiated'
+          log.debug 'Legion::Crypt start requested'
+          ::File.write('./legionio.key', private_key) if settings[:save_private_key]
+          @token_renewers ||= []
+
+          if vault_settings[:clusters]&.any?
+            log.info "Legion::Crypt connecting #{vault_settings[:clusters].size} Vault cluster(s)"
+            connect_all_clusters
+            start_token_renewers
+          else
+            log.info 'Legion::Crypt connecting primary Vault client' unless settings[:vault][:token].nil?
+            connect_vault unless settings[:vault][:token].nil?
+          end
+          start_lease_manager
+          start_svid_rotation
+          @started = true
+          log.info 'Legion::Crypt startup completed'
         end
-        start_lease_manager
-        start_svid_rotation
       end
 
       def settings
@@ -81,6 +95,16 @@ module Legion
 
       def jwt_settings
         settings[:jwt] || Legion::Crypt::Settings.jwt
+      end
+
+      def vault_connected?
+        return true if settings.dig(:vault, :connected) == true
+        return true if respond_to?(:connected_clusters) && connected_clusters.any?
+
+        false
+      rescue StandardError => e
+        handle_exception(e, level: :debug, operation: 'crypt.vault_connected?')
+        false
       end
 
       def issue_token(payload = {}, ttl: nil, algorithm: nil)
@@ -111,11 +135,21 @@ module Legion
       end
 
       def shutdown
-        Legion::Crypt::LeaseManager.instance.shutdown
-        stop_token_renewers
-        shutdown_renewer
-        close_sessions
-        stop_svid_rotation
+        lifecycle_mutex.synchronize do
+          unless @started
+            log.info 'Legion::Crypt shutdown ignored because the lifecycle is not running'
+            return
+          end
+
+          log.info 'Legion::Crypt shutdown initiated'
+          Legion::Crypt::LeaseManager.instance.shutdown
+          stop_token_renewers
+          shutdown_renewer
+          close_sessions
+          stop_svid_rotation
+          @started = false
+          log.info 'Legion::Crypt shutdown completed'
+        end
       end
 
       private
@@ -123,22 +157,15 @@ module Legion
       def start_lease_manager
         leases = settings.dig(:vault, :leases) || {}
         return if leases.empty?
-        return unless settings.dig(:vault, :connected) || connected_clusters.any?
+        return unless connected_clusters.any? || settings.dig(:vault, :connected)
 
         client = nil
 
-        if settings.dig(:vault, :connected)
-          client = vault_client
-        elsif connected_clusters.any?
-          default_cluster = vault_settings[:default]
-          selected_cluster =
-            if default_cluster && connected_clusters.include?(default_cluster.to_sym)
-              default_cluster.to_sym
-            else
-              connected_clusters.keys.first
-            end
-
+        if connected_clusters.any?
+          selected_cluster = selected_connected_cluster_name
           client = selected_cluster ? vault_client(selected_cluster) : nil
+        elsif settings.dig(:vault, :connected)
+          client = vault_client
         end
         lease_manager = Legion::Crypt::LeaseManager.instance
         lease_manager.start(leases, vault_client: client)
@@ -146,15 +173,16 @@ module Legion
         fetched = lease_manager.fetched_count
         defined = leases.size
         if fetched == defined
-          Legion::Logging.info "LeaseManager: #{fetched} lease(s) initialized"
+          log.info "LeaseManager: #{fetched} lease(s) initialized"
         else
-          Legion::Logging.warn "LeaseManager: #{fetched}/#{defined} lease(s) initialized (#{defined - fetched} failed)"
+          log.warn "LeaseManager: #{fetched}/#{defined} lease(s) initialized (#{defined - fetched} failed)"
         end
       rescue StandardError => e
-        Legion::Logging.warn "LeaseManager startup failed: #{e.message}"
+        handle_exception(e, level: :warn, operation: 'crypt.start_lease_manager')
       end
 
       def start_token_renewers
+        started = 0
         clusters.each do |name, config|
           next unless config[:auth_method]&.to_s == 'kerberos' && config[:connected]
 
@@ -165,30 +193,39 @@ module Legion
           )
           renewer.start
           @token_renewers << renewer
+          started += 1
         end
+        log.info "Legion::Crypt started #{started} token renewer(s)" if started.positive?
       end
 
       def stop_token_renewers
         return unless @token_renewers
 
         @token_renewers.each(&:stop)
+        log.info "Legion::Crypt stopped #{@token_renewers.size} token renewer(s)" if @token_renewers.any?
         @token_renewers.clear
       end
 
       def start_svid_rotation
         return unless Spiffe.enabled?
 
+        log.info 'Legion::Crypt starting SPIFFE SVID rotation'
         @svid_rotation = Spiffe::SvidRotation.new
         @svid_rotation.start
       rescue StandardError => e
-        Legion::Logging.warn "SPIFFE SvidRotation startup failed: #{e.message}" if defined?(Legion::Logging)
+        handle_exception(e, level: :warn, operation: 'crypt.start_svid_rotation')
       end
 
       def stop_svid_rotation
         return unless @svid_rotation
 
+        log.info 'Legion::Crypt stopping SPIFFE SVID rotation'
         @svid_rotation.stop
         @svid_rotation = nil
+      end
+
+      def lifecycle_mutex
+        @lifecycle_mutex ||= Mutex.new
       end
     end
   end
