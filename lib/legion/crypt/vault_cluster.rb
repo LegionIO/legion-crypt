@@ -137,7 +137,6 @@ module Legion
 
       def log_vault_error(name, error, operation: 'crypt.vault_cluster.error')
         handle_exception(error, level: :error, operation: operation, cluster_name: name)
-        log.error("Vault cluster #{name}: #{error.message}")
       end
 
       def connect_kerberos_cluster(name, config)
