@@ -35,7 +35,10 @@ RSpec.describe Legion::Crypt::Vault do
     it 'logs via log_exception when available' do
       logging = double('Legion::Logging')
       stub_const('Legion::Logging', logging)
+      allow(logging).to receive(:respond_to?).and_return(false)
+      allow(logging).to receive(:respond_to?).with(:info).and_return(true)
       allow(logging).to receive(:respond_to?).with(:log_exception).and_return(true)
+      allow(logging).to receive(:info)
       expect(logging).to receive(:log_exception).with(instance_of(StandardError), lex: 'crypt', component_type: :helper)
       @vault.connect_vault
     end
@@ -43,8 +46,11 @@ RSpec.describe Legion::Crypt::Vault do
     it 'falls back to Logging.error with backtrace when log_exception unavailable' do
       logging = double('Legion::Logging')
       stub_const('Legion::Logging', logging)
+      allow(logging).to receive(:respond_to?).and_return(false)
+      allow(logging).to receive(:respond_to?).with(:info).and_return(true)
       allow(logging).to receive(:respond_to?).with(:log_exception).and_return(false)
       allow(logging).to receive(:respond_to?).with(:error).and_return(true)
+      allow(logging).to receive(:info)
       expect(logging).to receive(:error).with(match(/connection refused/))
       @vault.connect_vault
     end

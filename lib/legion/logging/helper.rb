@@ -1,10 +1,16 @@
 # frozen_string_literal: true
 
-helper_path = File.join(
-  Gem::Specification.find_by_name('legion-logging').full_gem_path,
-  'lib/legion/logging/helper.rb'
-)
-require helper_path
+begin
+  helper_path = File.join(
+    Gem::Specification.find_by_name('legion-logging').full_gem_path,
+    'lib/legion/logging/helper.rb'
+  )
+  require helper_path if File.exist?(helper_path)
+rescue Gem::LoadError
+  nil
+end
+
+require 'legion/logging'
 
 module Legion
   module Logging
@@ -17,11 +23,11 @@ module Legion
                 payload = block ? block.call : message
                 return if payload.nil?
 
-                if Legion.const_defined?('Logging') && Legion::Logging.is_a?(Module) && Legion::Logging.respond_to?(level)
+                if Legion.const_defined?('Logging') && Legion::Logging.respond_to?(level)
                   Legion::Logging.public_send(level, payload)
                 elsif %i[error fatal warn].include?(level)
                   ::Kernel.warn(payload)
-                elsif !Legion.const_defined?('Logging') || Legion::Logging.is_a?(Module)
+                else
                   $stdout.puts(payload)
                 end
               end
@@ -37,7 +43,7 @@ module Legion
           message = exception_log_message(exception, level: level, **opts) # rubocop:disable Style/ArgumentsForwarding
 
           if Legion.const_defined?('Logging')
-            if !Legion::Logging.is_a?(Module) && Legion::Logging.respond_to?(:log_exception)
+            if Legion::Logging.respond_to?(:log_exception)
               Legion::Logging.log_exception(exception, lex: 'crypt', component_type: :helper)
               return
             end
