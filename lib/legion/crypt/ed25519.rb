@@ -48,12 +48,13 @@ module Legion
 
         def store_keypair(agent_id:, keypair: nil)
           keypair ||= generate_keypair
-          if defined?(Legion::Crypt::Vault)
+          if Legion::Crypt.respond_to?(:write)
             log.info "Ed25519 storing keypair for agent #{agent_id}"
-            Legion::Crypt::Vault.write("#{key_prefix}/#{agent_id}", {
-                                         private_key: keypair[:private_key].unpack1('H*'),
-                                         public_key:  keypair[:public_key_hex]
-                                       })
+            Legion::Crypt.write(
+              vault_key_path(agent_id),
+              private_key: keypair[:private_key].unpack1('H*'),
+              public_key:  keypair[:public_key_hex]
+            )
           else
             log.warn "Ed25519 keypair generated for agent #{agent_id} but Vault is unavailable"
           end
@@ -65,7 +66,9 @@ module Legion
 
         def load_private_key(agent_id:)
           log.debug "Ed25519 loading private key for agent #{agent_id}"
-          data = Legion::Crypt::Vault.read("#{key_prefix}/#{agent_id}")
+          return nil unless Legion::Crypt.respond_to?(:get)
+
+          data = Legion::Crypt.get(vault_key_path(agent_id))
           if data&.dig(:private_key)
             log.info "Ed25519 private key loaded for agent #{agent_id}"
             [data[:private_key]].pack('H*')
@@ -86,7 +89,22 @@ module Legion
           rescue StandardError => e
             handle_exception(e, level: :debug, operation: 'crypt.ed25519.key_prefix')
             nil
-          end || 'secret/data/legion/keys'
+          end || 'keys'
+        end
+
+        def vault_key_path(agent_id)
+          normalize_kv_path("#{key_prefix}/#{agent_id}")
+        end
+
+        def normalize_kv_path(path)
+          kv_path = Legion::Settings.dig(:crypt, :vault, :kv_path)
+          return path if kv_path.nil? || kv_path.empty?
+
+          normalized = path.sub(%r{\Asecret/data/#{Regexp.escape(kv_path)}/}, '')
+          normalized.sub(%r{\A#{Regexp.escape(kv_path)}/}, '')
+        rescue StandardError => e
+          handle_exception(e, level: :debug, operation: 'crypt.ed25519.normalize_kv_path')
+          path
         end
       end
     end

@@ -32,4 +32,29 @@ RSpec.describe Legion::Crypt::Ed25519 do
       expect(described_class.verify('tampered', sig, keypair[:public_key])).to be false
     end
   end
+
+  describe '.store_keypair and .load_private_key' do
+    let(:keypair) { described_class.generate_keypair }
+
+    it 'stores keypairs via Legion::Crypt.write' do
+      allow(Legion::Crypt).to receive(:write)
+
+      described_class.store_keypair(agent_id: 'agent-1', keypair: keypair)
+
+      expect(Legion::Crypt).to have_received(:write).with(
+        'keys/agent-1',
+        private_key: keypair[:private_key].unpack1('H*'),
+        public_key:  keypair[:public_key_hex]
+      )
+    end
+
+    it 'loads private keys via Legion::Crypt.get' do
+      allow(Legion::Crypt).to receive(:get).with('keys/agent-1')
+                          .and_return(private_key: keypair[:private_key].unpack1('H*'))
+
+      result = described_class.load_private_key(agent_id: 'agent-1')
+
+      expect(result).to eq(keypair[:private_key])
+    end
+  end
 end
