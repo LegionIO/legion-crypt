@@ -66,8 +66,8 @@ RSpec.describe Legion::Crypt::JwksClient do
         expect(key).to be_a(OpenSSL::PKey::RSA)
       end
 
-      it 'raises for an unknown kid after re-fetch' do
-        expect(described_class).not_to receive(:fetch_keys)
+      it 'raises for an unknown kid after refreshing cached keys' do
+        expect(described_class).to receive(:fetch_keys).with(jwks_url).and_call_original
 
         expect { described_class.find_key(jwks_url, 'unknown-kid') }
           .to raise_error(Legion::Crypt::JWT::InvalidTokenError, /signing key not found/)
