@@ -1,5 +1,16 @@
 # Legion::Crypt
 
+## [1.5.0] - 2026-04-02
+
+### Changed
+- Adopted `Legion::Logging::Helper` across `lib/` so library logs use structured component tagging instead of direct `Legion::Logging.*` calls
+- Expanded `info`/`debug`/`error` coverage across crypt, Vault, JWT, lease, mTLS, SPIFFE, and auth flows to make background actions and failures visible without exposing secrets
+- Replaced manual rescue logging with `handle_exception(...)` across library code paths and left Sinatra/API integration untouched for a later pass
+
+### Added
+- Runtime dependency on `legion-logging`
+- Compatibility shim for `Legion::Logging::Helper` so `handle_exception` and shared `log` access are available consistently during the uplift
+
 ## [1.4.29] - 2026-03-31
 
 ### Changed
