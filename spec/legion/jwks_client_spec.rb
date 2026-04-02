@@ -67,7 +67,7 @@ RSpec.describe Legion::Crypt::JwksClient do
       end
 
       it 'raises for an unknown kid after re-fetch' do
-        expect(described_class).to receive(:fetch_keys).with(jwks_url).and_call_original
+        expect(described_class).not_to receive(:fetch_keys)
 
         expect { described_class.find_key(jwks_url, 'unknown-kid') }
           .to raise_error(Legion::Crypt::JWT::InvalidTokenError, /signing key not found/)
@@ -109,6 +109,14 @@ RSpec.describe Legion::Crypt::JwksClient do
       # After clear, find_key must re-fetch
       expect(described_class).to receive(:fetch_keys).with(jwks_url).and_call_original
       described_class.find_key(jwks_url, 'test-kid-1')
+    end
+  end
+
+  describe '.http_get' do
+    it 'rejects non-HTTPS JWKS URLs' do
+      expect do
+        described_class.send(:http_get, 'http://example.com/keys')
+      end.to raise_error(Legion::Crypt::JWT::Error, /HTTPS is required/)
     end
   end
 end

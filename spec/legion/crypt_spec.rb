@@ -22,11 +22,11 @@ RSpec.describe Legion::Crypt do
   describe '.verify_external_token' do
     it 'delegates to JWT.verify_with_jwks' do
       expect(Legion::Crypt::JWT).to receive(:verify_with_jwks)
-        .with('token', jwks_url: 'https://example.com/keys', issuers: ['iss'])
+        .with('token', jwks_url: 'https://example.com/keys', issuers: ['iss'], audience: 'aud')
         .and_return({ sub: 'test' })
 
       result = Legion::Crypt.verify_external_token(
-        'token', jwks_url: 'https://example.com/keys', issuers: ['iss']
+        'token', jwks_url: 'https://example.com/keys', issuers: ['iss'], audience: 'aud'
       )
       expect(result[:sub]).to eq('test')
     end

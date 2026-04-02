@@ -13,19 +13,21 @@ module Legion
       CACHE_TTL = 3600
 
       @cache = {}
-      @mutex = Mutex.new
+      @cache_mutex = Mutex.new
+      @locks = {}
+      @locks_mutex = Mutex.new
 
       class << self
         include Legion::Logging::Helper
 
         def fetch_keys(jwks_url)
-          @mutex.synchronize do
+          with_url_lock(jwks_url) do
             log.debug "JWKS fetch: #{jwks_url}"
             response = http_get(jwks_url)
             jwks_data = parse_response(response)
             keys = parse_jwks(jwks_data)
 
-            @cache[jwks_url] = { keys: keys, fetched_at: Time.now }
+            cache_write(jwks_url, keys)
             log.info "JWKS fetched url=#{jwks_url} keys=#{keys.size}"
             keys
           end
@@ -35,7 +37,7 @@ module Legion
         end
 
         def find_key(jwks_url, kid)
-          cached = @mutex.synchronize { @cache[jwks_url] }
+          cached = cache_read(jwks_url)
 
           if cached && !expired?(cached[:fetched_at])
             key = cached[:keys][kid]
@@ -43,6 +45,8 @@ module Legion
               log.debug "JWKS cache hit: kid=#{kid}"
               return key
             end
+
+            raise Legion::Crypt::JWT::InvalidTokenError, "signing key not found: #{kid}"
           end
 
           keys = fetch_keys(jwks_url)
@@ -53,11 +57,22 @@ module Legion
         end
 
         def clear_cache
-          @mutex.synchronize { @cache = {} }
+          @cache_mutex.synchronize { @cache = {} }
+          @locks_mutex.synchronize { @locks = {} }
           log.info 'JWKS cache cleared'
         end
 
         private
+
+        def cache_read(jwks_url)
+          @cache_mutex.synchronize { @cache[jwks_url] }
+        end
+
+        def cache_write(jwks_url, keys)
+          @cache_mutex.synchronize do
+            @cache[jwks_url] = { keys: keys, fetched_at: Time.now }
+          end
+        end
 
         def expired?(fetched_at)
           Time.now - fetched_at > CACHE_TTL
@@ -65,6 +80,8 @@ module Legion
 
         def http_get(url)
           uri = URI.parse(url)
+          raise Legion::Crypt::JWT::Error, 'failed to fetch JWKS: HTTPS is required' unless uri.scheme == 'https'
+
           http = Net::HTTP.new(uri.host, uri.port)
           http.use_ssl = uri.scheme == 'https'
           http.open_timeout = 10
@@ -107,6 +124,11 @@ module Legion
           end
 
           keys
+        end
+
+        def with_url_lock(jwks_url, &)
+          lock = @locks_mutex.synchronize { @locks[jwks_url] ||= Mutex.new }
+          lock.synchronize(&)
         end
       end
     end

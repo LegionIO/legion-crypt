@@ -21,12 +21,12 @@ module Legion
         validate_algorithm!(algorithm)
 
         now = Time.now.to_i
-        claims = {
+        claims = sanitize_payload(payload).merge(
           iss: issuer,
           iat: now,
           exp: now + ttl,
           jti: SecureRandom.uuid
-        }.merge(payload)
+        )
 
         token = ::JWT.encode(claims, signing_key, algorithm)
         log.info "JWT issued: sub=#{claims[:sub]}, exp=#{Time.at(claims[:exp]).utc.iso8601}, alg=#{algorithm}"
@@ -97,21 +97,16 @@ module Legion
         verify_expiration = opts.fetch(:verify_expiration, true)
         issuers = opts[:issuers]
         audience = opts[:audience]
+        validate_external_requirements!(issuers: issuers, audience: audience)
 
         decode_opts = {
           algorithm:         algorithm,
-          verify_expiration: verify_expiration
+          verify_expiration: verify_expiration,
+          verify_iss:        true,
+          iss:               issuers,
+          verify_aud:        true,
+          aud:               audience
         }
-
-        if issuers
-          decode_opts[:verify_iss] = true
-          decode_opts[:iss] = issuers
-        end
-
-        if audience
-          decode_opts[:verify_aud] = true
-          decode_opts[:aud] = audience
-        end
 
         payload, _header = ::JWT.decode(token, public_key, true, decode_opts)
         result = symbolize_keys(payload)
@@ -166,7 +161,28 @@ module Legion
         hash.transform_keys(&:to_sym)
       end
 
-      private_class_method :validate_algorithm!, :symbolize_keys, :decode_header
+      def self.sanitize_payload(payload)
+        payload.each_with_object({}) do |(key, value), sanitized|
+          next if %w[iss iat exp jti].include?(key.to_s)
+
+          sanitized[key] = value
+        end
+      end
+
+      def self.validate_external_requirements!(issuers:, audience:)
+        raise ArgumentError, 'issuers is required for JWKS verification' if blank_external_requirement?(issuers)
+        raise ArgumentError, 'audience is required for JWKS verification' if blank_external_requirement?(audience)
+      end
+
+      def self.blank_external_requirement?(value)
+        return true if value.nil?
+        return true if value.respond_to?(:empty?) && value.empty?
+
+        false
+      end
+
+      private_class_method :validate_algorithm!, :symbolize_keys, :decode_header, :sanitize_payload,
+                           :validate_external_requirements!, :blank_external_requirement?
     end
   end
 end

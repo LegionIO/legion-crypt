@@ -71,6 +71,20 @@ RSpec.describe Legion::Crypt::JWT do
       decoded2 = described_class.decode(token2)
       expect(decoded1[:jti]).not_to eq(decoded2[:jti])
     end
+
+    it 'does not allow payload to override reserved claims' do
+      token = described_class.issue(
+        payload.merge('iss' => 'forged', exp: 1, iat: 2, 'jti' => 'fixed-id'),
+        signing_key: signing_key,
+        issuer:      'legion-secure',
+        ttl:         120
+      )
+      decoded = described_class.decode(token)
+
+      expect(decoded[:iss]).to eq('legion-secure')
+      expect(decoded[:jti]).not_to eq('fixed-id')
+      expect(decoded[:exp]).to eq(decoded[:iat] + 120)
+    end
   end
 
   describe '.verify' do
@@ -192,15 +206,37 @@ RSpec.describe Legion::Crypt::JWT do
     end
 
     it 'verifies a valid token' do
-      result = described_class.verify_with_jwks(token, jwks_url: jwks_url)
+      result = described_class.verify_with_jwks(
+        token,
+        jwks_url: jwks_url,
+        issuers:  ['https://login.microsoftonline.com/test/v2.0'],
+        audience: 'app-client-id'
+      )
       expect(result[:sub]).to eq('worker-1')
+    end
+
+    it 'requires issuers to be provided' do
+      expect do
+        described_class.verify_with_jwks(token, jwks_url: jwks_url, audience: 'app-client-id')
+      end.to raise_error(ArgumentError, /issuers is required/)
+    end
+
+    it 'requires audience to be provided' do
+      expect do
+        described_class.verify_with_jwks(
+          token,
+          jwks_url: jwks_url,
+          issuers:  ['https://login.microsoftonline.com/test/v2.0']
+        )
+      end.to raise_error(ArgumentError, /audience is required/)
     end
 
     it 'validates issuer when issuers provided' do
       result = described_class.verify_with_jwks(
         token,
         jwks_url: jwks_url,
-        issuers:  ['https://login.microsoftonline.com/test/v2.0']
+        issuers:  ['https://login.microsoftonline.com/test/v2.0'],
+        audience: 'app-client-id'
       )
       expect(result[:sub]).to eq('worker-1')
     end
@@ -208,14 +244,20 @@ RSpec.describe Legion::Crypt::JWT do
     it 'rejects wrong issuer' do
       expect do
         described_class.verify_with_jwks(
-          token, jwks_url: jwks_url, issuers: ['https://other.issuer.com']
+          token,
+          jwks_url: jwks_url,
+          issuers:  ['https://other.issuer.com'],
+          audience: 'app-client-id'
         )
       end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /issuer not allowed/)
     end
 
     it 'validates audience when provided' do
       result = described_class.verify_with_jwks(
-        token, jwks_url: jwks_url, audience: 'app-client-id'
+        token,
+        jwks_url: jwks_url,
+        issuers:  ['https://login.microsoftonline.com/test/v2.0'],
+        audience: 'app-client-id'
       )
       expect(result[:sub]).to eq('worker-1')
     end
@@ -223,7 +265,10 @@ RSpec.describe Legion::Crypt::JWT do
     it 'rejects wrong audience' do
       expect do
         described_class.verify_with_jwks(
-          token, jwks_url: jwks_url, audience: 'wrong-audience'
+          token,
+          jwks_url: jwks_url,
+          issuers:  ['https://login.microsoftonline.com/test/v2.0'],
+          audience: 'wrong-audience'
         )
       end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /audience mismatch/)
     end
@@ -233,7 +278,12 @@ RSpec.describe Legion::Crypt::JWT do
       expired_token = JWT.encode(expired_payload, rsa_key, 'RS256', { kid: kid, alg: 'RS256' })
 
       expect do
-        described_class.verify_with_jwks(expired_token, jwks_url: jwks_url)
+        described_class.verify_with_jwks(
+          expired_token,
+          jwks_url: jwks_url,
+          issuers:  ['https://login.microsoftonline.com/test/v2.0'],
+          audience: 'app-client-id'
+        )
       end.to raise_error(Legion::Crypt::JWT::ExpiredTokenError)
     end
 
@@ -241,7 +291,12 @@ RSpec.describe Legion::Crypt::JWT do
       no_kid_token = JWT.encode({ sub: 'test' }, rsa_key, 'RS256')
 
       expect do
-        described_class.verify_with_jwks(no_kid_token, jwks_url: jwks_url)
+        described_class.verify_with_jwks(
+          no_kid_token,
+          jwks_url: jwks_url,
+          issuers:  ['https://login.microsoftonline.com/test/v2.0'],
+          audience: 'app-client-id'
+        )
       end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /missing kid/)
     end
 
@@ -251,7 +306,12 @@ RSpec.describe Legion::Crypt::JWT do
                              { kid: kid, alg: 'RS256' })
 
       expect do
-        described_class.verify_with_jwks(bad_token, jwks_url: jwks_url)
+        described_class.verify_with_jwks(
+          bad_token,
+          jwks_url: jwks_url,
+          issuers:  ['https://login.microsoftonline.com/test/v2.0'],
+          audience: 'app-client-id'
+        )
       end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /signature verification failed/)
     end
   end
