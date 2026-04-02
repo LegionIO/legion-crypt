@@ -2,6 +2,9 @@
 
 ## [1.5.0] - 2026-04-02
 
+### Fixed
+- Cluster-secret Vault synchronization now uses the documented `push_cluster_secret` setting, stores the new secret before pushing it, aligns Vault read/write path and field names, and invalidates cached derived key material on rotation
+
 ### Changed
 - Adopted `Legion::Logging::Helper` across `lib/` so library logs use structured component tagging instead of direct `Legion::Logging.*` calls
 - Expanded `info`/`debug`/`error` coverage across crypt, Vault, JWT, lease, mTLS, SPIFFE, and auth flows to make background actions and failures visible without exposing secrets
