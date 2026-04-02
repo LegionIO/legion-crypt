@@ -46,7 +46,7 @@ module Legion
               return key
             end
 
-            raise Legion::Crypt::JWT::InvalidTokenError, "signing key not found: #{kid}"
+            log.debug "JWKS cache miss for kid=#{kid}; refreshing keys"
           end
 
           keys = fetch_keys(jwks_url)
