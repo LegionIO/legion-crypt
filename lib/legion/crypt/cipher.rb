@@ -7,15 +7,25 @@ require 'legion/crypt/cluster_secret'
 module Legion
   module Crypt
     module Cipher
+      AUTHENTICATED_CIPHER = 'aes-256-gcm'
+      LEGACY_CIPHER = 'aes-256-cbc'
+      AUTHENTICATED_PREFIX = 'gcm'
+
       include Legion::Crypt::ClusterSecret
       include Legion::Logging::Helper
 
       def encrypt(message)
-        cipher = OpenSSL::Cipher.new('aes-256-cbc')
+        cipher = OpenSSL::Cipher.new(AUTHENTICATED_CIPHER)
         cipher.encrypt
         cipher.key = cs
         iv = cipher.random_iv
-        result = { enciphered_message: Base64.encode64(cipher.update(message) + cipher.final), iv: Base64.encode64(iv) }
+        ciphertext = cipher.update(message) + cipher.final
+        encoded_ciphertext = Base64.strict_encode64(ciphertext)
+        encoded_auth_tag = Base64.strict_encode64(cipher.auth_tag)
+        result = {
+          enciphered_message: "#{AUTHENTICATED_PREFIX}:#{encoded_ciphertext}:#{encoded_auth_tag}",
+          iv:                 Base64.strict_encode64(iv)
+        }
         log.debug 'Cipher encrypt completed'
         result
       rescue StandardError => e
@@ -24,17 +34,12 @@ module Legion
       end
 
       def decrypt(message, init_vector)
-        until cs.is_a?(String) || Legion::Settings[:client][:shutting_down]
-          log.debug('sleeping Legion::Crypt.decrypt due to CS not being set')
-          sleep(0.5)
-        end
-
-        decipher = OpenSSL::Cipher.new('aes-256-cbc')
-        decipher.decrypt
-        decipher.key = cs
-        decipher.iv = Base64.decode64(init_vector)
-        message = Base64.decode64(message)
-        result = decipher.update(message) + decipher.final
+        secret = wait_for_cluster_secret
+        result = if authenticated_ciphertext?(message)
+                   decrypt_authenticated(message, init_vector, secret)
+                 else
+                   decrypt_legacy(message, init_vector, secret)
+                 end
         log.debug 'Cipher decrypt completed'
         result
       rescue StandardError => e
@@ -77,6 +82,44 @@ module Legion
       rescue StandardError => e
         handle_exception(e, level: :error, operation: 'crypt.cipher.private_key')
         raise
+      end
+
+      private
+
+      def wait_for_cluster_secret
+        loop do
+          secret = cs
+          return secret if secret.is_a?(String)
+          break if Legion::Settings[:client][:shutting_down]
+
+          log.debug('sleeping Legion::Crypt.decrypt due to CS not being set')
+          sleep(0.5)
+        end
+
+        cs
+      end
+
+      def authenticated_ciphertext?(message)
+        message.start_with?("#{AUTHENTICATED_PREFIX}:")
+      end
+
+      def decrypt_authenticated(message, init_vector, secret)
+        _, encoded_ciphertext, encoded_auth_tag = message.split(':', 3)
+
+        decipher = OpenSSL::Cipher.new(AUTHENTICATED_CIPHER)
+        decipher.decrypt
+        decipher.key = secret
+        decipher.iv = Base64.strict_decode64(init_vector)
+        decipher.auth_tag = Base64.strict_decode64(encoded_auth_tag)
+        decipher.update(Base64.strict_decode64(encoded_ciphertext)) + decipher.final
+      end
+
+      def decrypt_legacy(message, init_vector, secret)
+        decipher = OpenSSL::Cipher.new(LEGACY_CIPHER)
+        decipher.decrypt
+        decipher.key = secret
+        decipher.iv = Base64.decode64(init_vector)
+        decipher.update(Base64.decode64(message)) + decipher.final
       end
     end
   end

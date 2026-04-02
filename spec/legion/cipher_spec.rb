@@ -19,6 +19,28 @@ RSpec.describe Legion::Crypt::Cipher do
     expect(@crypt.decrypt(message[:enciphered_message], message[:iv])).to eq 'foobar'
   end
 
+  it 'rejects tampered authenticated ciphertext' do
+    message = @crypt.encrypt('foobar')
+    prefix, ciphertext, auth_tag = message[:enciphered_message].split(':', 3)
+    decoded_auth_tag = Base64.strict_decode64(auth_tag).bytes
+    decoded_auth_tag[-1] ^= 0x01
+    tampered_auth_tag = Base64.strict_encode64(decoded_auth_tag.pack('C*'))
+
+    expect do
+      @crypt.decrypt("#{prefix}:#{ciphertext}:#{tampered_auth_tag}", message[:iv])
+    end.to raise_error(OpenSSL::Cipher::CipherError)
+  end
+
+  it 'can decrypt legacy cbc ciphertext' do
+    cipher = OpenSSL::Cipher.new('aes-256-cbc')
+    cipher.encrypt
+    cipher.key = @crypt.cs
+    iv = cipher.random_iv
+    encrypted_message = Base64.encode64(cipher.update('legacy secret') + cipher.final)
+
+    expect(@crypt.decrypt(encrypted_message, Base64.encode64(iv))).to eq 'legacy secret'
+  end
+
   it 'can encrypt from keypair' do
     expect(@crypt.private_key).to be_a OpenSSL::PKey::RSA
     expect(@crypt.public_key).to be_a String

@@ -5,6 +5,7 @@
 ### Fixed
 - Cluster-secret Vault synchronization now uses the documented `push_cluster_secret` setting, stores the new secret before pushing it, aligns Vault read/write path and field names, and invalidates cached derived key material on rotation
 - External JWT/JWKS verification now fails closed on missing issuer or audience expectations, keeps reserved claims library-controlled, requires HTTPS JWKS transport, and avoids repeated fresh-cache re-fetches for unknown `kid` values
+- Shared symmetric encryption now emits authenticated AES-256-GCM payloads for new ciphertexts while preserving decrypt compatibility with legacy AES-256-CBC payloads
 - Multi-cluster Vault auth and helper routing now update live LDAP client tokens, keep per-cluster LDAP state local to the addressed cluster, sync the top-level Vault connected flag from cluster connectivity checks, allow explicit cluster-targeted helper calls, refresh lease metadata on renewal, and schedule short-lived token renewals before expiry
 - SPIFFE X.509 fetch now fails closed by default, uses an explicit `allow_x509_fallback` development switch for self-signed fallback SVIDs, tags returned SVIDs with their source, and sends a valid 9-byte HTTP/2 SETTINGS frame during Workload API connection setup
 - Ed25519 helper key persistence now uses the supported `Legion::Crypt` API with normalized KV paths, and tenant erasure verification no longer reports success when Vault access itself failed
