@@ -66,6 +66,28 @@ RSpec.describe Legion::Crypt do
     end
   end
 
+  describe '.vault_connected?' do
+    it 'returns true when the top-level vault flag is set' do
+      allow(Legion::Crypt).to receive(:settings).and_return({ vault: { connected: true } })
+
+      expect(Legion::Crypt.vault_connected?).to be(true)
+    end
+
+    it 'returns true when any clustered Vault client is connected' do
+      allow(Legion::Crypt).to receive(:settings).and_return({ vault: { connected: false } })
+      allow(Legion::Crypt).to receive(:connected_clusters).and_return({ primary: { connected: true, token: 'abc' } })
+
+      expect(Legion::Crypt.vault_connected?).to be(true)
+    end
+
+    it 'returns false when neither the top-level flag nor clusters are connected' do
+      allow(Legion::Crypt).to receive(:settings).and_return({ vault: { connected: false } })
+      allow(Legion::Crypt).to receive(:connected_clusters).and_return({})
+
+      expect(Legion::Crypt.vault_connected?).to be(false)
+    end
+  end
+
   describe '.delete' do
     context 'when Vault is available' do
       let(:logical) { double('logical') }
@@ -218,6 +240,26 @@ RSpec.describe Legion::Crypt do
       Legion::Crypt.start
       Legion::Crypt.shutdown
       expect(mock_renewer).to have_received(:stop)
+    end
+
+    it 'ignores repeated start calls once the lifecycle is already running' do
+      Legion::Settings[:crypt][:vault][:clusters] = {
+        primary: {
+          protocol: 'https', address: 'vault.example.com', port: 8200,
+          auth_method: 'kerberos', connected: true, token: 'hvs.krb-token',
+          lease_duration: 3600, renewable: true,
+          kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
+        }
+      }
+      mock_client = instance_double(Vault::Client)
+      allow(Vault::Client).to receive(:new).and_return(mock_client)
+      allow(mock_client).to receive(:namespace=)
+      allow(Legion::Crypt::TokenRenewer).to receive(:new).and_return(mock_renewer)
+
+      Legion::Crypt.start
+      Legion::Crypt.start
+
+      expect(Legion::Crypt::TokenRenewer).to have_received(:new).once
     end
   end
 end

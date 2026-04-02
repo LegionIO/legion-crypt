@@ -47,7 +47,11 @@ module Legion
             nil
           end
           @thread&.join(3)
-          @thread = nil
+          if @thread&.alive?
+            log.warn '[SPIFFE] SvidRotation thread did not stop within timeout'
+          else
+            @thread = nil
+          end
           log.info '[SPIFFE] SvidRotation stopped'
         end
 

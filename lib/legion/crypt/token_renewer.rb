@@ -25,6 +25,8 @@ module Legion
       end
 
       def start
+        return if running?
+
         @stop = false
         @thread = Thread.new { renewal_loop }
         @thread.name = "vault-renewer-#{@cluster_name}"
@@ -142,11 +144,11 @@ module Legion
         log_info('stopping token renewal thread')
         @thread.join(5)
         thread_still_running = @thread.alive?
-        @thread = nil
 
         if thread_still_running
           log_warn('token renewal thread did not stop within timeout; skipping token revocation')
         else
+          @thread = nil
           revoke_token
           log_debug('token renewal thread stopped')
         end

@@ -8,6 +8,7 @@
 - Multi-cluster Vault auth and helper routing now update live LDAP client tokens, avoid treating cluster connectivity as global Vault connectivity, allow explicit cluster-targeted helper calls, refresh lease metadata on renewal, and schedule short-lived token renewals before expiry
 - SPIFFE X.509 fetch now fails closed by default, uses an explicit `allow_x509_fallback` development switch for self-signed fallback SVIDs, tags returned SVIDs with their source, and sends a valid 9-byte HTTP/2 SETTINGS frame during Workload API connection setup
 - Ed25519 helper key persistence now uses the supported `Legion::Crypt` API with normalized KV paths, and tenant erasure verification no longer reports success when Vault access itself failed
+- Background worker lifecycle is now serialized and cooperative: repeated `Legion::Crypt.start` calls no longer spawn duplicate workers, renewal/rotation threads no longer use `Thread#kill`, and timed-out joins keep their live thread references instead of dropping them
 
 ### Changed
 - Adopted `Legion::Logging::Helper` across `lib/` so library logs use structured component tagging instead of direct `Legion::Logging.*` calls

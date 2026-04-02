@@ -92,6 +92,19 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       renewer.stop
       expect(renewer.running?).to be false
     end
+
+    it 'does not start a second renewal thread when already running' do
+      allow(auth_token).to receive(:renew_self).and_return(renew_result)
+      allow(vault_client).to receive(:token).and_return('hvs.initial-token')
+      allow(auth_token).to receive(:revoke_self)
+
+      renewer.start
+      first_thread = renewer.instance_variable_get(:@thread)
+      renewer.start
+
+      expect(renewer.instance_variable_get(:@thread)).to eq(first_thread)
+      renewer.stop
+    end
   end
 
   describe '#revoke_token (private)' do
@@ -168,6 +181,18 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       renewer.next_backoff
       renewer.reset_backoff
       expect(renewer.next_backoff).to eq(30)
+    end
+  end
+
+  describe '#stop_thread_and_revoke' do
+    it 'keeps the thread reference when the join times out' do
+      stuck_thread = instance_double(Thread, alive?: true)
+      allow(stuck_thread).to receive(:join)
+      renewer.instance_variable_set(:@thread, stuck_thread)
+
+      renewer.send(:stop_thread_and_revoke)
+
+      expect(renewer.instance_variable_get(:@thread)).to eq(stuck_thread)
     end
   end
 end

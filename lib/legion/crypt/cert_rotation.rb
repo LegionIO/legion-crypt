@@ -17,6 +17,7 @@ module Legion
         @issued_at      = nil
         @running        = false
         @thread         = nil
+        @mutex          = Mutex.new
       end
 
       def start
@@ -30,11 +31,18 @@ module Legion
 
       def stop
         @running = false
-        if @thread&.alive?
-          @thread.kill
-          @thread.join(2)
+        begin
+          @thread&.wakeup
+        rescue ThreadError => e
+          handle_exception(e, level: :debug, operation: 'crypt.cert_rotation.stop')
+          nil
         end
-        @thread = nil
+        @thread&.join(2)
+        if @thread&.alive?
+          log.warn '[mTLS] CertRotation thread did not stop within timeout'
+        else
+          @thread = nil
+        end
         log.info('[mTLS] CertRotation stopped')
       end
 
@@ -45,18 +53,26 @@ module Legion
       def rotate!
         node_name = node_common_name
         new_cert = Legion::Crypt::Mtls.issue_cert(common_name: node_name)
-        @current_cert = new_cert
-        @issued_at    = Time.now
+        @mutex.synchronize do
+          @current_cert = new_cert
+          @issued_at    = Time.now
+        end
         log.info("[mTLS] Certificate rotated: serial=#{new_cert[:serial]} expiry=#{new_cert[:expiry]}")
         emit_rotated_event(new_cert)
         new_cert
       end
 
       def needs_renewal?
-        return false if @current_cert.nil? || @issued_at.nil?
+        current_cert = nil
+        issued_at = nil
+        @mutex.synchronize do
+          current_cert = @current_cert
+          issued_at = @issued_at
+        end
+        return false if current_cert.nil? || issued_at.nil?
 
-        expiry = @current_cert[:expiry]
-        total  = expiry - @issued_at
+        expiry = current_cert[:expiry]
+        total  = expiry - issued_at
         return true if total <= 0
 
         remaining = expiry - Time.now
@@ -77,7 +93,7 @@ module Legion
 
       def loop_check
         while @running
-          sleep(@check_interval)
+          interruptible_sleep(@check_interval)
           next unless @running && needs_renewal?
 
           begin
@@ -91,6 +107,16 @@ module Legion
         handle_exception(e, level: :error, operation: 'crypt.cert_rotation.loop_check')
         log.error("[mTLS] CertRotation loop error: #{e.message}")
         retry if @running
+      end
+
+      def interruptible_sleep(seconds)
+        deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + seconds
+        loop do
+          remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+          break if remaining <= 0 || !@running
+
+          sleep([remaining, 1.0].min)
+        end
       end
 
       def renewal_window

@@ -277,6 +277,20 @@ RSpec.describe Legion::Crypt::LeaseManager do
       expect(thread1).to be(thread2)
       manager.shutdown
     end
+
+    it 'keeps tracking the renewal thread if it does not stop within the timeout' do
+      stuck_thread = instance_double(Thread, alive?: true)
+      allow(stuck_thread).to receive(:wakeup)
+      allow(stuck_thread).to receive(:join)
+      manager.instance_variable_set(:@renewal_thread, stuck_thread)
+      manager.instance_variable_get(:@state_mutex).synchronize do
+        manager.instance_variable_set(:@running, true)
+      end
+
+      manager.send(:stop_renewal_thread)
+
+      expect(manager.instance_variable_get(:@renewal_thread)).to eq(stuck_thread)
+    end
   end
 
   describe '#lease_valid?' do
