@@ -30,7 +30,7 @@ module Legion
           next unless path
 
           if lease_valid?(name)
-            log_debug("LeaseManager: reusing valid cached lease for '#{name}'")
+            log.debug("LeaseManager: reusing valid cached lease for '#{name}'")
             next
           end
 
@@ -127,7 +127,7 @@ module Legion
 
           begin
             sys.revoke(lease_id)
-            log_debug("LeaseManager: revoked lease '#{name}' (#{lease_id})")
+            log.debug("LeaseManager: revoked lease '#{name}' (#{lease_id})")
           rescue StandardError => e
             handle_exception(e, level: :warn, operation: 'crypt.lease_manager.shutdown', lease_name: name)
             log.warn("LeaseManager: failed to revoke lease '#{name}' (#{lease_id}): #{e.message}")
@@ -251,7 +251,7 @@ module Legion
 
         begin
           sys.revoke(lease_id)
-          log_debug("LeaseManager: revoked expired lease '#{name}' (#{lease_id}) before re-fetch")
+          log.debug("LeaseManager: revoked expired lease '#{name}' (#{lease_id}) before re-fetch")
         rescue StandardError => e
           handle_exception(e, level: :warn, operation: 'crypt.lease_manager.revoke_expired_lease', lease_name: name)
           log.warn("LeaseManager: failed to revoke expired lease '#{name}' (#{lease_id}): #{e.message}")
@@ -285,10 +285,6 @@ module Legion
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.write_setting', path: path.join('.'))
         log.warn("LeaseManager: failed to write setting at #{path.join('.')}: #{e.message}")
-      end
-
-      def log_debug(message)
-        log.debug(message)
       end
 
       def running?

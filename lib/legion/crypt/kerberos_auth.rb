@@ -21,19 +21,19 @@ module Legion
         raise GemMissingError, 'lex-kerberos gem is required for Kerberos auth' unless spnego_available?
 
         log.info "KerberosAuth login requested auth_path=#{auth_path}"
-        log_debug("login: SPN=#{service_principal}, auth_path=#{auth_path}")
+        log.debug("KerberosAuth: login: SPN=#{service_principal}, auth_path=#{auth_path}")
         addr = vault_client.respond_to?(:address) ? vault_client.address : 'n/a'
         ns   = vault_client.respond_to?(:namespace) ? vault_client.namespace.inspect : 'n/a'
-        log_debug("login: vault_client.address=#{addr}, namespace=#{ns}")
+        log.debug("KerberosAuth: login: vault_client.address=#{addr}, namespace=#{ns}")
 
         @kerberos_principal = nil
         token = obtain_token(service_principal)
-        log_debug("login: SPNEGO token obtained (#{token.length} chars)")
+        log.debug("KerberosAuth: login: SPNEGO token obtained (#{token.length} chars)")
 
         result = exchange_token(vault_client, token, auth_path)
         @kerberos_principal = result[:metadata]&.dig('username') || result[:metadata]&.dig(:username)
-        log_debug("login: authenticated as #{@kerberos_principal.inspect}, policies=#{result[:policies].inspect}")
-        log_debug("login: renewable=#{result[:renewable]}, ttl=#{result[:lease_duration]}s")
+        log.debug("KerberosAuth: login: authenticated as #{@kerberos_principal.inspect}, policies=#{result[:policies].inspect}")
+        log.debug("KerberosAuth: login: renewable=#{result[:renewable]}, ttl=#{result[:lease_duration]}s")
         log.info "KerberosAuth login success principal=#{@kerberos_principal || 'unknown'} auth_path=#{auth_path}"
         result
       end
@@ -56,11 +56,6 @@ module Legion
         @kerberos_principal = nil
       end
 
-      def self.log_debug(message)
-        log.debug("KerberosAuth: #{message}")
-      end
-      private_class_method :log_debug
-
       class << self
         private
 
@@ -82,7 +77,8 @@ module Legion
 
           # The Vault Kerberos plugin reads the SPNEGO token from the HTTP
           # Authorization header, not the JSON body.
-          log_debug("exchange_token: PUT /v1/#{auth_path} (namespace=#{vault_client.respond_to?(:namespace) ? vault_client.namespace.inspect : 'n/a'})")
+          namespace = vault_client.respond_to?(:namespace) ? vault_client.namespace.inspect : 'n/a'
+          log.debug("KerberosAuth: exchange_token: PUT /v1/#{auth_path} (namespace=#{namespace})")
           json = vault_client.put(
             "/v1/#{auth_path}",
             '{}',
@@ -101,7 +97,7 @@ module Legion
           }
         rescue ::Vault::HTTPClientError => e
           handle_exception(e, level: :warn, operation: 'crypt.kerberos_auth.exchange_token', auth_path: auth_path)
-          log_debug("exchange_token: HTTP error: #{e.message}")
+          log.debug("KerberosAuth: exchange_token: HTTP error: #{e.message}")
           raise AuthError, "Vault Kerberos auth failed: #{e.message}"
         rescue StandardError => e
           handle_exception(e, level: :error, operation: 'crypt.kerberos_auth.exchange_token', auth_path: auth_path)

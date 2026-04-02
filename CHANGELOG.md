@@ -14,6 +14,7 @@
 - Adopted `Legion::Logging::Helper` across `lib/` so library logs use structured component tagging instead of direct `Legion::Logging.*` calls
 - Expanded `info`/`debug`/`error` coverage across crypt, Vault, JWT, lease, mTLS, SPIFFE, and auth flows to make background actions and failures visible without exposing secrets
 - Replaced manual rescue logging with `handle_exception(...)` across library code paths and left Sinatra/API integration untouched for a later pass
+- Removed remaining `log_info`/`log_warn`/`log_debug` wrapper methods in `lib/` so helper-backed logging is used directly throughout the library
 
 ### Added
 - Runtime dependency on `legion-logging`

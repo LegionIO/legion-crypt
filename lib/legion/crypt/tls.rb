@@ -23,7 +23,7 @@ module Legion
           if enabled.nil? && port && TLS_PORTS.key?(port.to_i)
             enabled = true
             auto_detected = true
-            log_warn("TLS auto-enabled for port #{port}")
+            log.warn("TLS auto-enabled for port #{port}")
           end
 
           enabled = false if enabled.nil?
@@ -34,7 +34,7 @@ module Legion
           key    = resolve_uri(config[:key])
 
           if verify == :mutual && (cert.nil? || key.nil?)
-            log_warn('TLS mutual requested but cert or key missing, downgrading to peer')
+            log.warn('TLS mutual requested but cert or key missing, downgrading to peer')
             verify = :peer
           end
 
@@ -91,10 +91,6 @@ module Legion
         rescue StandardError => e
           handle_exception(e, level: :warn, operation: 'crypt.tls.resolve_uri')
           raise
-        end
-
-        def log_warn(msg)
-          log.warn(msg)
         end
       end
     end

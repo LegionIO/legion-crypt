@@ -30,7 +30,7 @@ module Legion
         @stop = false
         @thread = Thread.new { renewal_loop }
         @thread.name = "vault-renewer-#{@cluster_name}"
-        log_info('token renewal thread started')
+        log.info("TokenRenewer[#{@cluster_name}]: token renewal thread started")
       end
 
       def stop
@@ -51,11 +51,11 @@ module Legion
         result = @vault_client.auth_token.renew_self
         @config[:lease_duration] = result.auth.lease_duration
         @config[:renewable] = result.auth.renewable? if result.auth.respond_to?(:renewable?)
-        log_info("token renewed, ttl=#{result.auth.lease_duration}s")
+        log.info("TokenRenewer[#{@cluster_name}]: token renewed, ttl=#{result.auth.lease_duration}s")
         true
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.renew_token', cluster_name: @cluster_name)
-        log_warn("token renewal failed: #{e.message}")
+        log.warn("TokenRenewer[#{@cluster_name}]: token renewal failed: #{e.message}")
         false
       end
 
@@ -72,11 +72,11 @@ module Legion
         @config[:renewable]      = result[:renewable]
         @config[:connected]      = true
         @vault_client.token      = result[:token]
-        log_info('re-authenticated via Kerberos')
+        log.info("TokenRenewer[#{@cluster_name}]: re-authenticated via Kerberos")
         true
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.reauth_kerberos', cluster_name: @cluster_name)
-        log_warn("Kerberos re-auth failed: #{e.message}")
+        log.warn("TokenRenewer[#{@cluster_name}]: Kerberos re-auth failed: #{e.message}")
         false
       end
 
@@ -112,7 +112,7 @@ module Legion
         end
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.renewal_loop', cluster_name: @cluster_name)
-        log_warn("renewal loop error: #{e.message}")
+        log.warn("TokenRenewer[#{@cluster_name}]: renewal loop error: #{e.message}")
         retry unless @stop
       end
 
@@ -124,7 +124,7 @@ module Legion
       def on_renewal_failure
         @config[:connected] = false
         delay = next_backoff
-        log_warn("backoff retry in #{delay}s")
+        log.warn("TokenRenewer[#{@cluster_name}]: backoff retry in #{delay}s")
         interruptible_sleep(delay)
       end
 
@@ -141,16 +141,16 @@ module Legion
       def stop_thread_and_revoke
         return unless @thread
 
-        log_info('stopping token renewal thread')
+        log.info("TokenRenewer[#{@cluster_name}]: stopping token renewal thread")
         @thread.join(5)
         thread_still_running = @thread.alive?
 
         if thread_still_running
-          log_warn('token renewal thread did not stop within timeout; skipping token revocation')
+          log.warn("TokenRenewer[#{@cluster_name}]: token renewal thread did not stop within timeout; skipping token revocation")
         else
           @thread = nil
           revoke_token
-          log_debug('token renewal thread stopped')
+          log.debug("TokenRenewer[#{@cluster_name}]: token renewal thread stopped")
         end
       end
 
@@ -159,22 +159,10 @@ module Legion
         return unless @config[:auth_method]&.to_s == 'kerberos'
 
         @vault_client.auth_token.revoke_self
-        log_info('Vault token revoked')
+        log.info("TokenRenewer[#{@cluster_name}]: Vault token revoked")
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.revoke_token', cluster_name: @cluster_name)
-        log_warn("Vault token revoke failed: #{e.message}")
-      end
-
-      def log_debug(message)
-        log.debug("TokenRenewer[#{@cluster_name}]: #{message}")
-      end
-
-      def log_info(message)
-        log.info("TokenRenewer[#{@cluster_name}]: #{message}")
-      end
-
-      def log_warn(message)
-        log.warn("TokenRenewer[#{@cluster_name}]: #{message}")
+        log.warn("TokenRenewer[#{@cluster_name}]: Vault token revoke failed: #{e.message}")
       end
     end
   end
