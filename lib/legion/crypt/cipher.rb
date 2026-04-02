@@ -10,6 +10,9 @@ module Legion
       AUTHENTICATED_CIPHER = 'aes-256-gcm'
       LEGACY_CIPHER = 'aes-256-cbc'
       AUTHENTICATED_PREFIX = 'gcm'
+      RSA_OAEP_PREFIX = 'oaep'
+      RSA_OAEP_PADDING = OpenSSL::PKey::RSA::PKCS1_OAEP_PADDING
+      RSA_LEGACY_PADDING = OpenSSL::PKey::RSA::PKCS1_PADDING
 
       include Legion::Crypt::ClusterSecret
       include Legion::Logging::Helper
@@ -50,16 +53,21 @@ module Legion
       def encrypt_from_keypair(message:, pub_key: public_key)
         rsa_public_key = OpenSSL::PKey::RSA.new(pub_key)
 
-        encrypted_message = Base64.encode64(rsa_public_key.public_encrypt(message))
+        encrypted_message = rsa_public_key.public_encrypt(message, RSA_OAEP_PADDING)
+        encoded_message = "#{RSA_OAEP_PREFIX}:#{Base64.strict_encode64(encrypted_message)}"
         log.debug 'Cipher keypair encryption completed'
-        encrypted_message
+        encoded_message
       rescue StandardError => e
         handle_exception(e, level: :error, operation: 'crypt.cipher.encrypt_from_keypair')
         raise
       end
 
       def decrypt_from_keypair(message:, **_opts)
-        decrypted_message = private_key.private_decrypt(Base64.decode64(message))
+        decrypted_message = if rsa_oaep_ciphertext?(message)
+                              decrypt_oaep_from_keypair(message)
+                            else
+                              decrypt_legacy_from_keypair(message)
+                            end
         log.debug 'Cipher keypair decryption completed'
         decrypted_message
       rescue StandardError => e
@@ -120,6 +128,19 @@ module Legion
         decipher.key = secret
         decipher.iv = Base64.decode64(init_vector)
         decipher.update(Base64.decode64(message)) + decipher.final
+      end
+
+      def rsa_oaep_ciphertext?(message)
+        message.start_with?("#{RSA_OAEP_PREFIX}:")
+      end
+
+      def decrypt_oaep_from_keypair(message)
+        _, encoded_message = message.split(':', 2)
+        private_key.private_decrypt(Base64.strict_decode64(encoded_message), RSA_OAEP_PADDING)
+      end
+
+      def decrypt_legacy_from_keypair(message)
+        private_key.private_decrypt(Base64.decode64(message), RSA_LEGACY_PADDING)
       end
     end
   end

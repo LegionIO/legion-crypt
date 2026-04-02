@@ -45,12 +45,18 @@ RSpec.describe Legion::Crypt::Cipher do
     expect(@crypt.private_key).to be_a OpenSSL::PKey::RSA
     expect(@crypt.public_key).to be_a String
     expect(Base64.encode64(@crypt.private_key.public_key.to_s)).to be_a String
-    expect(@crypt.encrypt_from_keypair(message: 'test')).to be_a String
-    expect(@crypt.encrypt_from_keypair(message: 'test', pub_key: @crypt.public_key)).to be_a String
+    expect(@crypt.encrypt_from_keypair(message: 'test')).to start_with('oaep:')
+    expect(@crypt.encrypt_from_keypair(message: 'test', pub_key: @crypt.public_key)).to start_with('oaep:')
   end
 
   it 'can decrypt from keypair' do
     encrypt = @crypt.encrypt_from_keypair(message: 'test long message')
     expect(@crypt.decrypt_from_keypair(message: encrypt)).to eq 'test long message'
+  end
+
+  it 'can decrypt legacy pkcs1 keypair ciphertext' do
+    encrypted_message = Base64.encode64(@crypt.private_key.public_key.public_encrypt('legacy keypair message'))
+
+    expect(@crypt.decrypt_from_keypair(message: encrypted_message)).to eq 'legacy keypair message'
   end
 end
