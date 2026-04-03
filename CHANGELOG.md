@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.2] - 2026-04-03
+
+### Fixed
+- LeaseManager `at_exit` hook now wraps shutdown in a 10s timeout to prevent process hang when Logger Monitor or network I/O is blocked during crash exit
+
 ## [1.5.1] - 2026-04-03
 
 ### Fixed

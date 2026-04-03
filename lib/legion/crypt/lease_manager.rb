@@ -2,6 +2,7 @@
 
 require 'legion/logging/helper'
 require 'singleton'
+require 'timeout'
 
 module Legion
   module Crypt
@@ -156,7 +157,9 @@ module Legion
         at_exit do
           next if @state_mutex.synchronize { @active_leases.empty? }
 
-          shutdown
+          Timeout.timeout(10) { shutdown }
+        rescue Timeout::Error
+          warn '[LeaseManager] at_exit shutdown timed out after 10s'
         rescue StandardError # best effort on crash
           nil
         end
