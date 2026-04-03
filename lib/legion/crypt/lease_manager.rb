@@ -45,16 +45,8 @@ module Legion
               next
             end
 
-            @state_mutex.synchronize do
-              @lease_cache[name] = response.data || {}
-              @active_leases[name] = {
-                lease_id:       response.lease_id,
-                lease_duration: response.lease_duration,
-                renewable:      response.renewable?,
-                expires_at:     Time.now + (response.lease_duration || 0),
-                fetched_at:     Time.now
-              }
-            end
+            log_lease_response(name, response)
+            cache_lease(name, response)
             log.info("LeaseManager: fetched lease for '#{name}' from #{path}")
           rescue StandardError => e
             handle_exception(e, level: :warn, operation: 'crypt.lease_manager.start', lease_name: name, path: path)
@@ -169,6 +161,33 @@ module Legion
           nil
         end
         @at_exit_registered = true
+      end
+
+      def cache_lease(name, response)
+        @state_mutex.synchronize do
+          @lease_cache[name] = response.data || {}
+          @active_leases[name] = {
+            lease_id:       response.lease_id,
+            lease_duration: response.lease_duration,
+            renewable:      response.renewable?,
+            expires_at:     Time.now + (response.lease_duration || 0),
+            fetched_at:     Time.now
+          }
+        end
+      end
+
+      def log_lease_response(name, response)
+        data_keys = response.data&.keys&.map(&:to_s) || []
+        log.debug("LeaseManager[#{name}]: lease_id=#{response.lease_id}, " \
+                  "lease_duration=#{response.lease_duration}s, " \
+                  "renewable=#{response.renewable?}, " \
+                  "data_keys=#{data_keys.inspect}")
+        return unless response.data&.key?(:username)
+
+        log.debug("LeaseManager[#{name}]: username=#{response.data[:username]}, " \
+                  "password_length=#{response.data[:password]&.length || 0}, " \
+                  "vhost=#{response.data[:vhost] || 'N/A'}, " \
+                  "tags=#{response.data[:tags] || 'N/A'}")
       end
 
       def logical
