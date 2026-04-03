@@ -24,6 +24,8 @@ module Legion
         @state_mutex.synchronize { @vault_client = vault_client }
         return if definitions.nil? || definitions.empty?
 
+        register_at_exit_hook
+
         log.info "LeaseManager start requested definitions=#{definitions.size}"
         definitions.each do |name, opts|
           path = opts['path'] || opts[:path]
@@ -155,6 +157,19 @@ module Legion
       end
 
       private
+
+      def register_at_exit_hook
+        return if @at_exit_registered
+
+        at_exit do
+          next if @state_mutex.synchronize { @active_leases.empty? }
+
+          shutdown
+        rescue StandardError # best effort on crash
+          nil
+        end
+        @at_exit_registered = true
+      end
 
       def logical
         client = @state_mutex.synchronize { @vault_client }

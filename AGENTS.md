@@ -32,6 +32,15 @@ bundle exec rubocop
 - Maintain compatibility for Kerberos, LDAP, and JWT Vault auth paths.
 - Cryptographic defaults and key lifecycle behavior are contract-sensitive; change only with test coverage.
 
+## Known Risks
+
+- Vault-backed cluster secret sync is inconsistent today: config key mismatch, read/write path mismatch, and push happens before the new secret is stored.
+- External JWKS verification currently accepts tokens without issuer/audience enforcement unless the caller passes both explicitly; fail closed when touching this path.
+- Multi-cluster Vault behavior has correctness gaps around LDAP token propagation, default-cluster routing, and lease-manager client selection.
+- SPIFFE X.509 fetch currently falls back to a self-signed SVID on Workload API failure; treat that path as security-sensitive and avoid expanding the fallback behavior.
+- `Ed25519` and `Erasure` include helper paths that call `Legion::Crypt::Vault.read/write` directly; verify runtime behavior before relying on those helpers.
+- Current specs pass, but some of the highest-risk paths above are under-covered or only covered with mocks that preserve the existing behavior.
+
 ## Validation
 
 - Run targeted specs for changed auth/crypto paths first.

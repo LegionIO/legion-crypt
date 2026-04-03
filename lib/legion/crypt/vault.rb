@@ -47,7 +47,7 @@ module Legion
         raise
       end
 
-      def read(path, type = 'legion', cluster_name: nil)
+      def read(path, type = nil, cluster_name: nil)
         full_path = type.nil? || type.empty? ? path : "#{type}/#{path}"
         log_read_context(full_path, cluster_name: cluster_name)
         lease = logical_client(cluster_name: cluster_name).read(full_path)

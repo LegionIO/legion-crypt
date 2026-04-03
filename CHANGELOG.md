@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.1] - 2026-04-03
+
+### Fixed
+- Vault `read` method no longer prepends a `legion/` mount prefix to paths — the default `type` parameter changed from `'legion'` to `nil` to match the actual KV v2 mount path in the `legionio` namespace
+- LeaseManager now registers an `at_exit` hook to revoke active Vault leases on unclean process exit, preventing orphaned dynamic credentials (RabbitMQ users, PostgreSQL roles, Redis creds)
+
 ## [1.5.0] - 2026-04-02
 
 ### Fixed
