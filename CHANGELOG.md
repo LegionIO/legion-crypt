@@ -1,5 +1,16 @@
 # Legion::Crypt
 
+## [1.5.3] - 2026-04-06
+
+### Added
+- `JwksClient.prefetch!(url)` — fire-and-forget JWKS key fetch in background thread
+- `JwksClient.start_background_refresh!(url, interval:)` — `Concurrent::TimerTask` for hourly key refresh
+- `JwksClient.stop_background_refresh!` — stops background refresh timer task
+- `bootstrap_lease_ttl: 300` in vault defaults (5-minute TTL for bootstrap credentials)
+
+### Changed
+- `JwksClient.clear_cache` now also stops any running background refresh task
+
 ## [1.5.2] - 2026-04-03
 
 ### Fixed
