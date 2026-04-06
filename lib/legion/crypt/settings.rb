@@ -72,7 +72,8 @@ module Legion
             service_principal: nil,
             auth_path:         'auth/kerberos/login'
           },
-          clusters:            {}
+          clusters:            {},
+          bootstrap_lease_ttl: 300
         }
       end
     end

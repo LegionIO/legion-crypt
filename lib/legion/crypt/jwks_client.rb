@@ -6,6 +6,7 @@ require 'json'
 require 'openssl'
 require 'jwt'
 require 'legion/logging/helper'
+require 'concurrent'
 
 module Legion
   module Crypt
@@ -56,7 +57,33 @@ module Legion
           raise Legion::Crypt::JWT::InvalidTokenError, "signing key not found: #{kid}"
         end
 
+        def prefetch!(jwks_url)
+          Thread.new do
+            fetch_keys(jwks_url)
+          rescue StandardError => e
+            log.debug "JWKS prefetch failed for #{jwks_url}: #{e.message}" if respond_to?(:log)
+          end
+        end
+
+        def start_background_refresh!(jwks_url, interval: CACHE_TTL)
+          stop_background_refresh!
+
+          @refresh_task = Concurrent::TimerTask.new(execution_interval: interval, run_now: false) do
+            fetch_keys(jwks_url)
+          rescue StandardError => e
+            log.debug "JWKS background refresh failed: #{e.message}" if respond_to?(:log)
+          end
+          @refresh_task.execute
+          log.info "JWKS background refresh started (interval=#{interval}s)" if respond_to?(:log)
+        end
+
+        def stop_background_refresh!
+          @refresh_task&.shutdown
+          @refresh_task = nil
+        end
+
         def clear_cache
+          stop_background_refresh!
           @cache_mutex.synchronize { @cache = {} }
           @locks_mutex.synchronize { @locks = {} }
           log.info 'JWKS cache cleared'
