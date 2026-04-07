@@ -11,10 +11,26 @@ RSpec.describe Legion::Crypt do
            renewable?:     false)
   end
 
+  let(:vault_response_string_keys) do
+    double('Vault::Secret',
+           data:           { 'username' => 'bootstrap_user_str', 'password' => 'bootstrap_pass_str' },
+           lease_id:       'rabbitmq/creds/legionio-bootstrap/str123',
+           lease_duration: 300,
+           renewable?:     false)
+  end
+
   let(:identity_response) do
     double('Vault::Secret',
            data:           { username: 'identity_user', password: 'identity_pass' },
            lease_id:       'rabbitmq/creds/legionio-infra/def456',
+           lease_duration: 604_800,
+           renewable?:     true)
+  end
+
+  let(:identity_response_string_keys) do
+    double('Vault::Secret',
+           data:           { 'username' => 'identity_user_str', 'password' => 'identity_pass_str' },
+           lease_id:       'rabbitmq/creds/legionio-infra/str456',
            lease_duration: 604_800,
            renewable?:     true)
   end
@@ -115,6 +131,28 @@ RSpec.describe Legion::Crypt do
       described_class.fetch_bootstrap_rmq_creds
       conn = Legion::Settings.loader.settings.dig(:transport, :connection)
       expect(conn[:password]).to eq('bootstrap_pass')
+    end
+
+    context 'when Vault returns string-keyed data' do
+      before { allow(logical_double).to receive(:read).and_return(vault_response_string_keys) }
+
+      it 'writes username to transport connection settings from string key' do
+        described_class.fetch_bootstrap_rmq_creds
+        conn = Legion::Settings.loader.settings.dig(:transport, :connection)
+        expect(conn[:user]).to eq('bootstrap_user_str')
+      end
+
+      it 'writes password to transport connection settings from string key' do
+        described_class.fetch_bootstrap_rmq_creds
+        conn = Legion::Settings.loader.settings.dig(:transport, :connection)
+        expect(conn[:password]).to eq('bootstrap_pass_str')
+      end
+
+      it 'stores the bootstrap lease_id from string-keyed response' do
+        described_class.fetch_bootstrap_rmq_creds
+        expect(described_class.instance_variable_get(:@bootstrap_lease_id))
+          .to eq('rabbitmq/creds/legionio-bootstrap/str123')
+      end
     end
 
     context 'when vault is not connected' do
@@ -275,6 +313,28 @@ RSpec.describe Legion::Crypt do
         described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/xyz789')
         expect(sys_double).to receive(:revoke).with('boot/lease/xyz789')
         described_class.swap_to_identity_creds(mode: :agent)
+      end
+    end
+
+    context 'when Vault returns string-keyed identity data' do
+      before do
+        stub_const('Legion::Transport::Connection', transport_connection_double)
+        allow(transport_connection_double).to receive(:force_reconnect)
+        allow(Legion::Crypt::LeaseManager.instance).to receive(:register_dynamic_lease)
+        allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-infra')
+                                               .and_return(identity_response_string_keys)
+      end
+
+      it 'writes identity username to transport connection settings from string key' do
+        described_class.swap_to_identity_creds(mode: :agent)
+        conn = Legion::Settings.loader.settings.dig(:transport, :connection)
+        expect(conn[:user]).to eq('identity_user_str')
+      end
+
+      it 'writes identity password to transport connection settings from string key' do
+        described_class.swap_to_identity_creds(mode: :agent)
+        conn = Legion::Settings.loader.settings.dig(:transport, :connection)
+        expect(conn[:password]).to eq('identity_pass_str')
       end
     end
 
