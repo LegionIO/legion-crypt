@@ -97,6 +97,60 @@ module Legion
         log.info("Lease '#{name}' rotated — updated #{refs.size} settings reference(s)")
       end
 
+      # Public Vault client accessors used by Crypt for bootstrap/swap operations.
+      # Delegates to the configured vault_client or falls back to ::Vault.
+      def vault_logical
+        logical
+      end
+
+      def vault_sys
+        sys
+      end
+
+      def register_dynamic_lease(name:, path:, response:, settings_refs:)
+        @state_mutex.synchronize do
+          @lease_cache[name] = response.data || {}
+          @active_leases[name] = {
+            lease_id:       response.lease_id,
+            lease_duration: response.lease_duration,
+            expires_at:     Time.now + (response.lease_duration || 0),
+            fetched_at:     Time.now,
+            renewable:      response.renewable?,
+            path:           path
+          }
+        end
+        settings_refs.each do |ref|
+          register_ref(name, ref[:key], ref[:path])
+        end
+        log.info("LeaseManager: registered dynamic lease '#{name}' (path: #{path})")
+      end
+
+      def reissue_lease(name)
+        lease = @state_mutex.synchronize { @active_leases[name]&.dup }
+        return unless lease && lease[:path]
+
+        response = logical.read(lease[:path])
+        return unless response&.data
+
+        @state_mutex.synchronize do
+          @lease_cache[name] = response.data
+          @active_leases[name].merge!(
+            lease_id:   response.lease_id,
+            expires_at: Time.now + (response.lease_duration || 0),
+            fetched_at: Time.now
+          )
+        end
+        push_to_settings(name)
+
+        return unless name == :rabbitmq && defined?(Legion::Transport::Connection)
+
+        Legion::Transport::Connection.force_reconnect
+        log.info("LeaseManager: reissued lease '#{name}' and triggered transport reconnect")
+      rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.lease_manager.reissue_lease', lease_name: name)
+        log.warn("LeaseManager: failed to reissue lease '#{name}': #{e.message}")
+      end
+
       def start_renewal_thread
         @state_mutex.synchronize do
           return if @renewal_thread&.alive?

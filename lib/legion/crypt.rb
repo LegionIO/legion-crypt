@@ -25,6 +25,12 @@ module Legion
     extend Legion::Crypt::VaultCluster
     extend Legion::Crypt::LdapAuth
 
+    RMQ_ROLE_MAP = {
+      agent:  'legionio-infra',
+      worker: 'legionio-worker',
+      infra:  'legionio-infra'
+    }.freeze
+
     class << self
       attr_reader :sessions
 
@@ -97,6 +103,74 @@ module Legion
         settings[:jwt] || Legion::Crypt::Settings.jwt
       end
 
+      def dynamic_rmq_creds?
+        Legion::Settings.dig(:crypt, :vault, :dynamic_rmq_creds) == true
+      end
+
+      def fetch_bootstrap_rmq_creds
+        return unless vault_connected? && dynamic_rmq_creds?
+
+        Legion::Settings.merge_settings('transport', Legion::Transport::Settings.default) if defined?(Legion::Transport::Settings)
+
+        response = LeaseManager.instance.vault_logical.read('rabbitmq/creds/legionio-bootstrap')
+        return unless response&.data
+
+        @bootstrap_lease_id = response.lease_id
+        @bootstrap_lease_expires = Time.now + [response.lease_duration, 300].min
+
+        conn = Legion::Settings.loader.settings.dig(:transport, :connection) || {}
+        conn[:user]     = response.data[:username]
+        conn[:password] = response.data[:password]
+
+        log.info "Bootstrap RMQ credentials acquired (lease: #{@bootstrap_lease_id[0..7]}...)"
+      rescue StandardError => e
+        log.warn "Bootstrap RMQ credential fetch failed: #{e.message}"
+      end
+
+      def swap_to_identity_creds(mode:)
+        return unless vault_connected? && dynamic_rmq_creds?
+        return if mode == :lite
+
+        role = RMQ_ROLE_MAP.fetch(mode, "legionio-#{mode}")
+        response = LeaseManager.instance.vault_logical.read("rabbitmq/creds/#{role}")
+        raise "Failed to fetch identity-scoped RMQ creds for role #{role}" unless response&.data
+
+        LeaseManager.instance.register_dynamic_lease(
+          name:          :rabbitmq,
+          path:          "rabbitmq/creds/#{role}",
+          response:      response,
+          settings_refs: [
+            { path: %i[transport connection user],     key: :username },
+            { path: %i[transport connection password], key: :password }
+          ]
+        )
+
+        conn = Legion::Settings.loader.settings.dig(:transport, :connection) || {}
+        conn[:user]     = response.data[:username]
+        conn[:password] = response.data[:password]
+
+        if defined?(Legion::Transport::Connection)
+          Legion::Transport::Connection.force_reconnect
+          raise 'Transport reconnect failed after credential swap — bootstrap lease NOT revoked' unless Legion::Transport::Connection.session_open?
+
+          log.info "Transport reconnected with identity-scoped creds (role: #{role})"
+        end
+
+        revoke_bootstrap_lease
+      end
+
+      def revoke_bootstrap_lease
+        return unless @bootstrap_lease_id
+
+        LeaseManager.instance.vault_sys.revoke(@bootstrap_lease_id)
+        log.info "Bootstrap RMQ lease revoked (#{@bootstrap_lease_id[0..7]}...)"
+        @bootstrap_lease_id      = nil
+        @bootstrap_lease_expires = nil
+      rescue StandardError => e
+        log.warn "Bootstrap lease revocation failed: #{e.message} — lease will expire naturally"
+        @bootstrap_lease_id = nil
+      end
+
       def vault_connected?
         return true if settings.dig(:vault, :connected) == true
         return true if respond_to?(:connected_clusters) && connected_clusters.any?
@@ -156,8 +230,10 @@ module Legion
 
       def start_lease_manager
         leases = settings.dig(:vault, :leases) || {}
-        return if leases.empty?
-        return unless connected_clusters.any? || settings.dig(:vault, :connected)
+        vault_ok = connected_clusters.any? || settings.dig(:vault, :connected)
+
+        return if leases.empty? && !dynamic_rmq_creds?
+        return unless vault_ok
 
         client = nil
 
@@ -167,15 +243,19 @@ module Legion
         elsif settings.dig(:vault, :connected)
           client = vault_client
         end
+
         lease_manager = Legion::Crypt::LeaseManager.instance
         lease_manager.start(leases, vault_client: client)
         lease_manager.start_renewal_thread
-        fetched = lease_manager.fetched_count
-        defined = leases.size
-        if fetched == defined
-          log.info "LeaseManager: #{fetched} lease(s) initialized"
-        else
-          log.warn "LeaseManager: #{fetched}/#{defined} lease(s) initialized (#{defined - fetched} failed)"
+
+        unless leases.empty?
+          fetched = lease_manager.fetched_count
+          defined = leases.size
+          if fetched == defined
+            log.info "LeaseManager: #{fetched} lease(s) initialized"
+          else
+            log.warn "LeaseManager: #{fetched}/#{defined} lease(s) initialized (#{defined - fetched} failed)"
+          end
         end
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.start_lease_manager')

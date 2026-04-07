@@ -73,7 +73,9 @@ module Legion
             auth_path:         'auth/kerberos/login'
           },
           clusters:            {},
-          bootstrap_lease_ttl: 300
+          bootstrap_lease_ttl: 300,
+          dynamic_rmq_creds:   false,
+          dynamic_pg_creds:    false
         }
       end
     end
