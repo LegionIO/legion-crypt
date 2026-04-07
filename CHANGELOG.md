@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [Unreleased]
+
+### Added
+- `JWT.issue_identity_token` — convenience method wrapping `JWT.issue` with identity claims from `Identity::Process` (Wire Format Phase 3)
+
 ## [1.5.3] - 2026-04-06
 
 ### Added
