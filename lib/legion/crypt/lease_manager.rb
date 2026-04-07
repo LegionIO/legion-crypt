@@ -133,11 +133,16 @@ module Legion
         return unless response&.data
 
         @state_mutex.synchronize do
+          active_lease = @active_leases[name]
+          next unless active_lease
+
           @lease_cache[name] = response.data
-          @active_leases[name].merge!(
-            lease_id:   response.lease_id,
-            expires_at: Time.now + (response.lease_duration || 0),
-            fetched_at: Time.now
+          active_lease.merge!(
+            lease_id:       response.lease_id,
+            lease_duration: response.lease_duration,
+            expires_at:     Time.now + (response.lease_duration || 0),
+            fetched_at:     Time.now,
+            renewable:      response.renewable?
           )
         end
         push_to_settings(name)

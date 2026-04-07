@@ -115,10 +115,16 @@ module Legion
         response = LeaseManager.instance.vault_logical.read('rabbitmq/creds/legionio-bootstrap')
         return unless response&.data
 
-        @bootstrap_lease_id = response.lease_id
-        @bootstrap_lease_expires = Time.now + [response.lease_duration, 300].min
+        bootstrap_lease_ttl = Legion::Settings.dig(:crypt, :vault, :bootstrap_lease_ttl).to_i
+        bootstrap_lease_ttl = 300 if bootstrap_lease_ttl <= 0
 
-        conn = Legion::Settings.loader.settings.dig(:transport, :connection) || {}
+        @bootstrap_lease_id = response.lease_id
+        @bootstrap_lease_expires = Time.now + [response.lease_duration, bootstrap_lease_ttl].min
+
+        settings = Legion::Settings.loader.settings
+        settings[:transport] ||= {}
+        settings[:transport][:connection] ||= {}
+        conn = settings[:transport][:connection]
         conn[:user]     = response.data[:username]
         conn[:password] = response.data[:password]
 
@@ -145,7 +151,10 @@ module Legion
           ]
         )
 
-        conn = Legion::Settings.loader.settings.dig(:transport, :connection) || {}
+        settings = Legion::Settings.loader.settings
+        settings[:transport] ||= {}
+        settings[:transport][:connection] ||= {}
+        conn = settings[:transport][:connection]
         conn[:user]     = response.data[:username]
         conn[:password] = response.data[:password]
 
@@ -168,7 +177,8 @@ module Legion
         @bootstrap_lease_expires = nil
       rescue StandardError => e
         log.warn "Bootstrap lease revocation failed: #{e.message} — lease will expire naturally"
-        @bootstrap_lease_id = nil
+        @bootstrap_lease_id      = nil
+        @bootstrap_lease_expires = nil
       end
 
       def vault_connected?

@@ -351,6 +351,14 @@ RSpec.describe Legion::Crypt do
       expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to be_nil
     end
 
+    it 'clears @bootstrap_lease_expires even when revocation fails' do
+      described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
+      described_class.instance_variable_set(:@bootstrap_lease_expires, Time.now + 100)
+      allow(sys_double).to receive(:revoke).and_raise(StandardError, 'vault down')
+      described_class.revoke_bootstrap_lease
+      expect(described_class.instance_variable_get(:@bootstrap_lease_expires)).to be_nil
+    end
+
     it 'is idempotent — second call is a no-op' do
       described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
       described_class.revoke_bootstrap_lease

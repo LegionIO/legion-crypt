@@ -583,6 +583,25 @@ RSpec.describe Legion::Crypt::LeaseManager do
       expect(manager.active_leases[:rabbitmq][:expires_at]).to be >= before_call
     end
 
+    it 'updates lease_duration in active_leases from the reissued response' do
+      manager.reissue_lease(:rabbitmq)
+      expect(manager.active_leases[:rabbitmq][:lease_duration]).to eq(604_800)
+    end
+
+    it 'updates renewable in active_leases from the reissued response' do
+      manager.reissue_lease(:rabbitmq)
+      expect(manager.active_leases[:rabbitmq][:renewable]).to be(true)
+    end
+
+    it 'does not raise when the active_leases entry is removed before the synchronize block runs' do
+      # Simulate the entry being removed (e.g. during shutdown) between the initial read and the merge
+      allow(Vault).to receive_message_chain(:logical, :read).and_return(reissued_response) do
+        manager.instance_variable_get(:@active_leases).delete(:rabbitmq)
+        reissued_response
+      end
+      expect { manager.reissue_lease(:rabbitmq) }.not_to raise_error
+    end
+
     it 'updates fetched_at in active_leases' do
       before_call = Time.now
       manager.reissue_lease(:rabbitmq)
