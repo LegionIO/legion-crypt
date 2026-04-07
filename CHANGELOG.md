@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-04-07
+
+### Added
+- `RMQ_ROLE_MAP` constant mapping `:agent`/`:infra` → `'legionio-infra'` and `:worker` → `'legionio-worker'` for Vault RabbitMQ role selection (Phase 5 credential scoping)
+- `dynamic_rmq_creds?` helper reads `Settings[:crypt][:vault][:dynamic_rmq_creds]` flag
+- `fetch_bootstrap_rmq_creds` — fetches short-lived bootstrap RabbitMQ credentials from `rabbitmq/creds/legionio-bootstrap` and writes them to `Settings[:transport][:connection]`; gated on `vault_connected? && dynamic_rmq_creds?`; stores `@bootstrap_lease_id` for later revocation; rescue-safe
+- `swap_to_identity_creds(mode:)` — fetches identity-scoped RabbitMQ credentials from the role matching `mode`, registers them with `LeaseManager` for renewal, updates transport settings, calls `Transport::Connection.force_reconnect`, and revokes the bootstrap lease; raises if reconnect fails (before revoking bootstrap)
+- `revoke_bootstrap_lease` — revokes `@bootstrap_lease_id` via `LeaseManager#vault_sys`; non-fatal on failure; idempotent
+- `LeaseManager#register_dynamic_lease` — registers a dynamically-fetched Vault lease into the cache and active lease tracking with mutex, stores `path` for `reissue_lease`, registers settings refs for rotation push-back
+- `LeaseManager#reissue_lease(name)` — performs a full re-read (`logical.read(path)`) at credential rotation time, updates cache + active_leases in mutex, calls `push_to_settings`, triggers `Transport::Connection.force_reconnect` for `:rabbitmq` leases
+- `LeaseManager#vault_logical` and `LeaseManager#vault_sys` — public delegators to the private `logical`/`sys` methods for use by `Crypt` bootstrap/swap operations
+- `dynamic_rmq_creds: false` and `dynamic_pg_creds: false` defaults added to vault settings
+
+### Changed
+- `start_lease_manager` now starts the renewal thread when `dynamic_rmq_creds: true` even if no static leases are configured, ensuring the renewal loop is running before identity-scoped leases are registered post-boot
+
 ## [1.5.4] - 2026-04-06
 
 ### Added

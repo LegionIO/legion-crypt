@@ -97,6 +97,67 @@ module Legion
         log.info("Lease '#{name}' rotated — updated #{refs.size} settings reference(s)")
       end
 
+      # Public Vault client accessors used by Crypt for bootstrap/swap operations.
+      # Delegates to the configured vault_client or falls back to ::Vault.
+      def vault_logical
+        logical
+      end
+
+      def vault_sys
+        sys
+      end
+
+      def register_dynamic_lease(name:, path:, response:, settings_refs:)
+        register_at_exit_hook
+
+        @state_mutex.synchronize do
+          @lease_cache[name] = response.data || {}
+          @active_leases[name] = {
+            lease_id:       response.lease_id,
+            lease_duration: response.lease_duration,
+            expires_at:     Time.now + (response.lease_duration || 0),
+            fetched_at:     Time.now,
+            renewable:      response.renewable?,
+            path:           path
+          }
+        end
+        settings_refs.each do |ref|
+          register_ref(name, ref[:key], ref[:path])
+        end
+        log.info("LeaseManager: registered dynamic lease '#{name}' (path: #{path})")
+      end
+
+      def reissue_lease(name)
+        lease = @state_mutex.synchronize { @active_leases[name]&.dup }
+        return unless lease && lease[:path]
+
+        response = logical.read(lease[:path])
+        return unless response&.data
+
+        @state_mutex.synchronize do
+          active_lease = @active_leases[name]
+          next unless active_lease
+
+          @lease_cache[name] = response.data
+          active_lease.merge!(
+            lease_id:       response.lease_id,
+            lease_duration: response.lease_duration,
+            expires_at:     Time.now + (response.lease_duration || 0),
+            fetched_at:     Time.now,
+            renewable:      response.renewable?
+          )
+        end
+        push_to_settings(name)
+
+        return unless name == :rabbitmq && defined?(Legion::Transport::Connection)
+
+        Legion::Transport::Connection.force_reconnect
+        log.info("LeaseManager: reissued lease '#{name}' and triggered transport reconnect")
+      rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.lease_manager.reissue_lease', lease_name: name)
+        log.warn("LeaseManager: failed to reissue lease '#{name}': #{e.message}")
+      end
+
       def start_renewal_thread
         @state_mutex.synchronize do
           return if @renewal_thread&.alive?
@@ -240,10 +301,14 @@ module Legion
         leases.each do |name|
           lease = @state_mutex.synchronize { @active_leases[name]&.dup }
           next unless lease
-          next unless lease[:renewable]
           next unless approaching_expiry?(lease)
 
-          renew_lease(name, lease)
+          if lease[:renewable]
+            renew_lease(name, lease)
+          elsif lease[:path]
+            log.info("LeaseManager: lease '#{name}' is non-renewable and approaching expiry — re-issuing")
+            reissue_lease(name)
+          end
         end
       end
 
@@ -267,6 +332,7 @@ module Legion
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.renew_lease', lease_name: name)
         log.warn("LeaseManager: failed to renew lease '#{name}': #{e.message}")
+        reissue_lease(name) if lease[:path]
       end
 
       def lease_valid?(name)
