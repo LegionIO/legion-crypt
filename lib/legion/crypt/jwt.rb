@@ -36,7 +36,7 @@ module Legion
         raise
       end
 
-      def self.issue_identity_token(signing_key:, extra_claims: {}, algorithm: 'HS256', ttl: 3600)
+      def self.issue_identity_token(signing_key:, extra_claims: {}, algorithm: 'HS256', ttl: 3600, issuer: 'legion')
         unless defined?(Legion::Identity::Process) && Legion::Identity::Process.resolved?
           raise ArgumentError,
                 'Identity::Process not resolved'
@@ -51,9 +51,12 @@ module Legion
           mode:           identity[:mode].to_s,
           groups:         (identity[:groups] || [])[0, 50]
         }
-        payload = extra_claims.merge(identity_fields)
+        normalized_extra_claims = symbolize_keys(extra_claims || {}).reject do |key, _value|
+          identity_fields.key?(key)
+        end
+        payload = normalized_extra_claims.merge(identity_fields)
 
-        issue(payload, signing_key: signing_key, algorithm: algorithm, ttl: ttl)
+        issue(payload, signing_key: signing_key, algorithm: algorithm, ttl: ttl, issuer: issuer)
       end
 
       def self.verify(token, verification_key:, **opts)

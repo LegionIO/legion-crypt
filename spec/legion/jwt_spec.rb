@@ -88,7 +88,7 @@ RSpec.describe Legion::Crypt::JWT do
   end
 
   describe '.issue_identity_token' do
-    let(:identity) do
+    let(:identity_hash) do
       {
         id:             'identity-123',
         canonical_name: 'agent@example.com',
@@ -113,19 +113,19 @@ RSpec.describe Legion::Crypt::JWT do
         end
       )
 
-      Legion::Identity::Process.identity_hash = identity
+      Legion::Identity::Process.identity_hash = identity_hash
       Legion::Identity::Process.resolved = identity_resolved
     end
 
     it 'issues a token with immutable identity claims and preserves extra claims' do
       token = described_class.issue_identity_token(
-        signing_key: signing_key,
+        signing_key:  signing_key,
         extra_claims: {
           sub:    'override-me',
           groups: %w[override],
           role:   'worker'
         },
-        ttl: 120
+        ttl:          120
       )
 
       decoded = described_class.decode(token)
@@ -135,8 +135,60 @@ RSpec.describe Legion::Crypt::JWT do
       expect(decoded[:canonical_name]).to eq('agent@example.com')
       expect(decoded[:kind]).to eq('service')
       expect(decoded[:mode]).to eq('automated')
-      expect(decoded[:groups]).to eq(identity[:groups].first(50))
+      expect(decoded[:groups]).to eq(identity_hash[:groups].first(50))
       expect(decoded[:role]).to eq('worker')
+    end
+
+    it 'passes issuer kwarg through to JWT.issue' do
+      token = described_class.issue_identity_token(signing_key: signing_key, issuer: 'my-cluster')
+      decoded = described_class.decode(token)
+      expect(decoded[:iss]).to eq('my-cluster')
+    end
+
+    it 'defaults issuer to legion' do
+      token = described_class.issue_identity_token(signing_key: signing_key)
+      decoded = described_class.decode(token)
+      expect(decoded[:iss]).to eq('legion')
+    end
+
+    it 'prevents extra_claims from overriding identity fields via string keys' do
+      token = described_class.issue_identity_token(
+        signing_key:  signing_key,
+        extra_claims: { 'sub' => 'evil', 'canonical_name' => 'forged' }
+      )
+      decoded = described_class.decode(token)
+      expect(decoded[:sub]).to eq('agent@example.com')
+      expect(decoded[:canonical_name]).to eq('agent@example.com')
+    end
+
+    it 'merges non-conflicting extra_claims into token' do
+      token = described_class.issue_identity_token(
+        signing_key:  signing_key,
+        extra_claims: { tenant_id: 'acme', role: 'agent' }
+      )
+      decoded = described_class.decode(token)
+      expect(decoded[:tenant_id]).to eq('acme')
+      expect(decoded[:role]).to eq('agent')
+    end
+
+    it 'caps groups at 50 entries' do
+      token = described_class.issue_identity_token(signing_key: signing_key)
+      decoded = described_class.decode(token)
+      expect(decoded[:groups].length).to eq(50)
+    end
+
+    it 'handles nil groups gracefully' do
+      Legion::Identity::Process.identity_hash = identity_hash.merge(groups: nil)
+      token = described_class.issue_identity_token(signing_key: signing_key)
+      decoded = described_class.decode(token)
+      expect(decoded[:groups]).to eq([])
+    end
+
+    it 'raises ArgumentError when Identity::Process is not defined' do
+      hide_const('Legion::Identity::Process')
+      expect do
+        described_class.issue_identity_token(signing_key: signing_key)
+      end.to raise_error(ArgumentError, /Identity::Process not resolved/)
     end
 
     context 'when identity process is not resolved' do
