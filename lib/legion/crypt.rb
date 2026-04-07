@@ -125,8 +125,16 @@ module Legion
         settings[:transport] ||= {}
         settings[:transport][:connection] ||= {}
         conn = settings[:transport][:connection]
-        conn[:user]     = response.data[:username]
-        conn[:password] = response.data[:password]
+        username = response.data[:username] || response.data['username']
+        password = response.data[:password] || response.data['password']
+
+        unless username && password
+          log.warn 'Bootstrap RMQ credential fetch returned nil username or password — skipping settings update'
+          return
+        end
+
+        conn[:user]     = username
+        conn[:password] = password
 
         log.info "Bootstrap RMQ credentials acquired (lease: #{@bootstrap_lease_id[0..7]}...)"
       rescue StandardError => e
@@ -155,8 +163,12 @@ module Legion
         settings[:transport] ||= {}
         settings[:transport][:connection] ||= {}
         conn = settings[:transport][:connection]
-        conn[:user]     = response.data[:username]
-        conn[:password] = response.data[:password]
+        username = response.data[:username] || response.data['username']
+        password = response.data[:password] || response.data['password']
+        raise "Identity-scoped RMQ creds for role #{role} missing username or password" unless username && password
+
+        conn[:user]     = username
+        conn[:password] = password
 
         if defined?(Legion::Transport::Connection)
           Legion::Transport::Connection.force_reconnect

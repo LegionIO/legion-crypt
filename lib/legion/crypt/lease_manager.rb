@@ -108,6 +108,8 @@ module Legion
       end
 
       def register_dynamic_lease(name:, path:, response:, settings_refs:)
+        register_at_exit_hook
+
         @state_mutex.synchronize do
           @lease_cache[name] = response.data || {}
           @active_leases[name] = {
@@ -299,10 +301,14 @@ module Legion
         leases.each do |name|
           lease = @state_mutex.synchronize { @active_leases[name]&.dup }
           next unless lease
-          next unless lease[:renewable]
           next unless approaching_expiry?(lease)
 
-          renew_lease(name, lease)
+          if lease[:renewable]
+            renew_lease(name, lease)
+          elsif lease[:path]
+            log.info("LeaseManager: lease '#{name}' is non-renewable and approaching expiry — re-issuing")
+            reissue_lease(name)
+          end
         end
       end
 
@@ -326,6 +332,7 @@ module Legion
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.renew_lease', lease_name: name)
         log.warn("LeaseManager: failed to renew lease '#{name}': #{e.message}")
+        reissue_lease(name) if lease[:path]
       end
 
       def lease_valid?(name)
