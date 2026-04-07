@@ -87,6 +87,69 @@ RSpec.describe Legion::Crypt::JWT do
     end
   end
 
+  describe '.issue_identity_token' do
+    let(:identity) do
+      {
+        id:             'identity-123',
+        canonical_name: 'agent@example.com',
+        kind:           :service,
+        mode:           :automated,
+        groups:         (1..55).map { |i| "group-#{i}" }
+      }
+    end
+    let(:identity_resolved) { true }
+
+    before do
+      stub_const(
+        'Legion::Identity::Process',
+        Module.new do
+          class << self
+            attr_accessor :identity_hash, :resolved
+          end
+
+          def self.resolved?
+            resolved
+          end
+        end
+      )
+
+      Legion::Identity::Process.identity_hash = identity
+      Legion::Identity::Process.resolved = identity_resolved
+    end
+
+    it 'issues a token with immutable identity claims and preserves extra claims' do
+      token = described_class.issue_identity_token(
+        signing_key: signing_key,
+        extra_claims: {
+          sub:    'override-me',
+          groups: %w[override],
+          role:   'worker'
+        },
+        ttl: 120
+      )
+
+      decoded = described_class.decode(token)
+
+      expect(decoded[:sub]).to eq('agent@example.com')
+      expect(decoded[:principal_id]).to eq('identity-123')
+      expect(decoded[:canonical_name]).to eq('agent@example.com')
+      expect(decoded[:kind]).to eq('service')
+      expect(decoded[:mode]).to eq('automated')
+      expect(decoded[:groups]).to eq(identity[:groups].first(50))
+      expect(decoded[:role]).to eq('worker')
+    end
+
+    context 'when identity process is not resolved' do
+      let(:identity_resolved) { false }
+
+      it 'raises an error' do
+        expect do
+          described_class.issue_identity_token(signing_key: signing_key)
+        end.to raise_error(ArgumentError, /Identity::Process not resolved/)
+      end
+    end
+  end
+
   describe '.verify' do
     it 'verifies a valid HS256 token' do
       token = described_class.issue(payload, signing_key: signing_key)
