@@ -50,7 +50,7 @@ module Legion
             log_lease_response(name, response)
             cache_lease(name, response, path: path)
             log.info("LeaseManager: fetched lease '#{name}' from #{path} " \
-                     "(lease_id=#{response.lease_id[0..11]}... ttl=#{response.lease_duration}s renewable=#{response.renewable?})")
+                     "(lease_id=#{response.lease_id.to_s[0..11]}... ttl=#{response.lease_duration}s renewable=#{response.renewable?})")
           rescue StandardError => e
             handle_exception(e, level: :warn, operation: 'crypt.lease_manager.start', lease_name: name, path: path)
             log.warn("LeaseManager: failed to fetch lease '#{name}' from #{path}: #{e.message}")
@@ -156,8 +156,9 @@ module Legion
             renewable:      response.renewable?
           )
         end
+        lease_id_preview = response.lease_id.to_s[0..11]
         log.info("LeaseManager: reissued lease '#{name}' " \
-                 "(new_lease_id=#{response.lease_id[0..11]}... ttl=#{response.lease_duration}s)")
+                 "(new_lease_id=#{lease_id_preview}... ttl=#{response.lease_duration}s)")
         push_to_settings(name)
         trigger_reconnect(name)
       rescue StandardError => e
@@ -330,8 +331,21 @@ module Legion
       end
 
       def renew_lease(name, lease)
-        log.info("LeaseManager: renewing lease '#{name}' (lease_id=#{lease[:lease_id][0..11]}...)")
-        response = sys.renew(lease[:lease_id])
+        lease_id = lease[:lease_id].to_s
+        if lease_id.empty?
+          log.warn("LeaseManager: lease '#{name}' is renewable but has no lease_id")
+          if lease[:path]
+            log.warn("LeaseManager: falling back to reissue for '#{name}' from #{lease[:path]}")
+            reissue_lease(name)
+          else
+            log.warn("LeaseManager: lease '#{name}' renewal failed and no path available for reissue — " \
+                     "lease will expire at #{lease[:expires_at]}")
+          end
+          return
+        end
+
+        log.info("LeaseManager: renewing lease '#{name}' (lease_id=#{lease_id[0..11]}...)")
+        response = sys.renew(lease_id)
         new_ttl = response.respond_to?(:lease_duration) ? response.lease_duration : nil
         @state_mutex.synchronize do
           current_lease = @active_leases[name]
@@ -417,6 +431,7 @@ module Legion
       end
 
       def trigger_reconnect(name)
+        name = name.to_sym if name.respond_to?(:to_sym)
         case name
         when :rabbitmq
           return unless defined?(Legion::Transport::Connection)
