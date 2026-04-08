@@ -22,12 +22,12 @@ module Legion
             managed_by:            'legion'
           )
         )
-        response&.data&.dig(:id)
+        extract_id(response)
       rescue ::Vault::HTTPClientError => e
-        log.warn "Vault entity creation failed (#{canonical_name}): #{e.message}" if defined?(Legion::Logging)
+        log.warn "Vault entity creation failed (#{canonical_name}): #{e.message}"
         nil
       rescue StandardError => e
-        log.warn "Vault entity creation unexpected error (#{canonical_name}): #{e.message}" if defined?(Legion::Logging)
+        log.warn "Vault entity creation unexpected error (#{canonical_name}): #{e.message}"
         nil
       end
 
@@ -43,10 +43,10 @@ module Legion
       rescue ::Vault::HTTPClientError => e
         raise unless e.message.include?('already exists')
 
-        log.debug 'Vault entity alias already exists (idempotent)' if defined?(Legion::Logging)
+        log.debug 'Vault entity alias already exists (idempotent)'
         nil
       rescue StandardError => e
-        log.warn "Vault entity alias creation unexpected error (#{alias_name}): #{e.message}" if defined?(Legion::Logging)
+        log.warn "Vault entity alias creation unexpected error (#{alias_name}): #{e.message}"
         nil
       end
 
@@ -54,12 +54,13 @@ module Legion
       # Returns the Vault entity ID string, or nil if not found.
       def self.find_by_name(canonical_name)
         response = vault_logical.read("identity/entity/name/legion-#{canonical_name}")
-        response&.data&.dig(:id)
-      rescue ::Vault::HTTPClientError
-        # 404-class: entity does not exist yet — not an error
+        extract_id(response)
+      rescue ::Vault::HTTPClientError => e
+        # Re-log non-404 client errors as warnings before swallowing
+        log.warn "Vault entity lookup client error (#{canonical_name}): #{e.message}" unless e.message.match?(/not found|does not exist|404/i)
         nil
       rescue StandardError => e
-        log.warn "Vault entity lookup failed (#{canonical_name}): #{e.message}" if defined?(Legion::Logging)
+        log.warn "Vault entity lookup failed (#{canonical_name}): #{e.message}"
         nil
       end
 
@@ -75,6 +76,16 @@ module Legion
         end
       end
       private_class_method :vault_logical
+
+      # Extract entity ID from a Vault response, supporting both symbol and
+      # string keys (Vault SDK may return either depending on version/transport).
+      def self.extract_id(response)
+        data = response&.data
+        return nil unless data
+
+        data[:id] || data['id']
+      end
+      private_class_method :extract_id
     end
   end
 end

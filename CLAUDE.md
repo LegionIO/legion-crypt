@@ -8,7 +8,7 @@
 Handles encryption, decryption, secrets management, JWT token management, and HashiCorp Vault connectivity for the LegionIO framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, and Vault token lifecycle management.
 
 **GitHub**: https://github.com/LegionIO/legion-crypt
-**Version**: 1.5.3
+**Version**: 1.5.6
 **License**: Apache-2.0
 
 ## Architecture

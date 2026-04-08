@@ -17,6 +17,10 @@ RSpec.describe Legion::Crypt::VaultEntity do
     double('Vault::Secret', data: { id: entity_id, name: "legion-#{canonical_name}" })
   end
 
+  let(:entity_response_string_keys) do
+    double('Vault::Secret', data: { 'id' => entity_id, 'name' => "legion-#{canonical_name}" })
+  end
+
   let(:alias_response) do
     double('Vault::Secret', data: { id: 'alias-xyz-456' })
   end
@@ -148,6 +152,26 @@ RSpec.describe Legion::Crypt::VaultEntity do
           canonical_name: canonical_name
         )
         expect(result).to be_nil
+      end
+    end
+
+    context 'when write response returns string-keyed data' do
+      before do
+        allow(vault_logical).to receive(:read)
+          .with("identity/entity/name/legion-#{canonical_name}")
+          .and_return(nil)
+
+        allow(vault_logical).to receive(:write)
+          .with('identity/entity', anything)
+          .and_return(entity_response_string_keys)
+      end
+
+      it 'returns the entity ID from string-keyed response' do
+        result = described_class.ensure_entity(
+          principal_id:   principal_id,
+          canonical_name: canonical_name
+        )
+        expect(result).to eq(entity_id)
       end
     end
 
@@ -345,6 +369,32 @@ RSpec.describe Legion::Crypt::VaultEntity do
       end
 
       it 'returns nil' do
+        result = described_class.find_by_name(canonical_name)
+        expect(result).to be_nil
+      end
+    end
+
+    context 'when response returns string-keyed data' do
+      before do
+        allow(vault_logical).to receive(:read)
+          .with("identity/entity/name/legion-#{canonical_name}")
+          .and_return(entity_response_string_keys)
+      end
+
+      it 'returns the entity ID from string-keyed response' do
+        result = described_class.find_by_name(canonical_name)
+        expect(result).to eq(entity_id)
+      end
+    end
+
+    context 'when Vault raises a non-404 HTTPClientError' do
+      before do
+        allow(vault_logical).to receive(:read)
+          .with("identity/entity/name/legion-#{canonical_name}")
+          .and_raise(Vault::HTTPClientError, 'permission denied')
+      end
+
+      it 'returns nil without raising' do
         result = described_class.find_by_name(canonical_name)
         expect(result).to be_nil
       end
