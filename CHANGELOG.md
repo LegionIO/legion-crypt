@@ -7,7 +7,7 @@
 ### Added
 - `VaultEntity` module (`lib/legion/crypt/vault_entity.rb`) — Phase 7 Vault identity tracking
   - `ensure_entity(principal_id:, canonical_name:, metadata: {})` — creates or finds a Vault entity for a Legion principal; entity names are prefixed with `legion-` to avoid collision; metadata includes `legion_principal_id`, `legion_canonical_name`, and `managed_by: 'legion'`; returns entity ID string or nil on failure (non-fatal)
-  - `ensure_alias(entity_id:, mount_accessor:, alias_name:)` — creates an entity alias linking an auth method mount to the entity; idempotent (`already exists` HTTPClientError is swallowed); other 4xx errors re-raise
+  - `ensure_alias(entity_id:, mount_accessor:, alias_name:)` — creates an entity alias linking an auth method mount to the entity; idempotent (`already exists` HTTPClientError is swallowed); all other `Vault::HTTPClientError` responses log warn and return nil (non-fatal)
   - `find_by_name(canonical_name)` — looks up a Vault entity by its Legion canonical name via `identity/entity/name/legion-{name}`; returns entity ID or nil
   - All operations are non-fatal — rescue and log warn on failure; boot/request flow is never blocked by entity tracking errors
   - Delegates Vault API calls to `LeaseManager.instance.vault_logical` (public delegator) when available; falls back to `::Vault.logical`

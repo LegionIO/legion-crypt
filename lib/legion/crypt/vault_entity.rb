@@ -41,9 +41,11 @@ module Legion
           mount_accessor: mount_accessor
         )
       rescue ::Vault::HTTPClientError => e
-        raise unless e.message.include?('already exists')
-
-        log.debug 'Vault entity alias already exists (idempotent)'
+        if e.message.include?('already exists')
+          log.debug 'Vault entity alias already exists (idempotent)'
+        else
+          log.warn "Vault entity alias creation failed (#{alias_name}): #{e.message}"
+        end
         nil
       rescue StandardError => e
         log.warn "Vault entity alias creation unexpected error (#{alias_name}): #{e.message}"

@@ -270,14 +270,13 @@ RSpec.describe Legion::Crypt::VaultEntity do
           .and_raise(err)
       end
 
-      it 're-raises the error' do
-        expect do
-          described_class.ensure_alias(
-            entity_id:      entity_id,
-            mount_accessor: mount_accessor,
-            alias_name:     alias_name
-          )
-        end.to raise_error(Vault::HTTPClientError, 'permission denied')
+      it 'returns nil without raising (non-fatal)' do
+        result = described_class.ensure_alias(
+          entity_id:      entity_id,
+          mount_accessor: mount_accessor,
+          alias_name:     alias_name
+        )
+        expect(result).to be_nil
       end
     end
 

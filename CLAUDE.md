@@ -67,6 +67,7 @@ Legion::Crypt (singleton module)
 ├── Spiffe::IdentityHelpers  # Mixin for SPIFFE identity operations
 ├── Spiffe::SvidRotation     # Background SVID renewal at 50% TTL
 ├── Spiffe::WorkloadApiClient # gRPC workload API client for SPIRE agent (unix socket)
+├── VaultEntity        # Vault entity/alias lifecycle (ensure_entity, ensure_alias, find_by_name); all non-fatal
 ├── MockVault          # In-memory Vault mock for local development mode
 ├── Settings           # Default crypt config
 └── Version
@@ -140,6 +141,7 @@ Dev dependencies: `legion-logging`, `legion-settings`
 | `lib/legion/crypt/spiffe/identity_helpers.rb` | Mixin for SPIFFE identity operations |
 | `lib/legion/crypt/spiffe/svid_rotation.rb` | Background SVID renewal thread (50% TTL) |
 | `lib/legion/crypt/spiffe/workload_api_client.rb` | gRPC workload API client for SPIRE agent |
+| `lib/legion/crypt/vault_entity.rb` | Vault entity/alias lifecycle: `ensure_entity`, `ensure_alias`, `find_by_name`; all operations non-fatal |
 | `lib/legion/crypt/version.rb` | VERSION constant |
 
 ## Role in LegionIO
