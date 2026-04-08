@@ -143,9 +143,9 @@ module Legion
           return
         end
 
-        @state_mutex.synchronize do
+        updated = @state_mutex.synchronize do
           active_lease = @active_leases[name]
-          next unless active_lease
+          next false unless active_lease
 
           @lease_cache[name] = response.data
           active_lease.merge!(
@@ -155,7 +155,13 @@ module Legion
             fetched_at:     Time.now,
             renewable:      response.renewable?
           )
+          true
         end
+        unless updated
+          log.warn("LeaseManager: reissue for '#{name}' skipped — lease was removed during reissue (likely shutdown)")
+          return
+        end
+
         lease_id_preview = response.lease_id.to_s[0..11]
         log.info("LeaseManager: reissued lease '#{name}' " \
                  "(new_lease_id=#{lease_id_preview}... ttl=#{response.lease_duration}s)")
@@ -315,8 +321,8 @@ module Legion
           next unless approaching_expiry?(lease)
 
           remaining = lease[:expires_at] ? (lease[:expires_at] - Time.now).round(1) : 'unknown'
-          log.info("LeaseManager: lease '#{name}' approaching expiry " \
-                   "(remaining=#{remaining}s renewable=#{lease[:renewable]} has_path=#{!lease[:path].nil?})")
+          log.debug("LeaseManager: lease '#{name}' approaching expiry " \
+                    "(remaining=#{remaining}s renewable=#{lease[:renewable]} has_path=#{!lease[:path].nil?})")
 
           if lease[:renewable]
             renew_lease(name, lease)
@@ -351,11 +357,17 @@ module Legion
           current_lease = @active_leases[name]
           next unless current_lease
 
-          current_lease[:lease_duration] = new_ttl if new_ttl
+          if new_ttl
+            current_lease[:lease_duration] = new_ttl
+            current_lease[:expires_at] = Time.now + new_ttl
+          end
           current_lease[:renewable] = response.renewable? if response.respond_to?(:renewable?)
-          current_lease[:expires_at] = Time.now + (new_ttl || 0)
         end
-        log.info("LeaseManager: renewed lease '#{name}' (new_ttl=#{new_ttl}s)")
+        if new_ttl
+          log.info("LeaseManager: renewed lease '#{name}' (new_ttl=#{new_ttl}s)")
+        else
+          log.warn("LeaseManager: renewed lease '#{name}' but Vault returned no lease_duration — keeping previous TTL")
+        end
 
         cached_data = @state_mutex.synchronize { @lease_cache[name] }
         if response.data && response.data != cached_data
