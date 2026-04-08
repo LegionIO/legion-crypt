@@ -61,6 +61,7 @@ module Legion
           Thread.new do
             fetch_keys(jwks_url)
           rescue StandardError => e
+            handle_exception(e, level: :debug, operation: 'crypt.jwks.prefetch', jwks_url: jwks_url) if respond_to?(:handle_exception)
             log.debug "JWKS prefetch failed for #{jwks_url}: #{e.message}" if respond_to?(:log)
           end
         end
@@ -71,6 +72,7 @@ module Legion
           @refresh_task = Concurrent::TimerTask.new(execution_interval: interval, run_now: false) do
             fetch_keys(jwks_url)
           rescue StandardError => e
+            handle_exception(e, level: :debug, operation: 'crypt.jwks.background_refresh', jwks_url: jwks_url) if respond_to?(:handle_exception)
             log.debug "JWKS background refresh failed: #{e.message}" if respond_to?(:log)
           end
           @refresh_task.execute
@@ -121,7 +123,10 @@ module Legion
 
           response.body
         rescue StandardError => e
-          raise Legion::Crypt::JWT::Error, "failed to fetch JWKS: #{e.message}" unless e.is_a?(Legion::Crypt::JWT::Error)
+          unless e.is_a?(Legion::Crypt::JWT::Error)
+            handle_exception(e, level: :warn, operation: 'crypt.jwks.http_get', url: url) if respond_to?(:handle_exception)
+            raise Legion::Crypt::JWT::Error, "failed to fetch JWKS: #{e.message}"
+          end
 
           raise
         end

@@ -23,11 +23,8 @@ module Legion
           )
         )
         extract_id(response)
-      rescue ::Vault::HTTPClientError => e
-        log.warn "Vault entity creation failed (#{canonical_name}): #{e.message}"
-        nil
       rescue StandardError => e
-        log.warn "Vault entity creation unexpected error (#{canonical_name}): #{e.message}"
+        handle_exception(e, level: :warn, operation: 'crypt.vault_entity.ensure_entity', canonical_name: canonical_name)
         nil
       end
 
@@ -44,11 +41,11 @@ module Legion
         if e.message.include?('already exists')
           log.debug 'Vault entity alias already exists (idempotent)'
         else
-          log.warn "Vault entity alias creation failed (#{alias_name}): #{e.message}"
+          handle_exception(e, level: :warn, operation: 'crypt.vault_entity.ensure_alias', alias_name: alias_name)
         end
         nil
       rescue StandardError => e
-        log.warn "Vault entity alias creation unexpected error (#{alias_name}): #{e.message}"
+        handle_exception(e, level: :warn, operation: 'crypt.vault_entity.ensure_alias', alias_name: alias_name)
         nil
       end
 
@@ -58,11 +55,12 @@ module Legion
         response = vault_logical.read("identity/entity/name/legion-#{canonical_name}")
         extract_id(response)
       rescue ::Vault::HTTPClientError => e
-        # Re-log non-404 client errors as warnings before swallowing
-        log.warn "Vault entity lookup client error (#{canonical_name}): #{e.message}" unless e.message.match?(/not found|does not exist|404/i)
+        unless e.message.match?(/not found|does not exist|404/i)
+          handle_exception(e, level: :warn, operation: 'crypt.vault_entity.find_by_name', canonical_name: canonical_name)
+        end
         nil
       rescue StandardError => e
-        log.warn "Vault entity lookup failed (#{canonical_name}): #{e.message}"
+        handle_exception(e, level: :warn, operation: 'crypt.vault_entity.find_by_name', canonical_name: canonical_name)
         nil
       end
 
