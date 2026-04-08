@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [1.5.7] - 2026-04-08
+
+### Fixed
+- `LeaseManager#cache_lease` now stores the `:path` from static lease definitions, enabling `reissue_lease` fallback when `sys.renew` fails or leases hit max_ttl — previously static leases (configured via `crypt.vault.leases`) would silently expire after their TTL with no recovery (fixes #28)
+- `LeaseManager#renew_lease` now logs a warning and falls back to reissue when the path is available, or warns explicitly when no path is available — previously renewal failures for pathless leases were silent
+
+### Added
+- `LeaseManager#trigger_reconnect(name)` — dispatches reconnect to the appropriate service after credential reissue: `:rabbitmq` → `Transport::Connection.force_reconnect`, `:postgresql` → `Data.reconnect`, `:redis` → `Cache.reconnect`; all guarded with `defined?`/`respond_to?` and rescue-safe
+- Comprehensive INFO/WARN logging across the entire lease lifecycle:
+  - INFO on lease fetch attempt, fetch success (with lease_id/ttl/renewable), renewal attempt, renewal success (with new_ttl), reissue attempt, reissue success (with new_lease_id/ttl), approaching expiry detection (with remaining/renewable/has_path), credentials changed during renewal, reconnect triggered, renewal loop start/exit
+  - WARN on non-renewable lease with no reissue path, renewal failure with no reissue path, reissue returning no data, reconnect failure, cannot reissue due to missing path
+
+### Changed
+- `LeaseManager#reissue_lease` now calls `trigger_reconnect(name)` instead of inline `:rabbitmq`-only `force_reconnect`, extending credential rotation reconnect support to PostgreSQL and Redis
+
+## [1.5.6] - 2026-04-07
+
+### Added
+- `VaultEntity` module (`lib/legion/crypt/vault_entity.rb`) — Phase 7 Vault identity tracking
+  - `ensure_entity(principal_id:, canonical_name:, metadata: {})` — creates or finds a Vault entity for a Legion principal; entity names are prefixed with `legion-` to avoid collision; metadata includes `legion_principal_id`, `legion_canonical_name`, and `managed_by: 'legion'`; returns entity ID string or nil on failure (non-fatal)
+  - `ensure_alias(entity_id:, mount_accessor:, alias_name:)` — creates an entity alias linking an auth method mount to the entity; idempotent (`already exists` HTTPClientError is swallowed); all other `Vault::HTTPClientError` responses log warn and return nil (non-fatal)
+  - `find_by_name(canonical_name)` — looks up a Vault entity by its Legion canonical name via `identity/entity/name/legion-{name}`; returns entity ID or nil
+  - All operations are non-fatal — rescue and log warn on failure; boot/request flow is never blocked by entity tracking errors
+  - Delegates Vault API calls to `LeaseManager.instance.vault_logical` (public delegator) when available; falls back to `::Vault.logical`
+
 ## [1.5.5] - 2026-04-07
 
 ### Added

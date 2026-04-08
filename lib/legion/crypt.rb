@@ -138,6 +138,7 @@ module Legion
 
         log.info "Bootstrap RMQ credentials acquired (lease: #{@bootstrap_lease_id[0..7]}...)"
       rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.fetch_bootstrap_rmq_creds')
         log.warn "Bootstrap RMQ credential fetch failed: #{e.message}"
       end
 
@@ -188,6 +189,7 @@ module Legion
         @bootstrap_lease_id      = nil
         @bootstrap_lease_expires = nil
       rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.revoke_bootstrap_lease')
         log.warn "Bootstrap lease revocation failed: #{e.message} — lease will expire naturally"
         @bootstrap_lease_id      = nil
         @bootstrap_lease_expires = nil

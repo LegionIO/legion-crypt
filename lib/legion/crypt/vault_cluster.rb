@@ -81,6 +81,7 @@ module Legion
       rescue ::Vault::HTTPError => e
         return true if e.message =~ /\b(429|472|473)\b/
 
+        handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.cluster_healthy')
         raise
       end
 
