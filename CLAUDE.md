@@ -8,7 +8,7 @@
 Handles encryption, decryption, secrets management, JWT token management, and HashiCorp Vault connectivity for the LegionIO framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, and Vault token lifecycle management.
 
 **GitHub**: https://github.com/LegionIO/legion-crypt
-**Version**: 1.4.15
+**Version**: 1.5.3
 **License**: Apache-2.0
 
 ## Architecture
@@ -63,6 +63,10 @@ Legion::Crypt (singleton module)
 ├── Tls                # TLS settings (cert/key/CA/verify_peer/Vault PKI)
 ├── Mtls               # mTLS cert issuance (Vault PKI) + CertRotation background thread (50% TTL renewal)
 ├── TokenRenewer       # Background renewal thread: 75% TTL renew, Kerberos re-auth on failure, exponential backoff
+├── Spiffe             # SPIFFE identity support: parse_id, valid_id?, X509Svid, JwtSvid structs; reads security.spiffe settings
+├── Spiffe::IdentityHelpers  # Mixin for SPIFFE identity operations
+├── Spiffe::SvidRotation     # Background SVID renewal at 50% TTL
+├── Spiffe::WorkloadApiClient # gRPC workload API client for SPIRE agent (unix socket)
 ├── MockVault          # In-memory Vault mock for local development mode
 ├── Settings           # Default crypt config
 └── Version
@@ -132,6 +136,10 @@ Dev dependencies: `legion-logging`, `legion-settings`
 | `lib/legion/crypt/tls.rb` | TLS settings module (cert, key, CA paths, verify_peer, Vault PKI flag) |
 | `lib/legion/crypt/mtls.rb` | mTLS certificate issuance from Vault PKI; `CertRotation` background renewal thread (50% TTL) |
 | `lib/legion/crypt/token_renewer.rb` | Plain Thread renewer: renews at 75% TTL, re-auths via Kerberos on failure, exponential backoff |
+| `lib/legion/crypt/spiffe.rb` | SPIFFE identity: parse/validate SPIFFE IDs, X509Svid/JwtSvid structs, settings helpers |
+| `lib/legion/crypt/spiffe/identity_helpers.rb` | Mixin for SPIFFE identity operations |
+| `lib/legion/crypt/spiffe/svid_rotation.rb` | Background SVID renewal thread (50% TTL) |
+| `lib/legion/crypt/spiffe/workload_api_client.rb` | gRPC workload API client for SPIRE agent |
 | `lib/legion/crypt/version.rb` | VERSION constant |
 
 ## Role in LegionIO
