@@ -87,6 +87,19 @@ RSpec.describe Legion::Crypt::LeaseManager do
       expect(meta[:expires_at]).to be >= (before_start + 3600)
     end
 
+    it 'stores the definition path in active_leases for reissue' do
+      manager.start(lease_definitions)
+      meta = manager.active_leases['rabbitmq']
+      expect(meta[:path]).to eq('rabbitmq/creds/legion-role')
+    end
+
+    it 'stores the path from symbol-keyed definitions' do
+      sym_defs = { rabbitmq: { path: 'rabbitmq/creds/sym-role' } }
+      manager.start(sym_defs)
+      meta = manager.active_leases[:rabbitmq]
+      expect(meta[:path]).to eq('rabbitmq/creds/sym-role')
+    end
+
     it 'handles Vault read failure gracefully without raising' do
       allow(Vault).to receive_message_chain(:logical, :read).and_raise(StandardError, 'vault unavailable')
       expect { manager.start(lease_definitions) }.not_to raise_error
@@ -530,6 +543,106 @@ RSpec.describe Legion::Crypt::LeaseManager do
           settings_refs: []
         )
       end.not_to raise_error
+    end
+  end
+
+  describe '#renew_lease with static leases' do
+    let(:fresh_response) do
+      double('Vault::Secret',
+             data:           { username: 'fresh_user', password: 'fresh_pass' },
+             lease_id:       'rabbitmq/creds/legion-role/fresh789',
+             lease_duration: 3600,
+             renewable?:     true)
+    end
+
+    before { manager.start(lease_definitions) }
+
+    it 'falls back to reissue when sys.renew fails and path is available' do
+      sys_double = instance_double(Vault::Sys)
+      allow(Vault).to receive(:sys).and_return(sys_double)
+      allow(sys_double).to receive(:renew).and_raise(StandardError, 'permission denied')
+      allow(Vault).to receive_message_chain(:logical, :read).and_return(fresh_response)
+
+      manager.send(:renew_lease, 'rabbitmq', manager.active_leases['rabbitmq'])
+
+      expect(manager.fetch('rabbitmq', :username)).to eq('fresh_user')
+    end
+
+    it 'updates credentials after successful reissue fallback' do
+      sys_double = instance_double(Vault::Sys)
+      allow(Vault).to receive(:sys).and_return(sys_double)
+      allow(sys_double).to receive(:renew).and_raise(StandardError, 'expired')
+      allow(Vault).to receive_message_chain(:logical, :read).and_return(fresh_response)
+
+      manager.send(:renew_lease, 'rabbitmq', manager.active_leases['rabbitmq'])
+
+      expect(manager.active_leases['rabbitmq'][:lease_id]).to eq('rabbitmq/creds/legion-role/fresh789')
+    end
+  end
+
+  describe '#renew_approaching_leases with non-renewable pathless lease' do
+    let(:non_renewable_response) do
+      double('Vault::Secret',
+             data:           { username: 'user', password: 'pass' },
+             lease_id:       'some/lease/abc',
+             lease_duration: 100,
+             renewable?:     false)
+    end
+
+    it 'does not raise for a non-renewable lease without a path' do
+      allow(Vault).to receive_message_chain(:logical, :read).and_return(non_renewable_response)
+      manager.start({ 'legacy' => { 'path' => 'some/creds/role' } })
+      # Remove the path to simulate the old bug
+      manager.active_leases['legacy'].delete(:path)
+      manager.active_leases['legacy'][:expires_at] = Time.now + 10
+
+      expect { manager.send(:renew_approaching_leases) }.not_to raise_error
+    end
+  end
+
+  describe '#trigger_reconnect' do
+    context 'when name is :rabbitmq' do
+      it 'calls Transport::Connection.force_reconnect' do
+        transport_conn = double('Legion::Transport::Connection')
+        stub_const('Legion::Transport::Connection', transport_conn)
+        expect(transport_conn).to receive(:force_reconnect)
+        manager.send(:trigger_reconnect, :rabbitmq)
+      end
+    end
+
+    context 'when name is :postgresql' do
+      it 'calls Data.reconnect when available' do
+        data_mod = double('Legion::Data')
+        stub_const('Legion::Data', data_mod)
+        allow(data_mod).to receive(:respond_to?).with(:reconnect).and_return(true)
+        expect(data_mod).to receive(:reconnect)
+        manager.send(:trigger_reconnect, :postgresql)
+      end
+
+      it 'skips when Data does not respond to reconnect' do
+        data_mod = double('Legion::Data')
+        stub_const('Legion::Data', data_mod)
+        allow(data_mod).to receive(:respond_to?).with(:reconnect).and_return(false)
+        expect(data_mod).not_to receive(:reconnect)
+        manager.send(:trigger_reconnect, :postgresql)
+      end
+    end
+
+    context 'when name is :redis' do
+      it 'calls Cache.reconnect when available' do
+        cache_mod = double('Legion::Cache')
+        stub_const('Legion::Cache', cache_mod)
+        allow(cache_mod).to receive(:respond_to?).with(:reconnect).and_return(true)
+        expect(cache_mod).to receive(:reconnect)
+        manager.send(:trigger_reconnect, :redis)
+      end
+    end
+
+    it 'handles reconnect errors gracefully' do
+      transport_conn = double('Legion::Transport::Connection')
+      stub_const('Legion::Transport::Connection', transport_conn)
+      allow(transport_conn).to receive(:force_reconnect).and_raise(StandardError, 'connection refused')
+      expect { manager.send(:trigger_reconnect, :rabbitmq) }.not_to raise_error
     end
   end
 

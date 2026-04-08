@@ -40,6 +40,7 @@ module Legion
           revoke_expired_lease(name)
 
           begin
+            log.info("LeaseManager: fetching lease '#{name}' from #{path}")
             response = logical.read(path)
             unless response
               log.warn("LeaseManager: no data at '#{name}' (#{path}) — path may not exist or role not configured")
@@ -47,8 +48,9 @@ module Legion
             end
 
             log_lease_response(name, response)
-            cache_lease(name, response)
-            log.info("LeaseManager: fetched lease for '#{name}' from #{path}")
+            cache_lease(name, response, path: path)
+            log.info("LeaseManager: fetched lease '#{name}' from #{path} " \
+                     "(lease_id=#{response.lease_id[0..11]}... ttl=#{response.lease_duration}s renewable=#{response.renewable?})")
           rescue StandardError => e
             handle_exception(e, level: :warn, operation: 'crypt.lease_manager.start', lease_name: name, path: path)
             log.warn("LeaseManager: failed to fetch lease '#{name}' from #{path}: #{e.message}")
@@ -129,10 +131,17 @@ module Legion
 
       def reissue_lease(name)
         lease = @state_mutex.synchronize { @active_leases[name]&.dup }
-        return unless lease && lease[:path]
+        unless lease && lease[:path]
+          log.warn("LeaseManager: cannot reissue lease '#{name}' — no path stored for re-read")
+          return
+        end
 
+        log.info("LeaseManager: reissuing lease '#{name}' from #{lease[:path]}")
         response = logical.read(lease[:path])
-        return unless response&.data
+        unless response&.data
+          log.warn("LeaseManager: reissue for '#{name}' returned no data from #{lease[:path]}")
+          return
+        end
 
         @state_mutex.synchronize do
           active_lease = @active_leases[name]
@@ -147,12 +156,10 @@ module Legion
             renewable:      response.renewable?
           )
         end
+        log.info("LeaseManager: reissued lease '#{name}' " \
+                 "(new_lease_id=#{response.lease_id[0..11]}... ttl=#{response.lease_duration}s)")
         push_to_settings(name)
-
-        return unless name == :rabbitmq && defined?(Legion::Transport::Connection)
-
-        Legion::Transport::Connection.force_reconnect
-        log.info("LeaseManager: reissued lease '#{name}' and triggered transport reconnect")
+        trigger_reconnect(name)
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.reissue_lease', lease_name: name)
         log.warn("LeaseManager: failed to reissue lease '#{name}': #{e.message}")
@@ -227,7 +234,7 @@ module Legion
         @at_exit_registered = true
       end
 
-      def cache_lease(name, response)
+      def cache_lease(name, response, path: nil)
         @state_mutex.synchronize do
           @lease_cache[name] = response.data || {}
           @active_leases[name] = {
@@ -235,7 +242,8 @@ module Legion
             lease_duration: response.lease_duration,
             renewable:      response.renewable?,
             expires_at:     Time.now + (response.lease_duration || 0),
-            fetched_at:     Time.now
+            fetched_at:     Time.now,
+            path:           path
           }
         end
       end
@@ -286,13 +294,15 @@ module Legion
       end
 
       def renewal_loop
+        log.info 'LeaseManager: renewal loop started'
         while running?
           interruptible_sleep(RENEWAL_CHECK_INTERVAL)
           renew_approaching_leases if running?
         end
+        log.info 'LeaseManager: renewal loop exiting'
       rescue StandardError => e
         handle_exception(e, level: :error, operation: 'crypt.lease_manager.renewal_loop')
-        log.error("LeaseManager: renewal loop error: #{e.message}")
+        log.error("LeaseManager: renewal loop error: #{e.message} — restarting")
         retry if running?
       end
 
@@ -303,36 +313,52 @@ module Legion
           next unless lease
           next unless approaching_expiry?(lease)
 
+          remaining = lease[:expires_at] ? (lease[:expires_at] - Time.now).round(1) : 'unknown'
+          log.info("LeaseManager: lease '#{name}' approaching expiry " \
+                   "(remaining=#{remaining}s renewable=#{lease[:renewable]} has_path=#{!lease[:path].nil?})")
+
           if lease[:renewable]
             renew_lease(name, lease)
           elsif lease[:path]
-            log.info("LeaseManager: lease '#{name}' is non-renewable and approaching expiry — re-issuing")
+            log.info("LeaseManager: lease '#{name}' is non-renewable — re-issuing from #{lease[:path]}")
             reissue_lease(name)
+          else
+            log.warn("LeaseManager: lease '#{name}' is non-renewable and has no path for reissue — " \
+                     "will expire at #{lease[:expires_at]}")
           end
         end
       end
 
       def renew_lease(name, lease)
+        log.info("LeaseManager: renewing lease '#{name}' (lease_id=#{lease[:lease_id][0..11]}...)")
         response = sys.renew(lease[:lease_id])
+        new_ttl = response.respond_to?(:lease_duration) ? response.lease_duration : nil
         @state_mutex.synchronize do
           current_lease = @active_leases[name]
           next unless current_lease
 
-          current_lease[:lease_duration] = response.lease_duration if response.respond_to?(:lease_duration)
+          current_lease[:lease_duration] = new_ttl if new_ttl
           current_lease[:renewable] = response.renewable? if response.respond_to?(:renewable?)
-          current_lease[:expires_at] = Time.now + (response.lease_duration || 0)
+          current_lease[:expires_at] = Time.now + (new_ttl || 0)
         end
-        log.info("LeaseManager: renewed lease '#{name}'")
+        log.info("LeaseManager: renewed lease '#{name}' (new_ttl=#{new_ttl}s)")
 
         cached_data = @state_mutex.synchronize { @lease_cache[name] }
         if response.data && response.data != cached_data
           @state_mutex.synchronize { @lease_cache[name] = response.data }
           push_to_settings(name)
+          log.info("LeaseManager: lease '#{name}' credentials changed during renewal — settings updated")
         end
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.renew_lease', lease_name: name)
         log.warn("LeaseManager: failed to renew lease '#{name}': #{e.message}")
-        reissue_lease(name) if lease[:path]
+        if lease[:path]
+          log.warn("LeaseManager: falling back to reissue for '#{name}' from #{lease[:path]}")
+          reissue_lease(name)
+        else
+          log.warn("LeaseManager: lease '#{name}' renewal failed and no path available for reissue — " \
+                   "lease will expire at #{lease[:expires_at]}")
+        end
       end
 
       def lease_valid?(name)
@@ -388,6 +414,29 @@ module Legion
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.write_setting', path: path.join('.'))
         log.warn("LeaseManager: failed to write setting at #{path.join('.')}: #{e.message}")
+      end
+
+      def trigger_reconnect(name)
+        case name
+        when :rabbitmq
+          return unless defined?(Legion::Transport::Connection)
+
+          Legion::Transport::Connection.force_reconnect
+          log.info("LeaseManager: triggered transport reconnect after '#{name}' reissue")
+        when :postgresql
+          return unless defined?(Legion::Data) && Legion::Data.respond_to?(:reconnect)
+
+          Legion::Data.reconnect
+          log.info("LeaseManager: triggered data reconnect after '#{name}' reissue")
+        when :redis
+          return unless defined?(Legion::Cache) && Legion::Cache.respond_to?(:reconnect)
+
+          Legion::Cache.reconnect
+          log.info("LeaseManager: triggered cache reconnect after '#{name}' reissue")
+        end
+      rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.lease_manager.trigger_reconnect', lease_name: name)
+        log.warn("LeaseManager: reconnect for '#{name}' failed: #{e.message}")
       end
 
       def running?
