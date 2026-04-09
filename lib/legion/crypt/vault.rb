@@ -19,8 +19,9 @@ module Legion
         @sessions = []
         vault_settings = Legion::Settings[:crypt][:vault]
         ::Vault.address = resolve_vault_address(vault_settings)
+        ::Vault.ssl_verify = resolve_ssl_verify(vault_settings[:tls])
         namespace = vault_settings[:vault_namespace]
-        log.info "Vault connection requested address=#{::Vault.address} namespace=#{namespace || 'none'}"
+        log.info "Vault connection requested address=#{::Vault.address} namespace=#{namespace || 'none'} ssl_verify=#{::Vault.ssl_verify}"
 
         Legion::Settings[:crypt][:vault][:token] = ENV['VAULT_DEV_ROOT_TOKEN_ID'] if ENV.key? 'VAULT_DEV_ROOT_TOKEN_ID'
         return nil if Legion::Settings[:crypt][:vault][:token].nil?
@@ -207,6 +208,13 @@ module Legion
 
         log_vault_debug("Vault read: #{full_path} detected KV v2 envelope, unwrapping :data key")
         data[:data]
+      end
+
+      def resolve_ssl_verify(tls_config)
+        return true if tls_config.nil?
+
+        verify = tls_config[:verify]&.to_s
+        verify != 'none'
       end
 
       def resolve_vault_address(vault_settings)

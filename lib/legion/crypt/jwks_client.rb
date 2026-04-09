@@ -112,7 +112,8 @@ module Legion
           raise Legion::Crypt::JWT::Error, 'failed to fetch JWKS: HTTPS is required' unless uri.scheme == 'https'
 
           http = Net::HTTP.new(uri.host, uri.port)
-          http.use_ssl = uri.scheme == 'https'
+          http.use_ssl = true
+          http.verify_mode = jwks_ssl_verify_mode
           http.open_timeout = 10
           http.read_timeout = 10
 
@@ -156,6 +157,15 @@ module Legion
           end
 
           keys
+        end
+
+        def jwks_ssl_verify_mode
+          return OpenSSL::SSL::VERIFY_PEER unless defined?(Legion::Settings)
+
+          verify = Legion::Settings[:crypt][:jwt][:jwks_tls_verify]&.to_s
+          verify == 'none' ? OpenSSL::SSL::VERIFY_NONE : OpenSSL::SSL::VERIFY_PEER
+        rescue StandardError
+          OpenSSL::SSL::VERIFY_PEER
         end
 
         def with_url_lock(jwks_url, &)

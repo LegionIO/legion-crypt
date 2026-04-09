@@ -48,7 +48,8 @@ module Legion
           default_ttl:       3600,
           issuer:            'legion',
           verify_expiration: true,
-          verify_issuer:     true
+          verify_issuer:     true,
+          jwks_tls_verify:   'peer'
         }
       end
 
@@ -71,6 +72,9 @@ module Legion
           kerberos:            {
             service_principal: nil,
             auth_path:         'auth/kerberos/login'
+          },
+          tls:                 {
+            verify: 'peer'
           },
           clusters:            {},
           bootstrap_lease_ttl: 300,

@@ -118,11 +118,13 @@ module Legion
         return nil unless config.is_a?(Hash)
 
         addr = "#{config[:protocol]}://#{config[:address]}:#{config[:port]}"
-        log.info "Building Vault client address=#{addr} namespace=#{config[:namespace].inspect}"
+        ssl_verify = resolve_cluster_ssl_verify(config[:tls])
+        log.info "Building Vault client address=#{addr} namespace=#{config[:namespace].inspect} ssl_verify=#{ssl_verify}"
         log_vault_debug("build_vault_client: address=#{addr}")
         client = ::Vault::Client.new(
-          address: addr,
-          token:   config[:token]
+          address:    addr,
+          token:      config[:token],
+          ssl_verify: ssl_verify
         )
         namespace =
           if config.key?(:namespace)
@@ -134,6 +136,13 @@ module Legion
         client.namespace = namespace if namespace
         log_vault_debug("build_vault_client: namespace=#{namespace.inspect}")
         client
+      end
+
+      def resolve_cluster_ssl_verify(tls_config)
+        return true if tls_config.nil?
+
+        verify = tls_config[:verify]&.to_s
+        verify != 'none'
       end
 
       def log_vault_error(name, error, operation: 'crypt.vault_cluster.error')

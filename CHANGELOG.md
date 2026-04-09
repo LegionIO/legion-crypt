@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.5.8] - 2026-04-09
+
+### Added
+- Configurable SSL verification for Vault connections via `crypt.vault.tls.verify` setting (`peer`/`none`/`mutual`, defaults to `peer`)
+- Global Vault client (`vault.rb`) now sets `::Vault.ssl_verify` from `vault.tls.verify` setting
+- Per-cluster Vault clients (`vault_cluster.rb`) now pass `ssl_verify:` to `::Vault::Client.new` from `config[:tls][:verify]`
+- JWKS client (`jwks_client.rb`) now sets `Net::HTTP#verify_mode` from `crypt.jwt.jwks_tls_verify` setting (`peer`/`none`, defaults to `peer`)
+- `jwks_tls_verify: 'peer'` default added to JWT settings
+- `tls: { verify: 'peer' }` default added to Vault settings
+
 ## [1.5.7] - 2026-04-08
 
 ### Fixed
