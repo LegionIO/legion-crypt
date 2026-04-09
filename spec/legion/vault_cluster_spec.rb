@@ -103,16 +103,18 @@ RSpec.describe Legion::Crypt::VaultCluster do
 
     it 'returns a Vault::Client for the default cluster' do
       expect(Vault::Client).to receive(:new).with(
-        address: 'https://vault-alpha.example.com:8200',
-        token:   'token-alpha'
+        address:    'https://vault-alpha.example.com:8200',
+        token:      'token-alpha',
+        ssl_verify: true
       ).and_return(mock_client)
       expect(test_object.vault_client).to eq(mock_client)
     end
 
     it 'returns a Vault::Client for a named cluster' do
       expect(Vault::Client).to receive(:new).with(
-        address: 'https://vault-beta.example.com:8200',
-        token:   'token-beta'
+        address:    'https://vault-beta.example.com:8200',
+        token:      'token-beta',
+        ssl_verify: true
       ).and_return(mock_client)
       expect(test_object.vault_client(:beta)).to eq(mock_client)
     end
