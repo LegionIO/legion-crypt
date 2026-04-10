@@ -72,7 +72,9 @@ module Legion
         @config[:renewable]      = result[:renewable]
         @config[:connected]      = true
         @vault_client.token      = result[:token]
-        log.info("TokenRenewer[#{@cluster_name}]: re-authenticated via Kerberos")
+        log.info("TokenRenewer[#{@cluster_name}]: re-authenticated via Kerberos, ttl=#{result[:lease_duration]}s")
+
+        reissue_all_leases
         true
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.reauth_kerberos', cluster_name: @cluster_name)
@@ -104,10 +106,18 @@ module Legion
         interruptible_sleep(sleep_duration)
 
         until @stop
-          if renew_token || reauth_kerberos
-            on_renewal_success
+          if @config[:renewable]
+            if renew_token || reauth_kerberos
+              on_renewal_success
+            else
+              on_renewal_failure
+            end
           else
-            on_renewal_failure
+            if reauth_kerberos # rubocop:disable Style/IfInsideElse
+              on_renewal_success
+            else
+              on_renewal_failure
+            end
           end
         end
       rescue StandardError => e
@@ -126,6 +136,15 @@ module Legion
         delay = next_backoff
         log.warn("TokenRenewer[#{@cluster_name}]: backoff retry in #{delay}s")
         interruptible_sleep(delay)
+      end
+
+      def reissue_all_leases
+        return unless defined?(Legion::Crypt::LeaseManager)
+
+        Legion::Crypt::LeaseManager.instance.reissue_all
+      rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.token_renewer.reissue_all_leases', cluster_name: @cluster_name)
+        log.warn("TokenRenewer[#{@cluster_name}]: failed to reissue leases after reauth: #{e.message}")
       end
 
       def interruptible_sleep(seconds)
@@ -150,7 +169,7 @@ module Legion
         else
           @thread = nil
           revoke_token
-          log.debug("TokenRenewer[#{@cluster_name}]: token renewal thread stopped")
+          log.info("TokenRenewer[#{@cluster_name}]: token renewal thread stopped")
         end
       end
 

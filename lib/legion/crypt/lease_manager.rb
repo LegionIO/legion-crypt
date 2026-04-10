@@ -86,7 +86,9 @@ module Legion
 
       def push_to_settings(name)
         refs, data = @state_mutex.synchronize do
-          [@refs[name]&.dup, @lease_cache[name]&.dup]
+          r = @refs[name] || @refs[name.to_s] || @refs[name.to_sym]
+          d = @lease_cache[name] || @lease_cache[name.to_s] || @lease_cache[name.to_sym]
+          [r&.dup, d&.dup]
         end
         return if refs.nil? || refs.empty?
         return unless data
@@ -107,6 +109,19 @@ module Legion
 
       def vault_sys
         sys
+      end
+
+      def reissue_all
+        log.info('LeaseManager: reissue_all — re-issuing all active leases under new token')
+        lease_names = @state_mutex.synchronize { @active_leases.keys.dup }
+
+        lease_names.each do |name|
+          lease = @state_mutex.synchronize { @active_leases[name]&.dup }
+          next unless lease && lease[:path]
+
+          reissue_lease(name)
+        end
+        log.info('LeaseManager: reissue_all complete')
       end
 
       def register_dynamic_lease(name:, path:, response:, settings_refs:)
@@ -451,14 +466,19 @@ module Legion
           Legion::Transport::Connection.force_reconnect
           log.info("LeaseManager: triggered transport reconnect after '#{name}' reissue")
         when :postgresql
-          return unless defined?(Legion::Data) && Legion::Data.respond_to?(:reconnect)
+          return unless defined?(Legion::Data::Connection) && Legion::Data::Connection.sequel
 
-          Legion::Data.reconnect
-          log.info("LeaseManager: triggered data reconnect after '#{name}' reissue")
+          Legion::Data::Connection.sequel.disconnect
+          Legion::Data::Connection.sequel.test_connection
+          log.info("LeaseManager: triggered data pool reconnect after '#{name}' reissue")
         when :redis
-          return unless defined?(Legion::Cache) && Legion::Cache.respond_to?(:reconnect)
+          return unless defined?(Legion::Cache)
 
-          Legion::Cache.reconnect
+          if Legion::Cache.respond_to?(:restart)
+            Legion::Cache.restart
+          elsif Legion::Cache.respond_to?(:reconnect)
+            Legion::Cache.reconnect
+          end
           log.info("LeaseManager: triggered cache reconnect after '#{name}' reissue")
         end
       rescue StandardError => e

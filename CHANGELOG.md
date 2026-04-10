@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [1.5.9] - 2026-04-10
+
+### Fixed
+- Vault lease cascade revocation: all three service credentials (RabbitMQ, PostgreSQL, Redis) died at exactly 2 hours when the Vault Kerberos auth token expired — Vault cascade-revokes all child leases when the parent token dies, regardless of individual lease TTLs (closes #29)
+- `TokenRenewer` now detects non-renewable tokens (`renewable=false`) and skips `renew_self` (which always fails for non-renewable tokens), going straight to `reauth_kerberos` before the token expires
+- `TokenRenewer#reauth_kerberos` now triggers `LeaseManager.reissue_all` after obtaining a new token, re-issuing all active leases under the new token so they are not orphaned when the old token expires
+- `LeaseManager#push_to_settings` symbol/string key mismatch: `resolve_secrets!` registers refs with string keys (`"rabbitmq"`) via `lease://` URI parsing, but `cache_lease` stores leases with symbol keys (`:rabbitmq` from `Legion::JSON.load`) — now tries both key types
+- `LeaseManager#trigger_reconnect` for `:postgresql` — uses surgical Sequel pool `disconnect` + `test_connection` instead of `Data.shutdown + Data.setup` which tore down unrelated connections (Apollo SQLite, Local cache)
+- `LeaseManager#trigger_reconnect` for `:redis` — uses `Cache.restart` (the actual method) instead of `Cache.reconnect` (which does not exist)
+
+### Added
+- `LeaseManager#reissue_all` — re-issues all active leases under the current vault client token; called by `TokenRenewer` after successful Kerberos re-authentication to prevent cascade revocation of orphaned leases
+
 ## [1.5.8] - 2026-04-09
 
 ### Added
