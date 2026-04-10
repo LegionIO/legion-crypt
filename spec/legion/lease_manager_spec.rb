@@ -611,29 +611,28 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
 
     context 'when name is :postgresql' do
-      it 'calls Data.reconnect when available' do
-        data_mod = double('Legion::Data')
-        stub_const('Legion::Data', data_mod)
-        allow(data_mod).to receive(:respond_to?).with(:reconnect).and_return(true)
-        expect(data_mod).to receive(:reconnect)
+      it 'disconnects and reconnects the Sequel pool' do
+        sequel_db = double('Sequel::Database')
+        connection_mod = double('Legion::Data::Connection', sequel: sequel_db)
+        stub_const('Legion::Data::Connection', connection_mod)
+        expect(sequel_db).to receive(:disconnect)
+        expect(sequel_db).to receive(:test_connection)
         manager.send(:trigger_reconnect, :postgresql)
       end
 
-      it 'skips when Data does not respond to reconnect' do
-        data_mod = double('Legion::Data')
-        stub_const('Legion::Data', data_mod)
-        allow(data_mod).to receive(:respond_to?).with(:reconnect).and_return(false)
-        expect(data_mod).not_to receive(:reconnect)
-        manager.send(:trigger_reconnect, :postgresql)
+      it 'skips when Data::Connection.sequel is nil' do
+        connection_mod = double('Legion::Data::Connection', sequel: nil)
+        stub_const('Legion::Data::Connection', connection_mod)
+        expect { manager.send(:trigger_reconnect, :postgresql) }.not_to raise_error
       end
     end
 
     context 'when name is :redis' do
-      it 'calls Cache.reconnect when available' do
+      it 'calls Cache.restart when available' do
         cache_mod = double('Legion::Cache')
         stub_const('Legion::Cache', cache_mod)
-        allow(cache_mod).to receive(:respond_to?).with(:reconnect).and_return(true)
-        expect(cache_mod).to receive(:reconnect)
+        allow(cache_mod).to receive(:respond_to?).with(:restart).and_return(true)
+        expect(cache_mod).to receive(:restart)
         manager.send(:trigger_reconnect, :redis)
       end
     end
