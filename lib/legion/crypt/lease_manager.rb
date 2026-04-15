@@ -16,6 +16,7 @@ module Legion
         @lease_cache = {}
         @active_leases = {}
         @refs = {}
+        @rotation_callbacks = {}
         @running = false
         @renewal_thread = nil
         @state_mutex = Mutex.new
@@ -109,6 +110,13 @@ module Legion
 
       def vault_sys
         sys
+      end
+
+      def on_credential_rotation(name, &block)
+        @state_mutex.synchronize do
+          @rotation_callbacks[name.to_sym] ||= []
+          @rotation_callbacks[name.to_sym] << block
+        end
       end
 
       def reissue_all
@@ -234,6 +242,7 @@ module Legion
           @lease_cache.clear
           @active_leases.clear
           @refs.clear
+          @rotation_callbacks.clear
           @vault_client = nil
           @renewal_thread = nil
         end
@@ -466,10 +475,14 @@ module Legion
           Legion::Transport::Connection.force_reconnect
           log.info("LeaseManager: triggered transport reconnect after '#{name}' reissue")
         when :postgresql
-          return unless defined?(Legion::Data::Connection) && Legion::Data::Connection.sequel
+          return unless defined?(Legion::Data::Connection)
 
-          Legion::Data::Connection.sequel.disconnect
-          Legion::Data::Connection.sequel.test_connection
+          if Legion::Data::Connection.respond_to?(:reconnect_with_fresh_creds)
+            Legion::Data::Connection.reconnect_with_fresh_creds
+          elsif Legion::Data::Connection.sequel
+            Legion::Data::Connection.sequel.disconnect
+            Legion::Data::Connection.sequel.test_connection
+          end
           log.info("LeaseManager: triggered data pool reconnect after '#{name}' reissue")
         when :redis
           return unless defined?(Legion::Cache)
@@ -481,9 +494,27 @@ module Legion
           end
           log.info("LeaseManager: triggered cache reconnect after '#{name}' reissue")
         end
+
+        invoke_rotation_callbacks(name)
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.trigger_reconnect', lease_name: name)
         log.warn("LeaseManager: reconnect for '#{name}' failed: #{e.message}")
+      end
+
+      def invoke_rotation_callbacks(name)
+        callbacks, data = @state_mutex.synchronize do
+          cbs = @rotation_callbacks[name.to_sym]&.dup || []
+          d = @lease_cache[name]&.dup || @lease_cache[name.to_s]&.dup
+          [cbs, d]
+        end
+        return if callbacks.empty?
+
+        callbacks.each do |cb|
+          cb.call(data)
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.lease_manager.rotation_callback', lease_name: name)
+          log.warn("LeaseManager: rotation callback for '#{name}' failed: #{e.message}")
+        end
       end
 
       def running?

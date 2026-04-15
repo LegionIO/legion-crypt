@@ -637,11 +637,134 @@ RSpec.describe Legion::Crypt::LeaseManager do
       end
     end
 
+    context 'when name is :postgresql and reconnect_with_fresh_creds is available' do
+      it 'prefers reconnect_with_fresh_creds over disconnect/test_connection' do
+        connection_mod = double('Legion::Data::Connection')
+        stub_const('Legion::Data::Connection', connection_mod)
+        allow(connection_mod).to receive(:respond_to?).with(:reconnect_with_fresh_creds).and_return(true)
+        expect(connection_mod).to receive(:reconnect_with_fresh_creds)
+        expect(connection_mod).not_to receive(:sequel)
+        manager.send(:trigger_reconnect, :postgresql)
+      end
+    end
+
+    context 'when name is :postgresql and reconnect_with_fresh_creds is not available' do
+      it 'falls back to sequel disconnect/test_connection' do
+        sequel_db = double('Sequel::Database')
+        connection_mod = double('Legion::Data::Connection', sequel: sequel_db)
+        stub_const('Legion::Data::Connection', connection_mod)
+        allow(connection_mod).to receive(:respond_to?).with(:reconnect_with_fresh_creds).and_return(false)
+        expect(sequel_db).to receive(:disconnect)
+        expect(sequel_db).to receive(:test_connection)
+        manager.send(:trigger_reconnect, :postgresql)
+      end
+
+      it 'skips when sequel is nil and reconnect_with_fresh_creds is not available' do
+        connection_mod = double('Legion::Data::Connection', sequel: nil)
+        stub_const('Legion::Data::Connection', connection_mod)
+        allow(connection_mod).to receive(:respond_to?).with(:reconnect_with_fresh_creds).and_return(false)
+        expect { manager.send(:trigger_reconnect, :postgresql) }.not_to raise_error
+      end
+    end
+
     it 'handles reconnect errors gracefully' do
       transport_conn = double('Legion::Transport::Connection')
       stub_const('Legion::Transport::Connection', transport_conn)
       allow(transport_conn).to receive(:force_reconnect).and_raise(StandardError, 'connection refused')
       expect { manager.send(:trigger_reconnect, :rabbitmq) }.not_to raise_error
+    end
+  end
+
+  describe '#on_credential_rotation' do
+    it 'stores a callback for a lease name' do
+      manager.on_credential_rotation(:postgresql) { |_data| }
+      callbacks = manager.instance_variable_get(:@rotation_callbacks)
+      expect(callbacks[:postgresql].size).to eq(1)
+    end
+
+    it 'allows multiple callbacks for the same lease name' do
+      manager.on_credential_rotation(:postgresql) { |_data| 'cb1' }
+      manager.on_credential_rotation(:postgresql) { |_data| 'cb2' }
+      callbacks = manager.instance_variable_get(:@rotation_callbacks)
+      expect(callbacks[:postgresql].size).to eq(2)
+    end
+
+    it 'converts string names to symbols' do
+      manager.on_credential_rotation('postgresql') { |_data| }
+      callbacks = manager.instance_variable_get(:@rotation_callbacks)
+      expect(callbacks[:postgresql].size).to eq(1)
+    end
+  end
+
+  describe 'rotation callback invocation via trigger_reconnect' do
+    it 'invokes registered callbacks with lease data' do
+      received_data = nil
+      manager.on_credential_rotation(:rabbitmq) { |data| received_data = data }
+
+      # Populate lease cache so callback receives data
+      manager.start(lease_definitions)
+
+      transport_conn = double('Legion::Transport::Connection')
+      stub_const('Legion::Transport::Connection', transport_conn)
+      allow(transport_conn).to receive(:force_reconnect)
+
+      manager.send(:trigger_reconnect, :rabbitmq)
+      expect(received_data).to eq({ username: 'rabbit_user', password: 'rabbit_pass' })
+    end
+
+    it 'invokes all registered callbacks for the lease' do
+      call_count = 0
+      manager.on_credential_rotation(:rabbitmq) { |_data| call_count += 1 }
+      manager.on_credential_rotation(:rabbitmq) { |_data| call_count += 1 }
+
+      manager.start(lease_definitions)
+
+      transport_conn = double('Legion::Transport::Connection')
+      stub_const('Legion::Transport::Connection', transport_conn)
+      allow(transport_conn).to receive(:force_reconnect)
+
+      manager.send(:trigger_reconnect, :rabbitmq)
+      expect(call_count).to eq(2)
+    end
+
+    it 'continues invoking remaining callbacks when one raises' do
+      results = []
+      manager.on_credential_rotation(:rabbitmq) { |_data| raise StandardError, 'boom' }
+      manager.on_credential_rotation(:rabbitmq) { |_data| results << 'second_ran' }
+
+      manager.start(lease_definitions)
+
+      transport_conn = double('Legion::Transport::Connection')
+      stub_const('Legion::Transport::Connection', transport_conn)
+      allow(transport_conn).to receive(:force_reconnect)
+
+      manager.send(:trigger_reconnect, :rabbitmq)
+      expect(results).to eq(['second_ran'])
+    end
+
+    it 'does not invoke callbacks for a different lease name' do
+      called = false
+      manager.on_credential_rotation(:postgresql) { |_data| called = true }
+
+      manager.start(lease_definitions)
+
+      transport_conn = double('Legion::Transport::Connection')
+      stub_const('Legion::Transport::Connection', transport_conn)
+      allow(transport_conn).to receive(:force_reconnect)
+
+      manager.send(:trigger_reconnect, :rabbitmq)
+      expect(called).to be(false)
+    end
+
+    it 'invokes callbacks for unrecognized lease names (no case match)' do
+      received_data = nil
+      manager.on_credential_rotation(:custom_db) { |data| received_data = data }
+
+      # Manually populate the cache for an unrecognized name
+      manager.instance_variable_get(:@lease_cache)[:custom_db] = { host: 'db.example.com' }
+
+      manager.send(:trigger_reconnect, :custom_db)
+      expect(received_data).to eq({ host: 'db.example.com' })
     end
   end
 
