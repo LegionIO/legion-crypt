@@ -39,7 +39,7 @@ RSpec.describe Legion::Crypt::Vault do
       allow(logging).to receive(:respond_to?).with(:info).and_return(true)
       allow(logging).to receive(:respond_to?).with(:log_exception).and_return(true)
       allow(logging).to receive(:info)
-      expect(logging).to receive(:log_exception).with(instance_of(StandardError), lex: 'crypt', component_type: :helper)
+      expect(logging).to receive(:log_exception).with(instance_of(StandardError), level: :error, lex: 'crypt', component_type: :helper)
       @vault.connect_vault
     end
 
