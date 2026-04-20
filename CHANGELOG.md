@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.5.10] - 2026-04-19
+
+### Fixed
+- `handle_exception` now passes the caller's `level:` kwarg through to `Legion::Logging.log_exception` instead of always defaulting to `:error` — optional missing-gem `LoadError`s log at the intended level (e.g. `:debug`). Fixes LegionIO/LegionIO#155
+- `exception_log_message` now suppresses backtrace for `:debug` level — previously only suppressed when the backtrace was empty
+
 ## [1.5.9] - 2026-04-10
 
 ### Fixed
