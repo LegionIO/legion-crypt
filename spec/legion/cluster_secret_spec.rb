@@ -190,7 +190,7 @@ RSpec.describe Legion::Crypt::ClusterSecret do
       logging = double('Legion::Logging')
       stub_const('Legion::Logging', logging)
       allow(logging).to receive(:respond_to?).with(:log_exception).and_return(true)
-      expect(logging).to receive(:log_exception).with(instance_of(StandardError), lex: 'crypt', component_type: :helper)
+      expect(logging).to receive(:log_exception).with(instance_of(StandardError), level: :error, lex: 'crypt', component_type: :helper)
       @cs.from_transport
     end
 
@@ -225,7 +225,7 @@ RSpec.describe Legion::Crypt::ClusterSecret do
       logging = double('Legion::Logging')
       stub_const('Legion::Logging', logging)
       allow(logging).to receive(:respond_to?).with(:log_exception).and_return(true)
-      expect(logging).to receive(:log_exception).with(instance_of(StandardError), lex: 'crypt', component_type: :helper)
+      expect(logging).to receive(:log_exception).with(instance_of(StandardError), level: :error, lex: 'crypt', component_type: :helper)
       @cs.cs
     end
 
