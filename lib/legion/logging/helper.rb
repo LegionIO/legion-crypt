@@ -52,7 +52,7 @@ module Legion
         message = exception_log_message(exception, level: level, **opts) # rubocop:disable Style/ArgumentsForwarding
 
         if logging_supports?(:log_exception)
-          Legion::Logging.log_exception(exception, lex: 'crypt', component_type: :helper)
+          Legion::Logging.log_exception(exception, level: level, lex: 'crypt', component_type: :helper)
           return
         end
         if logging_supports?(level)
@@ -88,7 +88,7 @@ module Legion
         detail_suffix = details.empty? ? '' : " (#{details.join(' ')})"
         backtrace = Array(exception.backtrace).first(10).join("\n")
         base = "#{prefix}#{exception.class}: #{exception.message}#{detail_suffix}"
-        return base if backtrace.empty? && level == :debug
+        return base if backtrace.empty? || level == :debug
         return base if backtrace.empty?
 
         "#{base}\n#{backtrace}"
