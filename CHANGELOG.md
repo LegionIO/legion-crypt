@@ -2,12 +2,18 @@
 
 ## [Unreleased]
 
-## [1.5.10] - 2026-04-19
+## [1.5.10] - 2026-04-21
 
 ### Fixed
 - `handle_exception` now passes the caller's `level:` kwarg through to `Legion::Logging.log_exception` instead of always defaulting to `:error` — optional missing-gem `LoadError`s log at the intended level (e.g. `:debug`). Fixes LegionIO/LegionIO#155
 - `exception_log_message` now suppresses backtrace for `:debug` level — previously only suppressed when the backtrace was empty
+- `LeaseManager#on_credential_rotation` input validation: now raises `ArgumentError` for nil blocks, non-String/Symbol names, and empty names
+- `LeaseManager#trigger_reconnect` callback execution order: rotation callbacks now always execute even if reconnect steps fail or dependencies are missing
 
+### Added
+- `LeaseManager#on_credential_rotation` comprehensive input validation with clear error messages
+- Callback execution resilience: callbacks are invoked even when `Transport::Connection.force_reconnect`, `Data::Connection.reconnect_with_fresh_creds`, or `Cache.restart` fail
+- Test coverage for callback execution when reconnect failures occur and when service dependencies are missing
 ## [1.5.9] - 2026-04-10
 
 ### Fixed

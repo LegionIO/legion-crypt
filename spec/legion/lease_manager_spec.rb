@@ -694,6 +694,36 @@ RSpec.describe Legion::Crypt::LeaseManager do
       callbacks = manager.instance_variable_get(:@rotation_callbacks)
       expect(callbacks[:postgresql].size).to eq(1)
     end
+
+    describe 'input validation' do
+      it 'raises ArgumentError when block is nil' do
+        expect { manager.on_credential_rotation(:postgresql) }.to raise_error(ArgumentError, 'Block is required')
+      end
+
+      it 'raises ArgumentError when name is not a String or Symbol' do
+        expect { manager.on_credential_rotation(123) { |_data| } }.to raise_error(ArgumentError, 'Name must be a String or Symbol')
+        expect { manager.on_credential_rotation([]) { |_data| } }.to raise_error(ArgumentError, 'Name must be a String or Symbol')
+        expect { manager.on_credential_rotation({}) { |_data| } }.to raise_error(ArgumentError, 'Name must be a String or Symbol')
+      end
+
+      it 'raises ArgumentError when name is empty string' do
+        expect { manager.on_credential_rotation('') { |_data| } }.to raise_error(ArgumentError, 'Name cannot be empty')
+      end
+
+      it 'raises ArgumentError when name is whitespace only' do
+        expect { manager.on_credential_rotation('   ') { |_data| } }.to raise_error(ArgumentError, 'Name cannot be empty')
+      end
+
+      it 'accepts valid string names' do
+        expect { manager.on_credential_rotation('postgresql') { |_data| } }.not_to raise_error
+        expect { manager.on_credential_rotation('redis') { |_data| } }.not_to raise_error
+      end
+
+      it 'accepts valid symbol names' do
+        expect { manager.on_credential_rotation(:postgresql) { |_data| } }.not_to raise_error
+        expect { manager.on_credential_rotation(:redis) { |_data| } }.not_to raise_error
+      end
+    end
   end
 
   describe 'rotation callback invocation via trigger_reconnect' do
@@ -765,6 +795,65 @@ RSpec.describe Legion::Crypt::LeaseManager do
 
       manager.send(:trigger_reconnect, :custom_db)
       expect(received_data).to eq({ host: 'db.example.com' })
+    end
+
+    describe 'callback execution resilience' do
+      it 'invokes callbacks even when Transport::Connection.force_reconnect fails' do
+        received_data = nil
+        manager.on_credential_rotation(:rabbitmq) { |data| received_data = data }
+
+        manager.start(lease_definitions)
+
+        transport_conn = double('Legion::Transport::Connection')
+        stub_const('Legion::Transport::Connection', transport_conn)
+        allow(transport_conn).to receive(:force_reconnect).and_raise(StandardError, 'connection failed')
+
+        manager.send(:trigger_reconnect, :rabbitmq)
+        expect(received_data).to eq({ username: 'rabbit_user', password: 'rabbit_pass' })
+      end
+
+      it 'invokes callbacks even when Data::Connection reconnect fails' do
+        received_data = nil
+        manager.on_credential_rotation(:postgresql) { |data| received_data = data }
+
+        # Populate cache manually
+        manager.instance_variable_get(:@lease_cache)[:postgresql] = { username: 'pg_user', password: 'pg_pass' }
+
+        connection_mod = double('Legion::Data::Connection')
+        stub_const('Legion::Data::Connection', connection_mod)
+        allow(connection_mod).to receive(:respond_to?).with(:reconnect_with_fresh_creds).and_return(true)
+        allow(connection_mod).to receive(:reconnect_with_fresh_creds).and_raise(StandardError, 'pg connection failed')
+
+        manager.send(:trigger_reconnect, :postgresql)
+        expect(received_data).to eq({ username: 'pg_user', password: 'pg_pass' })
+      end
+
+      it 'invokes callbacks even when Cache.restart fails' do
+        received_data = nil
+        manager.on_credential_rotation(:redis) { |data| received_data = data }
+
+        # Populate cache manually
+        manager.instance_variable_get(:@lease_cache)[:redis] = { password: 'redis_pass' }
+
+        cache_mod = double('Legion::Cache')
+        stub_const('Legion::Cache', cache_mod)
+        allow(cache_mod).to receive(:respond_to?).with(:restart).and_return(true)
+        allow(cache_mod).to receive(:restart).and_raise(StandardError, 'cache restart failed')
+
+        manager.send(:trigger_reconnect, :redis)
+        expect(received_data).to eq({ password: 'redis_pass' })
+      end
+
+      it 'invokes callbacks when service dependencies are missing' do
+        received_data = nil
+        manager.on_credential_rotation(:rabbitmq) { |data| received_data = data }
+
+        manager.start(lease_definitions)
+
+        # Transport::Connection not defined - should skip reconnect but still invoke callbacks
+        manager.send(:trigger_reconnect, :rabbitmq)
+        expect(received_data).to eq({ username: 'rabbit_user', password: 'rabbit_pass' })
+      end
     end
   end
 

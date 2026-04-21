@@ -113,6 +113,13 @@ module Legion
       end
 
       def on_credential_rotation(name, &block)
+        raise ArgumentError, 'Block is required' if block.nil?
+
+        raise ArgumentError, 'Name must be a String or Symbol' unless name.is_a?(String) || name.is_a?(Symbol)
+
+        name_str = name.to_s.strip
+        raise ArgumentError, 'Name cannot be empty' if name_str.empty?
+
         @state_mutex.synchronize do
           @rotation_callbacks[name.to_sym] ||= []
           @rotation_callbacks[name.to_sym] << block
@@ -468,37 +475,44 @@ module Legion
 
       def trigger_reconnect(name)
         name = name.to_sym if name.respond_to?(:to_sym)
-        case name
-        when :rabbitmq
-          return unless defined?(Legion::Transport::Connection)
 
-          Legion::Transport::Connection.force_reconnect
-          log.info("LeaseManager: triggered transport reconnect after '#{name}' reissue")
-        when :postgresql
-          return unless defined?(Legion::Data::Connection)
-
-          if Legion::Data::Connection.respond_to?(:reconnect_with_fresh_creds)
-            Legion::Data::Connection.reconnect_with_fresh_creds
-          elsif Legion::Data::Connection.sequel
-            Legion::Data::Connection.sequel.disconnect
-            Legion::Data::Connection.sequel.test_connection
+        begin
+          case name
+          when :rabbitmq
+            if defined?(Legion::Transport::Connection)
+              Legion::Transport::Connection.force_reconnect
+              log.info("LeaseManager: triggered transport reconnect after '#{name}' reissue")
+            end
+          when :postgresql
+            if defined?(Legion::Data::Connection)
+              if Legion::Data::Connection.respond_to?(:reconnect_with_fresh_creds)
+                Legion::Data::Connection.reconnect_with_fresh_creds
+              elsif Legion::Data::Connection.sequel
+                Legion::Data::Connection.sequel.disconnect
+                Legion::Data::Connection.sequel.test_connection
+              end
+              log.info("LeaseManager: triggered data pool reconnect after '#{name}' reissue")
+            end
+          when :redis
+            if defined?(Legion::Cache)
+              if Legion::Cache.respond_to?(:restart)
+                Legion::Cache.restart
+              elsif Legion::Cache.respond_to?(:reconnect)
+                Legion::Cache.reconnect
+              end
+              log.info("LeaseManager: triggered cache reconnect after '#{name}' reissue")
+            end
           end
-          log.info("LeaseManager: triggered data pool reconnect after '#{name}' reissue")
-        when :redis
-          return unless defined?(Legion::Cache)
-
-          if Legion::Cache.respond_to?(:restart)
-            Legion::Cache.restart
-          elsif Legion::Cache.respond_to?(:reconnect)
-            Legion::Cache.reconnect
-          end
-          log.info("LeaseManager: triggered cache reconnect after '#{name}' reissue")
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.lease_manager.trigger_reconnect', lease_name: name)
+          log.warn("LeaseManager: reconnect for '#{name}' failed: #{e.message}")
         end
 
+        # Always attempt to invoke callbacks even if reconnect steps fail
         invoke_rotation_callbacks(name)
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.trigger_reconnect', lease_name: name)
-        log.warn("LeaseManager: reconnect for '#{name}' failed: #{e.message}")
+        log.warn("LeaseManager: failed to trigger reconnect for '#{name}': #{e.message}")
       end
 
       def invoke_rotation_callbacks(name)
