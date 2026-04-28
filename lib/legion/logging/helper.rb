@@ -7,7 +7,8 @@ begin
   )
   require helper_path if File.exist?(helper_path)
 rescue Gem::LoadError => e
-  Kernel.warn("legion-crypt logging helper fallback active: #{e.message}")
+  require 'legion/logging'
+  Legion::Logging.warn("legion-crypt logging helper fallback active: #{e.message}")
 end
 
 require 'legion/logging'
@@ -39,7 +40,7 @@ module Legion
 
             Legion::Logging.respond_to?(level)
           rescue StandardError => e
-            ::Kernel.warn("legion-crypt logging support check failed: #{e.message}")
+            Legion::Logging.warn("legion-crypt logging support check failed: #{e.message}")
             false
           end
         end
@@ -79,7 +80,7 @@ module Legion
 
         Legion::Logging.respond_to?(level)
       rescue StandardError => e
-        ::Kernel.warn("legion-crypt logging support check failed: #{e.message}")
+        Legion::Logging.warn("legion-crypt logging support check failed: #{e.message}")
         false
       end
 

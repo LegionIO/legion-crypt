@@ -248,10 +248,10 @@ module Legion
           next if @state_mutex.synchronize { @active_leases.empty? }
 
           Timeout.timeout(10) { shutdown }
-        rescue Timeout::Error
-          warn '[LeaseManager] at_exit shutdown timed out after 10s'
+        rescue Timeout::Error => e
+          log.warn("[LeaseManager] at_exit shutdown timed out after 10s: #{e.message}")
         rescue StandardError => e # best effort on crash
-          warn "[LeaseManager] at_exit shutdown failed: #{e.class}: #{e.message}"
+          log.warn("[LeaseManager] at_exit shutdown failed: #{e.class}: #{e.message}")
         end
         @at_exit_registered = true
       end
