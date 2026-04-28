@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.5.11] - 2026-04-27
+
+### Fixed
+- Cipher decrypt now validates malformed authenticated, legacy, and keypair ciphertext inputs before Base64/OpenSSL decoding, raising actionable errors that identify missing non-secret fields such as auth tag, IV, or cluster secret instead of generic `unpack1` nil failures.
+- Crypt's logging compatibility helper now preserves full exception backtraces instead of truncating fallback log output to 10 frames.
+
 ## [1.5.10] - 2026-04-19
 
 ### Fixed
