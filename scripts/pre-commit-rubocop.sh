@@ -13,7 +13,9 @@ run_rubocop() {
     echo "$output"
     return $rc
   fi
-  # exit > 1 means rubocop crashed / couldn't load
+  # exit > 1 means rubocop crashed / couldn't load. Preserve the output so the
+  # local failure is visible even when CI remains the final enforcement point.
+  echo "$output" >&2
   return 2
 }
 

@@ -250,8 +250,8 @@ module Legion
           Timeout.timeout(10) { shutdown }
         rescue Timeout::Error
           warn '[LeaseManager] at_exit shutdown timed out after 10s'
-        rescue StandardError # best effort on crash
-          nil
+        rescue StandardError => e # best effort on crash
+          warn "[LeaseManager] at_exit shutdown failed: #{e.class}: #{e.message}"
         end
         @at_exit_registered = true
       end
@@ -484,7 +484,10 @@ module Legion
       end
 
       def trigger_postgresql_reconnect(name)
-        return unless defined?(Legion::Data::Connection)
+        unless defined?(Legion::Data::Connection)
+          log.debug("LeaseManager: no Legion::Data::Connection loaded for '#{name}' reconnect")
+          return
+        end
 
         if Legion::Data::Connection.respond_to?(:reconnect_with_fresh_creds)
           success = Legion::Data::Connection.reconnect_with_fresh_creds

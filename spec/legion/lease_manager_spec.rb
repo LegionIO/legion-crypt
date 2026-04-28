@@ -649,7 +649,11 @@ RSpec.describe Legion::Crypt::LeaseManager do
         end
       end
 
-      it 'skips when Legion::Data is not defined' do
+      it 'logs when Legion::Data::Connection is not defined' do
+        logger = instance_double(Legion::Logging::Helper::CompatLogger)
+        allow(manager).to receive(:log).and_return(logger)
+        expect(logger).to receive(:debug).with("LeaseManager: no Legion::Data::Connection loaded for 'postgresql' reconnect")
+
         expect { manager.send(:trigger_reconnect, :postgresql) }.not_to raise_error
       end
     end
