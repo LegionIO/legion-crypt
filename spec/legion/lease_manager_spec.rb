@@ -611,18 +611,49 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
 
     context 'when name is :postgresql' do
-      it 'disconnects and reconnects the Sequel pool' do
-        sequel_db = double('Sequel::Database')
-        connection_mod = double('Legion::Data::Connection', sequel: sequel_db)
-        stub_const('Legion::Data::Connection', connection_mod)
-        expect(sequel_db).to receive(:disconnect)
-        expect(sequel_db).to receive(:test_connection)
-        manager.send(:trigger_reconnect, :postgresql)
+      context 'when reconnect_with_fresh_creds is available' do
+        it 'calls reconnect_with_fresh_creds' do
+          data_mod = Module.new
+          connection_mod = double('Legion::Data::Connection')
+          stub_const('Legion::Data', data_mod)
+          stub_const('Legion::Data::Connection', connection_mod)
+          allow(connection_mod).to receive(:respond_to?).with(:reconnect_with_fresh_creds).and_return(true)
+          expect(connection_mod).to receive(:reconnect_with_fresh_creds).and_return(true)
+          manager.send(:trigger_reconnect, :postgresql)
+        end
+
+        it 'logs error when reconnect_with_fresh_creds returns false' do
+          data_mod = Module.new
+          connection_mod = double('Legion::Data::Connection')
+          stub_const('Legion::Data', data_mod)
+          stub_const('Legion::Data::Connection', connection_mod)
+          allow(connection_mod).to receive(:respond_to?).with(:reconnect_with_fresh_creds).and_return(true)
+          allow(connection_mod).to receive(:reconnect_with_fresh_creds).and_return(false)
+          expect { manager.send(:trigger_reconnect, :postgresql) }.not_to raise_error
+        end
       end
 
-      it 'skips when Data::Connection.sequel is nil' do
-        connection_mod = double('Legion::Data::Connection', sequel: nil)
-        stub_const('Legion::Data::Connection', connection_mod)
+      context 'when reconnect_with_fresh_creds is not available (legacy)' do
+        it 'falls back to disconnect + test_connection' do
+          data_mod = Module.new
+          sequel_db = double('Sequel::Database')
+          connection_mod = double('Legion::Data::Connection')
+          stub_const('Legion::Data', data_mod)
+          stub_const('Legion::Data::Connection', connection_mod)
+          allow(connection_mod).to receive(:respond_to?).with(:reconnect_with_fresh_creds).and_return(false)
+          allow(connection_mod).to receive(:respond_to?).with(:sequel).and_return(true)
+          allow(connection_mod).to receive(:sequel).and_return(sequel_db)
+          expect(sequel_db).to receive(:disconnect)
+          expect(sequel_db).to receive(:test_connection)
+          manager.send(:trigger_reconnect, :postgresql)
+        end
+      end
+
+      it 'logs when Legion::Data::Connection is not defined' do
+        logger = instance_double(Legion::Logging::Helper::CompatLogger)
+        allow(manager).to receive(:log).and_return(logger)
+        expect(logger).to receive(:debug).with("LeaseManager: no Legion::Data::Connection loaded for 'postgresql' reconnect")
+
         expect { manager.send(:trigger_reconnect, :postgresql) }.not_to raise_error
       end
     end

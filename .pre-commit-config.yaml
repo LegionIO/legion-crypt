@@ -1,0 +1,29 @@
+# Standard LegionIO pre-commit configuration
+# Install: pre-commit install
+# Manual:  pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+        exclude: Gemfile\.lock
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: rubocop
+        name: RuboCop (autofix)
+        entry: scripts/pre-commit-rubocop.sh
+        language: script
+        types: [ruby]
+        pass_filenames: true
+
+      - id: ruby-syntax
+        name: Ruby syntax check
+        entry: ruby -c
+        language: system
+        types: [ruby]
+        pass_filenames: true

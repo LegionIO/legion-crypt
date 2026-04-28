@@ -28,6 +28,24 @@ RSpec.describe Legion::Crypt::Spiffe::WorkloadApiClient do
     end
   end
 
+  describe '#close_workload_api_socket' do
+    it 'logs socket close failures' do
+      fake_sock = instance_double(UNIXSocket)
+      close_error = StandardError.new('close failed')
+      allow(fake_sock).to receive(:close).and_raise(close_error)
+
+      expect(client).to receive(:handle_exception).with(
+        close_error,
+        level:       :debug,
+        operation:   'crypt.spiffe.workload_api_client.close_socket',
+        method_path: '/spire.api.agent.X509SVID/FetchX509SVID',
+        socket_path: '/tmp/fake.sock'
+      )
+
+      expect(client.send(:close_workload_api_socket, fake_sock, '/spire.api.agent.X509SVID/FetchX509SVID')).to be_nil
+    end
+  end
+
   describe '#fetch_x509_svid' do
     context 'when the Workload API is unavailable (no socket)' do
       before do

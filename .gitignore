@@ -9,6 +9,7 @@
 /tmp/
 /legion/.idea/
 /.idea/
+*.gem
 *.key
 # rspec failure tracking
 .rspec_status

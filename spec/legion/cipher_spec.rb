@@ -31,6 +31,23 @@ RSpec.describe Legion::Crypt::Cipher do
     end.to raise_error(OpenSSL::Cipher::CipherError)
   end
 
+  it 'raises an actionable error when authenticated ciphertext is missing fields' do
+    message = @crypt.encrypt('foobar')
+    prefix, ciphertext = message[:enciphered_message].split(':', 3)
+
+    expect do
+      @crypt.decrypt("#{prefix}:#{ciphertext}", message[:iv])
+    end.to raise_error(ArgumentError, /invalid authenticated ciphertext: missing auth_tag .*auth_tag_present=false/)
+  end
+
+  it 'raises an actionable error when authenticated ciphertext is missing an iv' do
+    message = @crypt.encrypt('foobar')
+
+    expect do
+      @crypt.decrypt(message[:enciphered_message], nil)
+    end.to raise_error(ArgumentError, /invalid authenticated ciphertext: missing iv .*iv_present=false/)
+  end
+
   it 'can decrypt legacy cbc ciphertext' do
     cipher = OpenSSL::Cipher.new('aes-256-cbc')
     cipher.encrypt

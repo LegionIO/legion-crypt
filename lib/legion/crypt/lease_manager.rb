@@ -248,10 +248,10 @@ module Legion
           next if @state_mutex.synchronize { @active_leases.empty? }
 
           Timeout.timeout(10) { shutdown }
-        rescue Timeout::Error
-          warn '[LeaseManager] at_exit shutdown timed out after 10s'
-        rescue StandardError # best effort on crash
-          nil
+        rescue Timeout::Error => e
+          log.warn("[LeaseManager] at_exit shutdown timed out after 10s: #{e.message}")
+        rescue StandardError => e # best effort on crash
+          log.warn("[LeaseManager] at_exit shutdown failed: #{e.class}: #{e.message}")
         end
         @at_exit_registered = true
       end
@@ -466,11 +466,7 @@ module Legion
           Legion::Transport::Connection.force_reconnect
           log.info("LeaseManager: triggered transport reconnect after '#{name}' reissue")
         when :postgresql
-          return unless defined?(Legion::Data::Connection) && Legion::Data::Connection.sequel
-
-          Legion::Data::Connection.sequel.disconnect
-          Legion::Data::Connection.sequel.test_connection
-          log.info("LeaseManager: triggered data pool reconnect after '#{name}' reissue")
+          trigger_postgresql_reconnect(name)
         when :redis
           return unless defined?(Legion::Cache)
 
@@ -482,8 +478,34 @@ module Legion
           log.info("LeaseManager: triggered cache reconnect after '#{name}' reissue")
         end
       rescue StandardError => e
-        handle_exception(e, level: :warn, operation: 'crypt.lease_manager.trigger_reconnect', lease_name: name)
-        log.warn("LeaseManager: reconnect for '#{name}' failed: #{e.message}")
+        handle_exception(e, level: :error, operation: 'crypt.lease_manager.trigger_reconnect', lease_name: name)
+        log.error("LeaseManager: reconnect for '#{name}' FAILED: #{e.message} — " \
+                  'services may be unavailable until the next lease rotation')
+      end
+
+      def trigger_postgresql_reconnect(name)
+        unless defined?(Legion::Data::Connection)
+          log.debug("LeaseManager: no Legion::Data::Connection loaded for '#{name}' reconnect")
+          return
+        end
+
+        if Legion::Data::Connection.respond_to?(:reconnect_with_fresh_creds)
+          success = Legion::Data::Connection.reconnect_with_fresh_creds
+          if success
+            log.info("LeaseManager: reconnected data layer with fresh credentials after '#{name}' reissue")
+          else
+            log.error("LeaseManager: FAILED to reconnect data layer after '#{name}' reissue — " \
+                      'Apollo and other DB-backed services may be unavailable')
+          end
+        elsif Legion::Data::Connection.respond_to?(:sequel) && Legion::Data::Connection.sequel
+          log.warn('LeaseManager: legion-data does not support reconnect_with_fresh_creds — ' \
+                   'falling back to pool disconnect (may use stale credentials)')
+          Legion::Data::Connection.sequel.disconnect
+          Legion::Data::Connection.sequel.test_connection
+          log.info("LeaseManager: triggered data pool reconnect after '#{name}' reissue (legacy path)")
+        else
+          log.warn("LeaseManager: no active data connection to reconnect after '#{name}' reissue")
+        end
       end
 
       def running?

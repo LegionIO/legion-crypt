@@ -6,8 +6,9 @@ begin
     'lib/legion/logging/helper.rb'
   )
   require helper_path if File.exist?(helper_path)
-rescue Gem::LoadError
-  nil
+rescue Gem::LoadError => e
+  require 'legion/logging'
+  Legion::Logging.warn("legion-crypt logging helper fallback active: #{e.message}")
 end
 
 require 'legion/logging'
@@ -38,7 +39,8 @@ module Legion
             return false unless Legion.const_defined?('Logging')
 
             Legion::Logging.respond_to?(level)
-          rescue StandardError
+          rescue StandardError => e
+            Legion::Logging.warn("legion-crypt logging support check failed: #{e.message}")
             false
           end
         end
@@ -77,7 +79,8 @@ module Legion
         return false unless Legion.const_defined?('Logging')
 
         Legion::Logging.respond_to?(level)
-      rescue StandardError
+      rescue StandardError => e
+        Legion::Logging.warn("legion-crypt logging support check failed: #{e.message}")
         false
       end
 
@@ -86,7 +89,7 @@ module Legion
         prefix = operation ? "#{operation} failed: " : ''
         details = opts.reject { |key, _value| key.to_s == 'operation' }.map { |key, value| "#{key}=#{value}" }
         detail_suffix = details.empty? ? '' : " (#{details.join(' ')})"
-        backtrace = Array(exception.backtrace).first(10).join("\n")
+        backtrace = Array(exception.backtrace).join("\n")
         base = "#{prefix}#{exception.class}: #{exception.message}#{detail_suffix}"
         return base if backtrace.empty? || level == :debug
         return base if backtrace.empty?

@@ -104,8 +104,16 @@ module Legion
             send_grpc_request(sock, method_path, request_body)
             read_grpc_response(sock)
           ensure
-            sock.close rescue nil # rubocop:disable Style/RescueModifier
+            close_workload_api_socket(sock, method_path)
           end
+        end
+
+        def close_workload_api_socket(sock, method_path)
+          sock.close
+        rescue StandardError => e
+          handle_exception(e, level: :debug, operation: 'crypt.spiffe.workload_api_client.close_socket',
+                           method_path: method_path, socket_path: @socket_path)
+          nil
         end
 
         def connect_socket
