@@ -86,7 +86,7 @@ module Legion
         prefix = operation ? "#{operation} failed: " : ''
         details = opts.reject { |key, _value| key.to_s == 'operation' }.map { |key, value| "#{key}=#{value}" }
         detail_suffix = details.empty? ? '' : " (#{details.join(' ')})"
-        backtrace = Array(exception.backtrace).first(10).join("\n")
+        backtrace = Array(exception.backtrace).join("\n")
         base = "#{prefix}#{exception.class}: #{exception.message}#{detail_suffix}"
         return base if backtrace.empty? || level == :debug
         return base if backtrace.empty?

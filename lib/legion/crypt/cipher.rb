@@ -113,6 +113,13 @@ module Legion
 
       def decrypt_authenticated(message, init_vector, secret)
         _, encoded_ciphertext, encoded_auth_tag = message.split(':', 3)
+        validate_authenticated_ciphertext!(
+          encoded_ciphertext: encoded_ciphertext,
+          encoded_auth_tag:   encoded_auth_tag,
+          init_vector:        init_vector,
+          secret:             secret,
+          message:            message
+        )
 
         decipher = OpenSSL::Cipher.new(AUTHENTICATED_CIPHER)
         decipher.decrypt
@@ -123,6 +130,8 @@ module Legion
       end
 
       def decrypt_legacy(message, init_vector, secret)
+        validate_legacy_ciphertext!(message: message, init_vector: init_vector, secret: secret)
+
         decipher = OpenSSL::Cipher.new(LEGACY_CIPHER)
         decipher.decrypt
         decipher.key = secret
@@ -136,11 +145,69 @@ module Legion
 
       def decrypt_oaep_from_keypair(message)
         _, encoded_message = message.split(':', 2)
+        validate_keypair_ciphertext!(encoded_message: encoded_message, message: message, scheme: RSA_OAEP_PREFIX)
+
         private_key.private_decrypt(Base64.strict_decode64(encoded_message), RSA_OAEP_PADDING)
       end
 
       def decrypt_legacy_from_keypair(message)
+        validate_keypair_ciphertext!(encoded_message: message, message: message, scheme: 'legacy')
+
         private_key.private_decrypt(Base64.decode64(message), RSA_LEGACY_PADDING)
+      end
+
+      def validate_authenticated_ciphertext!(encoded_ciphertext:, encoded_auth_tag:, init_vector:, secret:, message:)
+        missing = []
+        missing << 'ciphertext' if blank?(encoded_ciphertext)
+        missing << 'auth_tag' if blank?(encoded_auth_tag)
+        missing << 'iv' if blank?(init_vector)
+        missing << 'cluster_secret' if blank?(secret)
+        return if missing.empty?
+
+        raise ArgumentError, 'invalid authenticated ciphertext: missing ' \
+                             "#{missing.join(', ')} " \
+                             "(scheme=#{AUTHENTICATED_PREFIX} " \
+                             "message_bytes=#{byte_size(message)} " \
+                             "ciphertext_present=#{present?(encoded_ciphertext)} " \
+                             "auth_tag_present=#{present?(encoded_auth_tag)} " \
+                             "iv_present=#{present?(init_vector)} " \
+                             "cluster_secret_present=#{present?(secret)})"
+      end
+
+      def validate_legacy_ciphertext!(message:, init_vector:, secret:)
+        missing = []
+        missing << 'ciphertext' if blank?(message)
+        missing << 'iv' if blank?(init_vector)
+        missing << 'cluster_secret' if blank?(secret)
+        return if missing.empty?
+
+        raise ArgumentError, 'invalid legacy ciphertext: missing ' \
+                             "#{missing.join(', ')} " \
+                             "(message_bytes=#{byte_size(message)} " \
+                             "iv_present=#{present?(init_vector)} " \
+                             "cluster_secret_present=#{present?(secret)})"
+      end
+
+      def validate_keypair_ciphertext!(encoded_message:, message:, scheme:)
+        return unless blank?(encoded_message)
+
+        raise ArgumentError, 'invalid keypair ciphertext: missing ciphertext ' \
+                             "(scheme=#{scheme} message_bytes=#{byte_size(message)})"
+      end
+
+      def blank?(value)
+        value.nil? || (value.respond_to?(:empty?) && value.empty?)
+      end
+
+      def present?(value)
+        !blank?(value)
+      end
+
+      def byte_size(value)
+        return 0 if value.nil?
+        return value.bytesize if value.respond_to?(:bytesize)
+
+        value.to_s.bytesize
       end
     end
   end
