@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.14] - 2026-09-17
+
+### Fixed
+- Constrained `json` to `~> 2` (gemspec runtime dependency): the `vault` (vault-ruby) gem calls `::JSON.parse(body, JSON_PARSE_OPTIONS)` with a *positional* options hash (`vault/client.rb` `#success`/`#request`), which `json` 3.x rejects — `JSON.parse` became keyword-only (a single positional arg), raising `ArgumentError: wrong number of arguments (given 2, expected 1)` on every Vault HTTP response. This broke all Vault connectivity during the crypt boot phase (Kerberos/JWT/LDAP auth, lease read/write, `sys` health), leaving `cluster_secret` and every `vault://`/`lease://` reference unresolved. Pinning json to 2.x restores the positional-hash API vault-ruby depends on until vault-ruby is replaced with a Legion-owned client.
+
 ## [1.5.13] - 2026-05-09
 
 ### Removed
