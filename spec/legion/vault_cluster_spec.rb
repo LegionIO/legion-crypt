@@ -94,91 +94,89 @@ RSpec.describe Legion::Crypt::VaultCluster do
   end
 
   describe '#vault_client' do
-    let(:mock_client) { instance_double(Vault::Client) }
+    after { test_object.clear_vault_clients }
 
-    before do
-      allow(Vault::Client).to receive(:new).and_return(mock_client)
-      allow(mock_client).to receive(:namespace=)
-    end
-
-    it 'returns a Vault::Client for the default cluster' do
-      expect(Vault::Client).to receive(:new).with(
-        address:    'https://vault-alpha.example.com:8200',
-        token:      'token-alpha',
-        ssl_verify: true
-      ).and_return(mock_client)
-      expect(test_object.vault_client).to eq(mock_client)
-    end
-
-    it 'returns a Vault::Client for a named cluster' do
-      expect(Vault::Client).to receive(:new).with(
-        address:    'https://vault-beta.example.com:8200',
-        token:      'token-beta',
-        ssl_verify: true
-      ).and_return(mock_client)
-      expect(test_object.vault_client(:beta)).to eq(mock_client)
-    end
-
-    it 'memoizes the client per cluster name' do
-      expect(Vault::Client).to receive(:new).once.and_return(mock_client)
-      test_object.vault_client(:alpha)
-      test_object.vault_client(:alpha)
-    end
-
-    it 'creates separate clients for different cluster names' do
-      mock_beta = instance_double(Vault::Client)
-      allow(mock_beta).to receive(:namespace=)
-      allow(Vault::Client).to receive(:new).and_return(mock_client, mock_beta)
-
-      client_alpha = test_object.vault_client(:alpha)
-      client_beta  = test_object.vault_client(:beta)
-      expect(client_alpha).not_to eq(client_beta)
-    end
-
-    it 'returns nil when the cluster config is not a hash' do
+    it 'reuses unchanged clients while isolating different clusters' do
+      alpha = test_object.vault_client(:alpha)
+      expect(test_object.vault_client).to equal(alpha)
+      expect(test_object.vault_client(:beta)).not_to equal(alpha)
       expect(test_object.vault_client(:unknown)).to be_nil
     end
 
-    context 'when cluster config includes a namespace' do
-      let(:test_clusters_with_ns) do
-        { alpha: cluster_alpha.merge(namespace: 'admin') }
-      end
-
-      let(:test_object) do
-        obj = Object.new
-        obj.extend(described_class)
-        vault_settings_hash = { default: :alpha, clusters: test_clusters_with_ns }
-        obj.define_singleton_method(:vault_settings) { vault_settings_hash }
-        obj
-      end
-
-      it 'sets the namespace on the client' do
-        expect(mock_client).to receive(:namespace=).with('admin')
-        test_object.vault_client(:alpha)
+    it 'replaces and retires clients when any connection attribute changes' do
+      changes = [
+        [:address, 'other.example.com', :address, 'https://other.example.com:8200'],
+        [:protocol, 'http', :address, 'http://other.example.com:8200'],
+        [:port, 8201, :address, 'http://other.example.com:8201'],
+        [:namespace, 'tenant', :namespace, 'tenant'],
+        [:tls, { verify: 'none' }, :ssl_verify, false],
+        [:token, 'replacement-token', :token, 'replacement-token']
+      ]
+      changes.each do |key, value, attribute, expected|
+        previous = test_object.vault_client(:alpha)
+        allow(previous).to receive(:shutdown).and_call_original
+        cluster_alpha[key] = value
+        replacement = test_object.vault_client(:alpha)
+        expect(replacement).not_to equal(previous)
+        expect(replacement.public_send(attribute)).to eq(expected)
+        expect(previous).to have_received(:shutdown).once
       end
     end
 
-    context 'when cluster config has no namespace but Settings has vault_namespace' do
-      let(:test_object) do
-        obj = Object.new
-        obj.extend(described_class)
-        vault_settings_hash = { default: :alpha, clusters: { alpha: cluster_alpha } }
-        obj.define_singleton_method(:vault_settings) { vault_settings_hash }
-        obj
-      end
+    it 'detects in-place namespace changes and inherited namespace changes' do
+      configuration = { vault: { vault_namespace: +'first' } }
+      allow(Legion::Settings).to receive(:[]).and_call_original
+      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      first = test_object.vault_client(:alpha)
+      configuration[:vault][:vault_namespace].replace('second')
+      second = test_object.vault_client(:alpha)
+      expect(second).not_to equal(first)
+      expect(second.namespace).to eq('second')
+      cluster_alpha[:namespace] = nil
+      expect(test_object.vault_client(:alpha).namespace).to be_nil
+    end
 
-      before do
-        stub_const('Legion::Settings', Module.new do
-          def self.[](key)
-            { vault: { vault_namespace: 'legionio' } } if key == :crypt
-          end
-        end)
-      end
+    it 'keeps the current client after Kerberos reauthentication updates its token' do
+      cluster_alpha[:kerberos] = { service_principal: 'HTTP/vault.example.com' }
+      client = test_object.vault_client(:alpha)
+      allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(
+        { token: 'renewed-token', lease_duration: 3600, renewable: true, metadata: {} }
+      )
+      renewer = Legion::Crypt::TokenRenewer.new(cluster_name: :alpha, config: cluster_alpha, vault_client: client)
+      expect(renewer.reauth_kerberos).to be(true)
+      expect(test_object.vault_client(:alpha)).to equal(client)
+      expect(client.token).to eq('renewed-token')
+    end
 
-      it 'falls back to vault_namespace from Settings' do
-        expect(mock_client).to receive(:namespace=).with('legionio')
-        test_object.vault_client(:alpha)
-      end
+    it 'retires a removed cluster and does not return its obsolete client' do
+      client = test_object.vault_client(:alpha)
+      allow(client).to receive(:shutdown).and_call_original
+      test_clusters.delete(:alpha)
+      expect(test_object.vault_client(:alpha)).to be_nil
+      expect(client).to have_received(:shutdown).once
+    end
+
+    it 'clears every entry even when one client cannot shut down' do
+      alpha = test_object.vault_client(:alpha)
+      beta = test_object.vault_client(:beta)
+      allow(alpha).to receive(:shutdown).and_raise(IOError, 'failed shutdown')
+      allow(beta).to receive(:shutdown).and_call_original
+      test_object.clear_vault_clients
+      expect(beta).to have_received(:shutdown).once
+      expect(test_object.vault_client(:alpha)).not_to equal(alpha)
+      expect(test_object.vault_client(:beta)).not_to equal(beta)
+    end
+
+    it 'bounds retirement without blocking a replacement client' do
+      configuration = { vault: { operation_timeout: 0.03 } }
+      allow(Legion::Settings).to receive(:[]).and_call_original
+      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      previous = test_object.vault_client(:alpha)
+      allow(previous).to receive(:shutdown) { sleep 10 }
+      cluster_alpha[:address] = 'replacement.example.com'
+      replacement = Timeout.timeout(0.5) { test_object.vault_client(:alpha) }
+      expect(replacement.address).to eq('https://replacement.example.com:8200')
+      expect(test_object.vault_client(:alpha)).to equal(replacement)
     end
   end
 

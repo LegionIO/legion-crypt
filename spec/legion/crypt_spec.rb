@@ -307,5 +307,33 @@ RSpec.describe Legion::Crypt do
       described_class.shutdown
       expect(revoked).to eq(%w[healthy after-restart])
     end
+
+    it 'retires cached cluster clients before starting another lifecycle' do
+      described_class.start
+      configuration[:vault][:clusters][:primary] = {
+        protocol: 'https', address: 'first.example.com', port: 8200, token: nil
+      }
+      previous = described_class.vault_client(:primary)
+      allow(previous).to receive(:shutdown).and_call_original
+      described_class.shutdown
+      expect(previous).to have_received(:shutdown).once
+      configuration[:vault][:clusters][:primary][:address] = 'second.example.com'
+      described_class.start
+      replacement = described_class.vault_client(:primary)
+      expect(replacement).not_to equal(previous)
+      expect(replacement.address).to eq('https://second.example.com:8200')
+    end
+
+    it 'also retires clients opened before the lifecycle starts' do
+      configuration[:vault][:clusters][:primary] = {
+        protocol: 'https', address: 'vault.example.com', port: 8200, token: nil
+      }
+      previous = described_class.vault_client(:primary)
+      allow(previous).to receive(:shutdown).and_call_original
+      described_class.shutdown
+      expect(previous).to have_received(:shutdown).once
+      described_class.start
+      expect(described_class.vault_client(:primary)).not_to equal(previous)
+    end
   end
 end

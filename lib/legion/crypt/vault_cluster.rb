@@ -12,6 +12,7 @@ if OpenSSL::SSL::SSLContext::DEFAULT_PARAMS.frozen?
 end
 
 require 'vault'
+require 'legion/crypt/vault_operation'
 
 module Legion
   module Crypt
@@ -20,8 +21,37 @@ module Legion
 
       def vault_client(name = nil)
         name = resolve_cluster_name(name)
-        @vault_clients ||= {}
-        @vault_clients[name] ||= build_vault_client(clusters[name])
+        client, previous = vault_clients_mutex.synchronize do
+          return if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
+
+          @vault_clients ||= {}
+          entry = @vault_clients[name]
+          signature = vault_client_signature(clusters[name])
+          if current_vault_client?(entry, signature)
+            entry[:signature][:token] = signature[:token]&.dup if entry[:signature][:token] != signature[:token]
+            return entry[:client]
+          end
+
+          replacement = signature && build_vault_client(signature)
+          @vault_clients.delete(name)
+          if replacement
+            signature.transform_values! { |value| value.is_a?(String) ? value.dup.freeze : value }
+            @vault_clients[name] = { client: replacement, signature: signature }
+          end
+          [replacement, entry&.fetch(:client)]
+        end
+        retire_vault_client(previous) if previous
+        client
+      end
+
+      def clear_vault_clients(deadline: nil)
+        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
+        entries = vault_clients_mutex.synchronize do
+          previous = @vault_clients || {}
+          @vault_clients = {}
+          previous.values
+        end
+        entries.each { |entry| retire_vault_client(entry[:client], deadline: deadline) }
       end
 
       def cluster(name = nil)
@@ -114,18 +144,20 @@ module Legion
         default_cluster_name
       end
 
-      def build_vault_client(config)
-        return nil unless config.is_a?(Hash)
+      def vault_clients_mutex
+        @vault_clients_mutex ||= Mutex.new
+      end
 
-        addr = "#{config[:protocol]}://#{config[:address]}:#{config[:port]}"
-        ssl_verify = resolve_cluster_ssl_verify(config[:tls])
-        log.info "Building Vault client address=#{addr} namespace=#{config[:namespace].inspect} ssl_verify=#{ssl_verify}"
-        log_vault_debug("build_vault_client: address=#{addr}")
-        client = ::Vault::Client.new(
-          address:    addr,
-          token:      config[:token],
-          ssl_verify: ssl_verify
-        )
+      def current_vault_client?(entry, signature)
+        return false unless entry && signature
+        return false unless entry[:signature].all? { |key, value| key == :token || value == signature[key] }
+
+        entry[:signature][:token] == signature[:token] || entry[:client].token == signature[:token]
+      end
+
+      def vault_client_signature(config)
+        return unless config.is_a?(Hash)
+
         namespace =
           if config.key?(:namespace)
             config[:namespace]
@@ -133,9 +165,27 @@ module Legion
             crypt_settings = Legion::Settings[:crypt]
             crypt_settings.respond_to?(:dig) ? crypt_settings.dig(:vault, :vault_namespace) : nil
           end
-        client.namespace = namespace if namespace
-        log_vault_debug("build_vault_client: namespace=#{namespace.inspect}")
-        client
+        {
+          address: "#{config[:protocol]}://#{config[:address]}:#{config[:port]}",
+          namespace: namespace, ssl_verify: resolve_cluster_ssl_verify(config[:tls]), token: config[:token]
+        }
+      end
+
+      def build_vault_client(signature)
+        log.info "Building Vault client address=#{signature[:address]} namespace=#{signature[:namespace].inspect} ssl_verify=#{signature[:ssl_verify]}"
+        ::Vault::Client.new(**signature)
+      end
+
+      def retire_vault_client(client, deadline: nil)
+        return unless client.respond_to?(:shutdown)
+
+        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) do
+          # vault-ruby shutdown requires a pool even when this client has not made a request.
+          client.pool if client.respond_to?(:pool)
+          client.shutdown
+        end
+      rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.retire_vault_client')
       end
 
       def resolve_cluster_ssl_verify(tls_config)
@@ -177,7 +227,7 @@ module Legion
         config[:lease_duration] = result[:lease_duration]
         config[:renewable] = result[:renewable]
         config[:connected] = true
-        vault_client(name).token = result[:token]
+        client.token = result[:token]
         log_vault_debug("connect_kerberos_cluster[#{name}]: policies=#{result[:policies].inspect}")
         log_cluster_connected(name, config)
         true

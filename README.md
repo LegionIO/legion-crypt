@@ -163,6 +163,8 @@ Lease names are stable across environments. The actual Vault paths are deploymen
 
 `VaultCluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `::Vault::Client` instance.
 
+Clients are reused only while their endpoint, namespace, TLS verification, and token match the current configuration. Connection changes retire the old client; shutdown clears and retires the cache. In-place authentication token refreshes preserve the current client.
+
 ```json
 {
   "crypt": {

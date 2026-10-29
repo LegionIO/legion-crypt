@@ -243,7 +243,8 @@ module Legion
 
       def shutdown
         shutdown_started = lifecycle_mutex.synchronize do
-          return unless @started
+          return if @stopping
+          return unless @started || @vault_clients&.any?
 
           @stopping = true
           @started = false
@@ -262,7 +263,8 @@ module Legion
           [self, :shutdown_renewer, {}],
           [manager, :shutdown, { deadline: deadline }],
           [self, :stop_token_renewers, { deadline: deadline }],
-          [self, :close_sessions, { deadline: deadline }]
+          [self, :close_sessions, { deadline: deadline }],
+          [self, :clear_vault_clients, { deadline: deadline }]
         ]
         components.each do |owner, operation, options|
           owner.send(operation, **options)

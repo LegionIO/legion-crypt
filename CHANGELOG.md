@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.21] - 2026-10-29
+
+### Fixed
+- Invalidate cached Vault clients when connection settings change, retire clients with bounded failure-isolated cleanup, and clear the cache across shutdown/start without discarding in-place token refreshes (#47).
+
 ## [1.5.20] - 2026-10-29
 
 ### Fixed
