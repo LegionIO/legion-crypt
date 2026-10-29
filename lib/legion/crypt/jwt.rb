@@ -109,18 +109,16 @@ module Legion
       def self.verify_with_jwks(token, jwks_url:, **opts)
         header = decode_header(token)
         kid = header['kid']
-        algorithm = header['alg'] || 'RS256'
+        algorithm = header['alg']
 
-        raise InvalidTokenError, 'token header missing kid' unless kid
-
-        validate_algorithm!(algorithm)
-
-        public_key = Legion::Crypt::JwksClient.find_key(jwks_url, kid)
+        raise InvalidTokenError, 'token header missing or invalid kid' unless kid.is_a?(String) && !kid.empty?
+        raise InvalidTokenError, 'unsupported token algorithm' unless SUPPORTED_ALGORITHMS.include?(algorithm)
 
         verify_expiration = opts.fetch(:verify_expiration, true)
         issuers = opts[:issuers]
         audience = opts[:audience]
         validate_external_requirements!(issuers: issuers, audience: audience)
+        public_key = Legion::Crypt::JwksClient.find_key(jwks_url, kid)
 
         decode_opts = {
           algorithm:         algorithm,
@@ -165,7 +163,10 @@ module Legion
         raise DecodeError, 'invalid token format' unless parts.size == 3
 
         header_json = Base64.urlsafe_decode64(parts[0])
-        ::JSON.parse(header_json)
+        header = ::JSON.parse(header_json)
+        raise DecodeError, 'JWT header must be an object' unless header.is_a?(Hash)
+
+        header
       rescue ::JSON::ParserError, ArgumentError => e
         handle_exception(e, level: :warn, operation: 'crypt.jwt.decode_header')
         raise DecodeError, "failed to decode token header: #{e.message}"

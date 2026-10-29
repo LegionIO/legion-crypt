@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.18] - 2026-10-29
+
+### Fixed
+- Reject malformed JWT header shapes, key identifiers, and token algorithms through JWT-domain errors before JWKS lookup, while keeping caller configuration failures distinct (#46).
+
 ## [1.5.17] - 2026-10-29
 
 ### Fixed
