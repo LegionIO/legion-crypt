@@ -1,206 +1,152 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-
 require 'legion/crypt/cluster_secret'
 
 RSpec.describe Legion::Crypt::ClusterSecret do
+  let(:configuration) { Legion::Crypt::Settings.default }
+  let(:transport) { { connected: false, enabled: false } }
+  let(:client) { { shutting_down: false } }
+  let(:initialization_error) { described_class::InitializationError }
+
   before do
-    @cs = Class.new
-    @cs.extend Legion::Crypt::ClusterSecret
-
-    @original_cluster_secret = Legion::Settings[:crypt][:cluster_secret]
-    @original_cs_encrypt_ready = Legion::Settings[:crypt][:cs_encrypt_ready]
-    @original_vault_settings = Legion::Settings[:crypt][:vault].dup
+    @cs = Class.new.extend(described_class)
+    stub_const('Legion::Transport::Queue', Class.new)
+    stub_const('Legion::Transport::Messages::RequestClusterSecret', Class.new)
+    allow(@cs).to receive(:require).with('legion/transport/messages/request_cluster_secret').and_return(true)
+    allow(Legion::Settings).to receive(:[]).and_call_original
+    allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+    allow(Legion::Settings).to receive(:[]).with(:transport).and_return(transport)
+    allow(Legion::Settings).to receive(:[]).with(:client).and_return(client)
   end
 
-  after do
-    Legion::Settings[:crypt][:cluster_secret] = @original_cluster_secret
-    Legion::Settings[:crypt][:cs_encrypt_ready] = @original_cs_encrypt_ready
-    Legion::Settings[:crypt][:vault].replace(@original_vault_settings)
-    @cs.remove_instance_variable(:@cs) if @cs.instance_variable_defined?(:@cs)
+  it 'bootstraps a validated key when transport is explicitly disabled' do
+    secret = @cs.find_cluster_secret
+    expect(@cs.validate_hex(secret)).to be(true)
+    expect(@cs.cs).to eq(Digest::SHA256.digest(secret))
   end
 
-  it '.find_cluster_secret' do
-    expect(@cs.find_cluster_secret).not_to be_nil
-  end
-
-  it 'can from_vault without Vault being loaded' do
-    expect(@cs.from_vault).to be_nil
-  end
-
-  # it '.from_settings' do
-  #   expect(@cs.from_settings).to be_nil
-  # end
-
-  it '.force_cluster_secret' do
-    expect(@cs.force_cluster_secret).to eq false
-  end
-
-  it '.settings_push_vault' do
-    expect(@cs.settings_push_vault).to eq false
-  end
-
-  it '.only_member?' do
-    expect(@cs.only_member?).to eq nil
-  end
-
-  it '.push_cs_to_vault' do
-    expect(@cs.push_cs_to_vault).to eq false
-  end
-
-  describe '#push_cs_to_vault rescue paths' do
-    before do
-      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).and_call_original
-      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).with(:connected).and_return(true)
-      allow(Legion::Settings[:crypt]).to receive(:[]).and_call_original
-      allow(Legion::Settings[:crypt]).to receive(:[]).with(:cluster_secret).and_return('aabbccdd')
-      allow(Legion::Crypt).to receive(:write).and_raise(StandardError, 'permission denied')
-    end
-
-    it 'returns false when Vault write raises' do
-      expect(@cs.push_cs_to_vault).to eq false
-    end
-
-    it 'does not propagate the exception' do
-      expect { @cs.push_cs_to_vault }.not_to raise_error
-    end
-
-    it 'logs via handle_exception' do
-      expect(@cs).to receive(:handle_exception).with(instance_of(StandardError), hash_including(level: :warn))
-      @cs.push_cs_to_vault
+  [false, nil].each do |membership|
+    it "does not generate a competing secret when membership is #{membership.inspect}" do
+      allow(@cs).to receive(:only_member?).and_return(membership)
+      expect(@cs).not_to receive(:generate_secure_random)
+      expect { @cs.cs }.to raise_error(initialization_error)
+      expect(configuration[:cs_encrypt_ready]).to be(false)
     end
   end
 
-  describe '#set_cluster_secret' do
-    let(:valid_secret) { SecureRandom.hex(32) }
+  it 'permits bootstrap after confirming an empty cluster' do
+    transport[:connected] = true
+    allow(@cs).to receive(:from_transport).and_return(nil)
+    allow(Legion::Transport::Queue).to receive(:new).with('node.crypt', passive: true)
+                                                    .and_return(double(consumer_count: 0))
+    expect(@cs.cs).to eq(Digest::SHA256.digest(configuration[:cluster_secret]))
+  end
 
-    before do
-      Legion::Settings[:crypt][:vault][:connected] = true
-      Legion::Settings[:crypt][:vault][:push_cluster_secret] = true
+  it 'permits bootstrap with the actual lite transport adapter type' do
+    transport.replace(connected: true, enabled: true)
+    stub_const('Legion::Transport::TYPE', 'local')
+    expect(@cs.cs).to eq(Digest::SHA256.digest(configuration[:cluster_secret]))
+  end
+
+  it 'does not treat disconnected transport as evidence of an empty cluster' do
+    transport[:enabled] = true
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with('LEGION_MODE').and_return(nil)
+    expect { @cs.cs }.to raise_error(initialization_error)
+  end
+
+  it 'converges on a delayed peer reply instead of generating another key' do
+    transport[:connected] = true
+    peer_secret = SecureRandom.hex(32)
+    published = Queue.new
+    request = double('cluster secret request')
+    allow(Legion::Transport::Messages::RequestClusterSecret).to receive(:new).and_return(request)
+    allow(request).to receive(:publish) { published << true }
+    responder = Thread.new do
+      published.pop
+      @cs.set_cluster_secret(peer_secret, false)
     end
 
-    it 'pushes the newly assigned secret instead of the previous settings value' do
-      previous_secret = SecureRandom.hex(32)
-      Legion::Settings[:crypt][:cluster_secret] = previous_secret
-      allow(Legion::Crypt).to receive(:write)
+    expect(@cs.cs).to eq(Digest::SHA256.digest(peer_secret))
+    responder.join
+  ensure
+    responder&.kill
+    responder&.join
+  end
 
-      @cs.set_cluster_secret(valid_secret, true)
-
-      expect(Legion::Crypt).to have_received(:write).with('crypt', cluster_secret: valid_secret)
-      expect(Legion::Settings[:crypt][:cluster_secret]).to eq valid_secret
-    end
-
-    context 'when push_cs_to_vault rescues internally' do
-      before do
-        allow(@cs).to receive(:push_cs_to_vault).and_return(false)
-      end
-
-      it 'stores cluster_secret in Settings' do
-        @cs.set_cluster_secret(valid_secret, true)
-        expect(Legion::Settings[:crypt][:cluster_secret]).to eq valid_secret
-      end
-
-      it 'sets cs_encrypt_ready to true' do
-        @cs.set_cluster_secret(valid_secret, true)
-        expect(Legion::Settings[:crypt][:cs_encrypt_ready]).to eq true
+  it 'bounds discovery even when an upstream provider stalls' do
+    configuration[:cluster_secret_timeout] = 0.01
+    allow(@cs).to receive(:from_vault) { sleep(10) }
+    Timeout.timeout(1) do
+      expect { @cs.cs }.to raise_error(initialization_error) do |error|
+        expect(error.cause).to be_a(Timeout::Error)
       end
     end
   end
 
-  describe 'Vault round trip' do
-    let(:vault_store) { {} }
-    let(:initial_secret) { SecureRandom.hex(32) }
-    let(:rotated_secret) { SecureRandom.hex(32) }
-
-    before do
-      Legion::Settings[:crypt][:vault][:connected] = true
-      Legion::Settings[:crypt][:vault][:read_cluster_secret] = true
-      Legion::Settings[:crypt][:vault][:push_cluster_secret] = true
-
-      allow(Legion::Crypt).to receive(:write) do |path, **data|
-        vault_store[path] = data
-      end
-      allow(Legion::Crypt).to receive(:exist?) do |path|
-        vault_store.key?(path)
-      end
-      allow(Legion::Crypt).to receive(:get) do |path|
-        vault_store[path]
-      end
-    end
-
-    it 'round trips the cluster secret through Vault and refreshes the derived digest' do
-      @cs.set_cluster_secret(initial_secret, true)
-      initial_digest = @cs.cs
-
-      Legion::Settings[:crypt][:cluster_secret] = nil
-      expect(@cs.from_vault).to eq initial_secret
-      expect(vault_store['crypt']).to eq(cluster_secret: initial_secret)
-
-      @cs.set_cluster_secret(rotated_secret, false)
-
-      expect(@cs.cs).to eq(Digest::SHA256.digest(rotated_secret))
-      expect(@cs.cs).not_to eq(initial_digest)
-    end
+  it 'rejects invalid key configuration before discovery' do
+    configuration[:cluster_length] = -1
+    expect(@cs).not_to receive(:from_transport)
+    expect { @cs.cs }.to raise_error(initialization_error)
   end
 
-  it '.cluster_secret_timeout' do
-    expect(@cs.cluster_secret_timeout).to eq 5
+  it 'rejects an unbounded readiness timeout' do
+    configuration[:cluster_secret_timeout] = Float::INFINITY
+    expect { @cs.cs }.to raise_error(initialization_error)
   end
 
-  it '.secret_length' do
-    expect(@cs.secret_length).to eq 32
+  it 'rejects malformed configured secrets rather than silently replacing them' do
+    configuration[:cluster_secret] = 'invalid'
+    expect(@cs).not_to receive(:generate_secure_random)
+    expect { @cs.find_cluster_secret }.to raise_error(initialization_error)
   end
 
-  it '.generate_secure_random' do
-    expect(@cs.generate_secure_random).to be_a String
+  it 'cancels discovery when shutdown begins while waiting for a peer' do
+    transport[:connected] = true
+    request = double('cluster secret request')
+    allow(Legion::Transport::Messages::RequestClusterSecret).to receive(:new).and_return(request)
+    allow(request).to receive(:publish) { client[:shutting_down] = true }
+    expect { @cs.cs }.to raise_error(initialization_error)
   end
 
-  it '.validate_hex' do
-    expect(@cs.validate_hex(@cs.find_cluster_secret)).to be_truthy
+  it 'rejects cached keys during shutdown' do
+    @cs.cs
+    client[:shutting_down] = true
+    expect { @cs.cs }.to raise_error(initialization_error)
   end
 
-  it 'complains when it doesn\'t find a valid hex' do
-    Legion::Settings[:crypt][:cluster_secret] = 'not valid'
-    expect(@cs.validate_hex(Legion::Settings[:crypt][:cluster_secret])).to be_falsey
-    expect(@cs.find_cluster_secret).not_to eq 'not valid'
-    expect(@cs.validate_hex(@cs.cluster_secret)).to be_truthy
-  end
-
-  it 'can do magic things with vault(fake)' do
-    expect(@cs.from_vault).to be_nil
-  end
-
-  describe '#from_transport rescue paths' do
-    before do
-      # Simulate transport connected but require itself raising an error
-      allow(Legion::Settings[:transport]).to receive(:[]).and_call_original
-      allow(Legion::Settings[:transport]).to receive(:[]).with(:connected).and_return(true)
-      allow(@cs).to receive(:require).and_raise(StandardError, 'transport error')
-    end
-
-    it 'returns nil when an exception is raised' do
-      expect(@cs.from_transport).to be_nil
-    end
-
-    it 'logs via handle_exception' do
-      expect(@cs).to receive(:handle_exception).with(instance_of(StandardError), hash_including(level: :error))
-      @cs.from_transport
+  it 'preserves the cause of a persistent initialization failure' do
+    failure = RuntimeError.new('discovery unavailable')
+    allow(@cs).to receive(:find_cluster_secret).and_raise(failure)
+    expect { @cs.cs }.to raise_error(initialization_error) do |error|
+      expect(error.cause).to equal(failure)
     end
   end
 
-  describe '#cs rescue paths' do
-    before do
-      allow(@cs).to receive(:find_cluster_secret).and_raise(StandardError, 'digest error')
-    end
+  it 'keeps a valid local secret when publishing it to Vault fails' do
+    secret = SecureRandom.hex(32)
+    configuration[:vault][:connected] = true
+    configuration[:vault][:push_cluster_secret] = true
+    allow(Legion::Crypt).to receive(:write).and_raise(StandardError, 'permission denied')
+    @cs.set_cluster_secret(secret)
+    expect(@cs.cs).to eq(Digest::SHA256.digest(secret))
+  end
 
-    it 'returns nil when find_cluster_secret raises' do
-      expect(@cs.cs).to be_nil
-    end
+  it 'round trips the current secret through Vault and refreshes after rotation' do
+    vault_store = {}
+    initial_secret = SecureRandom.hex(32)
+    rotated_secret = SecureRandom.hex(32)
+    configuration[:vault].merge!(connected: true, read_cluster_secret: true, push_cluster_secret: true)
+    allow(Legion::Crypt).to receive(:write) { |path, **data| vault_store[path] = data }
+    allow(Legion::Crypt).to receive(:exist?) { |path| vault_store.key?(path) }
+    allow(Legion::Crypt).to receive(:get) { |path| vault_store[path] }
 
-    it 'logs via handle_exception' do
-      expect(@cs).to receive(:handle_exception).with(instance_of(StandardError), hash_including(level: :error))
-      @cs.cs
-    end
+    @cs.set_cluster_secret(initial_secret)
+    expect(@cs.cs).to eq(Digest::SHA256.digest(initial_secret))
+    configuration[:cluster_secret] = nil
+    expect(@cs.cs).to eq(Digest::SHA256.digest(initial_secret))
+    @cs.set_cluster_secret(rotated_secret, false)
+    expect(@cs.cs).to eq(Digest::SHA256.digest(rotated_secret))
   end
 end

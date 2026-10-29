@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.16] - 2026-10-29
+
+### Fixed
+- Gate cluster-secret generation on confirmed bootstrap eligibility, refresh derived keys when settings change, and terminate failed or cancelled initialization with bounded domain errors (#39).
+
 ## [1.5.15] - 2026-10-29
 
 ### Fixed

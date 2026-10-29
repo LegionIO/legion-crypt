@@ -1,8 +1,6 @@
 # legion-crypt
 
-Encryption, secrets management, JWT token management, and HashiCorp Vault integration for the [LegionIO](https://github.com/LegionIO/LegionIO) framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, Vault token lifecycle management, and multi-cluster Vault connectivity.
-
-**Version**: 1.5.6
+Encryption, secrets management, JWT token management, and HashiCorp Vault integration for the [LegionIO](https://github.com/LegionIO/LegionIO) framework. Provides AES-256-GCM message encryption with legacy AES-256-CBC decryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, Vault token lifecycle management, and multi-cluster Vault connectivity.
 
 ## Installation
 
@@ -22,9 +20,19 @@ gem 'legion-crypt'
 require 'legion/crypt'
 
 Legion::Crypt.start
-Legion::Crypt.encrypt('this is my string')
-Legion::Crypt.decrypt(message)
+encrypted = Legion::Crypt.encrypt('this is my string')
+Legion::Crypt.decrypt(encrypted[:enciphered_message], encrypted[:iv])
 ```
+
+Authenticated ciphertext requires a full 16-byte GCM tag. Saved RSA private keys are created with `0600` permissions; existing files are restricted before writing.
+
+### Cluster secret readiness
+
+Discovery checks settings, Vault, and then peers. Random generation requires confirmed empty-cluster membership, the lite transport adapter, or standalone operation (no transport loaded or transport explicitly disabled). Disconnected or unknown cluster membership does not authorize a competing key.
+
+`crypt.cluster_secret_timeout` bounds initialization (default: 5 seconds; finite and positive). `crypt.cluster_length` must be a positive integer (default: 32 bytes). Invalid secrets, discovery failures, and shutdown cancellation raise `Legion::Crypt::ClusterSecret::InitializationError`; encryption and decryption do not proceed with a missing key.
+
+Use `Legion::Crypt.set_cluster_secret(secret)` to validate and install a received secret. Derived keys also detect settings replacement or mutation, so reloads cannot continue using the previous secret.
 
 ### JWT Tokens
 
