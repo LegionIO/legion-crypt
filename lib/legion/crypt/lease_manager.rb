@@ -78,26 +78,32 @@ module Legion
       attr_reader :active_leases
 
       def register_ref(name, key, path, generation: @generation)
+        return false unless path.is_a?(Array) && !path.empty?
+
         with_current_state(generation: generation) do
-          @refs[name] ||= {}
-          @refs[name][key] = path
+          @refs[name.to_sym] ||= {}
+          destinations = (@refs[name.to_sym][key.to_sym] ||= [])
+          destinations << path.dup.freeze unless destinations.include?(path)
         end
       end
 
       def push_to_settings(name, generation: @generation, active: nil)
         count = with_current_state(generation: generation, active: active) do
-          refs = @refs[name] || @refs[name.to_s] || @refs[name.to_sym]
+          refs = @refs[name.to_sym]
           data = @lease_cache[name] || @lease_cache[name.to_s] || @lease_cache[name.to_sym]
-          return if refs.nil? || refs.empty? || data.nil?
+          next 0 if refs.nil? || refs.empty? || data.nil?
 
-          refs.each do |key, path|
-            write_setting(path, data[key.to_sym] || data[key.to_s])
+          refs.sum do |key, paths|
+            next 0 unless data.key?(key) || data.key?(key.to_s)
+
+            value = data.key?(key) ? data[key] : data[key.to_s]
+            paths.count { |path| write_setting(path, value) }
           end
-          refs.size
         end
         return unless count
 
         log.info("Lease '#{name}' rotated — updated #{count} settings reference(s)")
+        count
       end
 
       # Public Vault client accessors used by Crypt for bootstrap/swap operations.
@@ -419,17 +425,28 @@ module Legion
       end
 
       def write_setting(path, value)
-        return if path.nil? || path.empty?
+        return false unless path.is_a?(Array) && !path.empty?
 
-        target = path[1..-2].reduce(Legion::Settings[path[0]]) do |node, segment|
-          break nil unless node.is_a?(Hash)
+        target = Legion::Settings.get.settings
+        path.each_with_index do |segment, index|
+          valid =
+            case target
+            when Hash then segment.is_a?(Symbol) && target.key?(segment)
+            when Array then segment.is_a?(Integer) && segment >= 0 && segment < target.length
+            end
+          return false unless valid
 
-          node[segment]
+          if index == path.length - 1
+            return false if target.frozen?
+
+            target[segment] = value
+            return true
+          end
+          target = target[segment]
         end
-        target[path.last] = value if target.is_a?(Hash)
       rescue StandardError => e
-        handle_exception(e, level: :warn, operation: 'crypt.lease_manager.write_setting', path: path.join('.'))
-        log.warn("LeaseManager: failed to write setting at #{path.join('.')}: #{e.message}")
+        handle_exception(e, level: :warn, operation: 'crypt.lease_manager.write_setting', path: path.inspect)
+        false
       end
 
       def trigger_reconnect(name, generation: @generation, active: nil)

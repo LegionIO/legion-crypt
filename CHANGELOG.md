@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.22] - 2026-10-29
+
+### Fixed
+- Rotate every unique lease-reference destination, including nested arrays, without coercing typed paths or mutating invalid destinations; report actual successful writes (#45).
+
 ## [1.5.21] - 2026-10-29
 
 ### Fixed

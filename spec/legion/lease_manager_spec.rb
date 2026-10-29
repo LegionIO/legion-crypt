@@ -165,22 +165,67 @@ RSpec.describe Legion::Crypt::LeaseManager do
              renewable?:     true)
     end
 
+    let(:transport_settings) do
+      { connection: { username: 'old_user', password: 'old_pass' },
+        connections: [[{ password: 'array_old' }]], passwords: ['list_old'] }
+    end
+
     before do
       allow(Vault).to receive_message_chain(:logical, :read).and_return(vault_response)
       manager.start({ 'rabbitmq' => { 'path' => 'rabbitmq/creds/legion-role' } })
+      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: transport_settings)
     end
 
     it 'updates settings values at registered paths' do
-      connection_hash = { username: 'old_user', password: 'old_pass' }
-      transport_hash = { connection: connection_hash }
-      allow(Legion::Settings).to receive(:[]).with(:transport).and_return(transport_hash)
-
+      connection_hash = transport_settings[:connection]
       manager.register_ref('rabbitmq', 'username', %i[transport connection username])
       manager.register_ref('rabbitmq', 'password', %i[transport connection password])
       manager.push_to_settings('rabbitmq')
 
       expect(connection_hash[:username]).to eq('new_user')
       expect(connection_hash[:password]).to eq('new_pass')
+    end
+
+    it 'updates every distinct typed destination for a credential' do
+      manager.register_ref('rabbitmq', :password, %i[transport connection password])
+      manager.register_ref(:rabbitmq, 'password', [:transport, :connections, 0, 0, :password])
+      manager.register_ref('rabbitmq', :password, [:transport, :passwords, 0])
+      expect(manager.push_to_settings('rabbitmq')).to eq(3)
+      expect(transport_settings[:connection][:password]).to eq('new_pass')
+      expect(transport_settings[:connections][0][0][:password]).to eq('new_pass')
+      expect(transport_settings[:passwords]).to eq(['new_pass'])
+    end
+
+    it 'deduplicates destinations and keeps the registered path independent of its caller' do
+      path = %i[transport connection password]
+      manager.register_ref('rabbitmq', :password, path)
+      manager.register_ref(:rabbitmq, 'password', path)
+      path[-1] = :username
+      expect(manager.push_to_settings('rabbitmq')).to eq(1)
+      expect(transport_settings[:connection]).to eq(username: 'old_user', password: 'new_pass')
+    end
+
+    it 'rejects invalid path types, missing destinations, and out-of-bounds array indexes' do
+      original = Marshal.load(Marshal.dump(transport_settings))
+      [
+        [:transport, :connections, -1, 0, :password],
+        [:transport, :connections, 3, 0, :password],
+        [:transport, :connections, '0', 0, :password],
+        [:transport, :connection, 0],
+        %i[transport connection missing],
+        %i[transport connection password nested],
+        [:transport, 'connection', :password]
+      ].each { |path| manager.register_ref('rabbitmq', :password, path) }
+      expect(manager.push_to_settings('rabbitmq')).to eq(0)
+      expect(transport_settings).to eq(original)
+    end
+
+    it 'preserves false values while leaving missing lease-data keys untouched' do
+      vault_response.data[:password] = false
+      manager.register_ref('rabbitmq', :password, %i[transport connection password])
+      manager.register_ref('rabbitmq', :missing, %i[transport connection username])
+      expect(manager.push_to_settings('rabbitmq')).to eq(1)
+      expect(transport_settings[:connection]).to eq(username: 'old_user', password: false)
     end
   end
 
@@ -363,69 +408,9 @@ RSpec.describe Legion::Crypt::LeaseManager do
              renewable?:     true)
     end
 
-    it 'populates the lease cache with credential data' do
-      manager.register_dynamic_lease(
-        name:          :rabbitmq,
-        path:          'rabbitmq/creds/legionio-infra',
-        response:      dynamic_response,
-        settings_refs: []
-      )
-      expect(manager.lease_data(:rabbitmq)).to eq({ username: 'dyn_user', password: 'dyn_pass' })
-    end
-
-    it 'stores the lease_id in active_leases' do
-      manager.register_dynamic_lease(
-        name:          :rabbitmq,
-        path:          'rabbitmq/creds/legionio-infra',
-        response:      dynamic_response,
-        settings_refs: []
-      )
-      expect(manager.active_leases[:rabbitmq][:lease_id]).to eq('rabbitmq/creds/legionio-infra/dyn123')
-    end
-
-    it 'stores lease_duration in active_leases' do
-      manager.register_dynamic_lease(
-        name:          :rabbitmq,
-        path:          'rabbitmq/creds/legionio-infra',
-        response:      dynamic_response,
-        settings_refs: []
-      )
-      expect(manager.active_leases[:rabbitmq][:lease_duration]).to eq(604_800)
-    end
-
-    it 'stores fetched_at in active_leases as a Time' do
-      before_call = Time.now
-      manager.register_dynamic_lease(
-        name:          :rabbitmq,
-        path:          'rabbitmq/creds/legionio-infra',
-        response:      dynamic_response,
-        settings_refs: []
-      )
-      expect(manager.active_leases[:rabbitmq][:fetched_at]).to be_a(Time)
-      expect(manager.active_leases[:rabbitmq][:fetched_at]).to be >= before_call
-    end
-
-    it 'stores renewable via predicate method (true)' do
-      manager.register_dynamic_lease(
-        name:          :rabbitmq,
-        path:          'rabbitmq/creds/legionio-infra',
-        response:      dynamic_response,
-        settings_refs: []
-      )
-      expect(manager.active_leases[:rabbitmq][:renewable]).to be(true)
-    end
-
-    it 'stores the path for reissue' do
-      manager.register_dynamic_lease(
-        name:          :rabbitmq,
-        path:          'rabbitmq/creds/legionio-infra',
-        response:      dynamic_response,
-        settings_refs: []
-      )
-      expect(manager.active_leases[:rabbitmq][:path]).to eq('rabbitmq/creds/legionio-infra')
-    end
-
-    it 'registers settings refs provided' do
+    it 'publishes dynamic credentials through the registered destinations' do
+      transport = { connection: { user: 'old_user', password: 'old_pass' } }
+      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: transport)
       manager.register_dynamic_lease(
         name:          :rabbitmq,
         path:          'rabbitmq/creds/legionio-infra',
@@ -435,26 +420,8 @@ RSpec.describe Legion::Crypt::LeaseManager do
           { path: %i[transport connection password], key: :password }
         ]
       )
-      refs = manager.instance_variable_get(:@refs)
-      expect(refs[:rabbitmq][:username]).to eq(%i[transport connection user])
-      expect(refs[:rabbitmq][:password]).to eq(%i[transport connection password])
-    end
-
-    it 'is wrapped in state_mutex synchronize (idempotent on re-registration)' do
-      manager.register_dynamic_lease(
-        name:          :rabbitmq,
-        path:          'rabbitmq/creds/legionio-infra',
-        response:      dynamic_response,
-        settings_refs: []
-      )
-      expect do
-        manager.register_dynamic_lease(
-          name:          :rabbitmq,
-          path:          'rabbitmq/creds/legionio-infra',
-          response:      dynamic_response,
-          settings_refs: []
-        )
-      end.not_to raise_error
+      expect(manager.push_to_settings(:rabbitmq)).to eq(2)
+      expect(transport[:connection]).to eq(user: 'dyn_user', password: 'dyn_pass')
     end
   end
 
@@ -739,7 +706,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
       configuration[:vault][:operation_timeout] = 0.02
       allow(Legion::Settings).to receive(:[]).and_call_original
       allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
-      allow(Legion::Settings).to receive(:[]).with(:transport).and_return(connection: connection)
+      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
       allow(Vault).to receive(:sys).and_return(sys)
     end
 

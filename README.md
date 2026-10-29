@@ -159,6 +159,8 @@ Both `username` and `password` come from a single Vault read — one lease, one 
 
 Lease names are stable across environments. The actual Vault paths are deployment-specific config.
 
+`LeaseManager#register_ref(name, key, path)` accepts typed destination paths: Symbols for existing Hash keys and nonnegative Integers for existing Array indexes. A lease-data key can target multiple destinations; duplicate registrations are ignored. Rotation updates every valid destination, including nested arrays, and `push_to_settings` returns the number of successful writes. Invalid, missing, frozen, or out-of-bounds destinations are not modified.
+
 ## Multi-Cluster Vault
 
 `VaultCluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `::Vault::Client` instance.
