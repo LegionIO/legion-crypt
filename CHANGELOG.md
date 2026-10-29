@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.15] - 2026-10-29
+
+### Fixed
+- Create saved RSA private keys with owner-only permissions and repair existing file permissions before writing, without changing save-disabled behavior (#41).
+
 ## [1.5.14] - 2026-10-29
 
 ### Fixed

@@ -73,7 +73,14 @@ module Legion
 
           log.info 'Legion::Crypt startup initiated'
           log.debug 'Legion::Crypt start requested'
-          ::File.write('./legionio.key', private_key) if settings[:save_private_key]
+          if settings[:save_private_key]
+            key = private_key
+            ::File.open('./legionio.key', ::File::WRONLY | ::File::CREAT, 0o600) do |file|
+              file.chmod(0o600)
+              file.truncate(0)
+              file.write(key.to_pem)
+            end
+          end
           @token_renewers ||= []
 
           if vault_settings[:clusters]&.any?

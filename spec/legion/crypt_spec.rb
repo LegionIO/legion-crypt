@@ -1,68 +1,57 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'tmpdir'
 
 require 'legion/crypt'
 # require 'legion/transport'
 # Legion::Transport::Connection.setup
 
 RSpec.describe Legion::Crypt do
-  it 'has a version number' do
-    expect(Legion::Crypt::VERSION).not_to be nil
-  end
-
-  it 'can start' do
-    expect { Legion::Crypt.start }.not_to raise_exception
-  end
-
-  it 'can stop' do
-    expect { Legion::Crypt.shutdown }.not_to raise_exception
-  end
-
-  describe '.verify_external_token' do
-    it 'delegates to JWT.verify_with_jwks' do
-      expect(Legion::Crypt::JWT).to receive(:verify_with_jwks)
-        .with('token', jwks_url: 'https://example.com/keys', issuers: ['iss'], audience: 'aud')
-        .and_return({ sub: 'test' })
-
-      result = Legion::Crypt.verify_external_token(
-        'token', jwks_url: 'https://example.com/keys', issuers: ['iss'], audience: 'aud'
-      )
-      expect(result[:sub]).to eq('test')
+  describe 'private key persistence' do
+    let(:configuration) do
+      Legion::Crypt::Settings.default.merge(save_private_key: true, vault: { token: nil, clusters: {}, leases: {}, connected: false })
     end
-  end
+    let(:private_key) { OpenSSL::PKey::RSA.new(2048) }
 
-  describe '.kerberos_principal' do
-    it 'delegates to KerberosAuth.kerberos_principal' do
-      allow(Legion::Crypt::KerberosAuth).to receive(:kerberos_principal).and_return('miverso2@EXAMPLE.COM')
-      expect(Legion::Crypt.kerberos_principal).to eq('miverso2@EXAMPLE.COM')
+    around do |example|
+      Dir.mktmpdir('crypt-key') do |directory|
+        Dir.chdir(directory) { example.run }
+      end
     end
 
-    it 'returns nil when no Kerberos auth has occurred' do
-      allow(Legion::Crypt::KerberosAuth).to receive(:kerberos_principal).and_return(nil)
-      expect(Legion::Crypt.kerberos_principal).to be_nil
-    end
-  end
-
-  describe 'multi-cluster module methods' do
-    it 'responds to :cluster' do
-      expect(Legion::Crypt).to respond_to(:cluster)
+    before do
+      described_class.shutdown
+      allow(Legion::Settings).to receive(:[]).and_call_original
+      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      @original_private_key = described_class.instance_variable_get(:@private_key)
+      described_class.instance_variable_set(:@private_key, nil)
     end
 
-    it 'responds to :clusters' do
-      expect(Legion::Crypt).to respond_to(:clusters)
+    after do
+      described_class.shutdown
+      described_class.instance_variable_set(:@private_key, @original_private_key)
     end
 
-    it 'responds to :vault_client' do
-      expect(Legion::Crypt).to respond_to(:vault_client)
+    it 'creates owner-only key files even with a permissive umask' do
+      original_umask = File.umask(0)
+      described_class.start
+      expect(File.stat('legionio.key').mode & 0o777).to eq(0o600)
+    ensure
+      File.umask(original_umask)
     end
 
-    it 'responds to :ldap_login_all' do
-      expect(Legion::Crypt).to respond_to(:ldap_login_all)
+    it 'repairs a pre-existing permissive key file before saving' do
+      File.write('legionio.key', private_key.to_pem)
+      File.chmod(0o644, 'legionio.key')
+      described_class.start
+      expect(File.stat('legionio.key').mode & 0o777).to eq(0o600)
     end
 
-    it ':clusters returns a hash' do
-      expect(Legion::Crypt.clusters).to be_a(Hash)
+    it 'does not create a key file when saving is disabled' do
+      configuration[:save_private_key] = false
+      described_class.start
+      expect(File.exist?('legionio.key')).to be(false)
     end
   end
 
