@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.17] - 2026-10-29
+
+### Fixed
+- Resolve KV mounts from the Vault settings subtree on the composed Crypt API for both clustered and legacy clients (#48).
+
 ## [1.5.16] - 2026-10-29
 
 ### Fixed

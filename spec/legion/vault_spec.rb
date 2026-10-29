@@ -279,3 +279,32 @@ RSpec.describe Legion::Crypt::Vault do
     end
   end
 end
+
+RSpec.describe Legion::Crypt, 'configured KV mounts' do
+  [false, true].each do |clustered|
+    it "round trips secrets on the configured mount with clustered=#{clustered}" do
+      configuration = { vault: { kv_path: 'private', default: :primary } }
+      allow(Legion::Settings).to receive(:[]).and_call_original
+      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      allow(described_class).to receive(:connected_clusters).and_return(clustered ? { primary: { connected: true } } : {})
+      endpoint = clustered ? instance_double(Vault::Client) : Vault
+      allow(described_class).to receive(:vault_client).with(:primary).and_return(endpoint) if clustered
+      mounts = { 'private' => {}, nil => {} }
+      clients = mounts.transform_values do |records|
+        kv = double('mounted KV store')
+        allow(kv).to receive(:write) { |path, **data| records[path] = data }
+        allow(kv).to receive(:read) { |path| records.key?(path) ? double(data: records[path]) : nil }
+        allow(kv).to receive(:read_metadata) { |path| records.key?(path) ? { version: 1 } : nil }
+        kv
+      end
+      allow(endpoint).to receive(:kv) { |mount| clients.fetch(mount) }
+
+      expect(described_class.exist?('worker')).to be(false)
+      described_class.write('worker', password: 'fixture-secret')
+      expect(described_class.get('worker')).to eq(password: 'fixture-secret')
+      expect(described_class.exist?('worker')).to be(true)
+      expect(mounts['private']).to eq('worker' => { password: 'fixture-secret' })
+      expect(mounts[nil]).to be_empty
+    end
+  end
+end

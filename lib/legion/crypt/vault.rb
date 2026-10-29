@@ -167,12 +167,13 @@ module Legion
       private
 
       def kv_client(cluster_name: nil)
+        mount = Legion::Settings[:crypt][:vault][:kv_path]
         if respond_to?(:connected_clusters) && connected_clusters.any?
-          connected_vault_client(cluster_name).kv(settings[:kv_path])
+          connected_vault_client(cluster_name).kv(mount)
         else
           raise ArgumentError, "Vault cluster not connected: #{cluster_name}" if cluster_name
 
-          ::Vault.kv(settings[:kv_path])
+          ::Vault.kv(mount)
         end
       end
 
