@@ -118,9 +118,18 @@ RSpec.describe Legion::Crypt do
 
   describe 'LeaseManager integration' do
     before do
+      Legion::Crypt.shutdown
+      @original_vault_settings = Legion::Settings[:crypt][:vault].dup
+      Legion::Settings[:crypt][:vault][:clusters] = {}
+      allow(Legion::Crypt).to receive(:connect_vault)
       allow(Legion::Crypt::LeaseManager.instance).to receive(:start)
       allow(Legion::Crypt::LeaseManager.instance).to receive(:start_renewal_thread)
       allow(Legion::Crypt::LeaseManager.instance).to receive(:shutdown)
+    end
+
+    after do
+      Legion::Crypt.shutdown
+      Legion::Settings[:crypt][:vault].replace(@original_vault_settings)
     end
 
     it 'starts LeaseManager when vault is connected and leases are defined' do
@@ -149,6 +158,7 @@ RSpec.describe Legion::Crypt do
     end
 
     it 'shuts down LeaseManager during shutdown' do
+      Legion::Crypt.start
       Legion::Crypt.shutdown
       expect(Legion::Crypt::LeaseManager.instance).to have_received(:shutdown)
     end

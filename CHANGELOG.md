@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.14] - 2026-10-29
+
+### Fixed
+- Require full 16-byte GCM authentication tags for message and tenant decryption, preventing truncated-tag forgery while preserving legacy ciphertext support (#40).
+
 ## [1.5.13] - 2026-05-09
 
 ### Removed

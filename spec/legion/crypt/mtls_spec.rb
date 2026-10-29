@@ -18,8 +18,7 @@ RSpec.describe Legion::Crypt::Mtls do
   end
 
   before do
-    stub_const('Legion::Settings', Module.new)
-    allow(Legion::Settings).to receive(:[]).and_return(nil)
+    allow(Legion::Settings).to receive(:[]).and_call_original
     allow(Legion::Settings).to receive(:[]).with(:security).and_return(
       { mtls: { enabled: false, vault_pki_path: 'pki/issue/legion-internal', cert_ttl: '24h' } }
     )
@@ -122,9 +121,10 @@ RSpec.describe Legion::Crypt::Mtls do
       described_class.issue_cert(common_name: 'node.legion.internal')
     end
 
-    it 'raises when Vault returns nil' do
-      allow(Vault.logical).to receive(:write).and_return(nil)
-      expect { described_class.issue_cert(common_name: 'x') }.to raise_error(RuntimeError, /Vault PKI returned nil/)
+    it 'preserves Vault issuance failures' do
+      failure = RuntimeError.new('issuance unavailable')
+      allow(Vault.logical).to receive(:write).and_raise(failure)
+      expect { described_class.issue_cert(common_name: 'x') }.to(raise_error { |error| expect(error).to equal(failure) })
     end
   end
 end

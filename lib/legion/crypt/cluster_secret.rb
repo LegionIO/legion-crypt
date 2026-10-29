@@ -64,7 +64,7 @@ module Legion
         end
 
         unless from_settings.nil?
-          log.info "Received cluster secret in #{((Time.new - start) * 1000.0).round}ms"
+          log.info "Received cluster secret in #{((Time.now - start) * 1000.0).round}ms"
           return from_settings
         end
 

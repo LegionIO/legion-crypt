@@ -121,11 +121,14 @@ module Legion
           message:            message
         )
 
+        auth_tag = Base64.strict_decode64(encoded_auth_tag)
+        raise ArgumentError, 'invalid GCM authentication tag length' unless auth_tag.bytesize == 16
+
         decipher = OpenSSL::Cipher.new(AUTHENTICATED_CIPHER)
         decipher.decrypt
         decipher.key = secret
         decipher.iv = Base64.strict_decode64(init_vector)
-        decipher.auth_tag = Base64.strict_decode64(encoded_auth_tag)
+        decipher.auth_tag = auth_tag
         decipher.update(Base64.strict_decode64(encoded_ciphertext)) + decipher.final
       end
 

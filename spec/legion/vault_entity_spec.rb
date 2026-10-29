@@ -4,8 +4,8 @@ require 'spec_helper'
 require 'legion/crypt/vault_entity'
 
 RSpec.describe Legion::Crypt::VaultEntity do
-  let(:vault_logical)   { instance_double('Vault::Logical') }
-  let(:lease_manager)   { instance_double('Legion::Crypt::LeaseManager') }
+  let(:vault_logical) { instance_double('Vault::Logical') }
+  let(:lease_manager) { instance_double('Legion::Crypt::LeaseManager') }
 
   let(:principal_id)    { 'user@example.com' }
   let(:canonical_name)  { 'user-example-com' }

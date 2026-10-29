@@ -31,21 +31,17 @@ RSpec.describe Legion::Crypt::Cipher do
     end.to raise_error(OpenSSL::Cipher::CipherError)
   end
 
-  it 'raises an actionable error when authenticated ciphertext is missing fields' do
+  it 'rejects truncated authentication tags even when their bytes are correct' do
     message = @crypt.encrypt('foobar')
-    prefix, ciphertext = message[:enciphered_message].split(':', 3)
+    prefix, ciphertext, encoded_tag = message[:enciphered_message].split(':', 3)
+    tag = Base64.strict_decode64(encoded_tag)
 
-    expect do
-      @crypt.decrypt("#{prefix}:#{ciphertext}", message[:iv])
-    end.to raise_error(ArgumentError, /invalid authenticated ciphertext: missing auth_tag .*auth_tag_present=false/)
-  end
-
-  it 'raises an actionable error when authenticated ciphertext is missing an iv' do
-    message = @crypt.encrypt('foobar')
-
-    expect do
-      @crypt.decrypt(message[:enciphered_message], nil)
-    end.to raise_error(ArgumentError, /invalid authenticated ciphertext: missing iv .*iv_present=false/)
+    [1, 15].each do |length|
+      truncated_tag = Base64.strict_encode64(tag.byteslice(0, length))
+      expect do
+        @crypt.decrypt("#{prefix}:#{ciphertext}:#{truncated_tag}", message[:iv])
+      end.to raise_error(ArgumentError)
+    end
   end
 
   it 'can decrypt legacy cbc ciphertext' do

@@ -67,6 +67,13 @@ RSpec.describe Legion::Crypt::Vault do
   # The test object extends both Vault and VaultCluster so that connected_clusters
   # and vault_client are available, mirroring how Legion::Crypt composes them.
   describe 'multi-cluster client routing' do
+    before do
+      @original_kv_path = Legion::Settings[:crypt][:vault][:kv_path]
+      Legion::Settings[:crypt][:vault][:kv_path] = kv_path
+    end
+
+    after { Legion::Settings[:crypt][:vault][:kv_path] = @original_kv_path }
+
     let(:kv_path) { 'legion' }
     let(:mock_kv)      { double('kv') }
     let(:mock_logical) { double('logical') }
