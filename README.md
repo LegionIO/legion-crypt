@@ -157,9 +157,13 @@ Both `username` and `password` come from a single Vault read — one lease, one 
 - Detects credential rotation and pushes new values into `Legion::Settings` in-place
 - Revokes all leases on `Crypt.shutdown`
 
-Lease names are stable across environments. The actual Vault paths are deployment-specific config.
+Failed acquisition remains pending with exponential backoff from 1 second to a 60-second cap. Maintenance wakes for the next renewal or retry deadline (10 ms minimum, 5 seconds maximum), rather than waiting five seconds before servicing short-TTL leases.
 
-`LeaseManager#register_ref(name, key, path)` accepts typed destination paths: Symbols for existing Hash keys and nonnegative Integers for existing Array indexes. A lease-data key can target multiple destinations; duplicate registrations are ignored. Rotation updates every valid destination, including nested arrays, and `push_to_settings` returns the number of successful writes. Invalid, missing, frozen, or out-of-bounds destinations are not modified.
+Credential replacement installs settings and cache, confirms the required consumer reconnect, then retires the previous lease. Failed handoffs restore the previous settings and cache; old and unconfirmed candidate IDs remain owned until safe cleanup or shutdown. Failed revocations are retried, using the Vault client that issued the lease. RabbitMQ must report an open session; PostgreSQL must support and successfully complete `reconnect_with_fresh_creds`; Redis must reconnect successfully and report connected when that status is available.
+
+Lease names are stable across environments. The actual Vault paths are deployment-specific config. `active_leases` uses Symbol names; `fetch` and `lease_data` accept either Strings or Symbols.
+
+`LeaseManager#register_ref(name, key, path)` accepts typed destination paths: Symbols for existing Hash keys and nonnegative Integers for existing Array indexes. A lease-data key can target multiple destinations; duplicate registrations are ignored. `push_to_settings` updates valid destinations, including nested arrays, and returns the number of successful writes. Invalid, missing, frozen, or out-of-bounds destinations are not modified. Transactional credential handoff requires every referenced destination to be writable before changing any of them.
 
 ## Multi-Cluster Vault
 

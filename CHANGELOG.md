@@ -1,5 +1,12 @@
 # Legion::Crypt
 
+## [1.5.23] - 2026-10-29
+
+### Fixed
+- Retain failed lease acquisitions for capped exponential-backoff retry and schedule maintenance against lease expiry, waking promptly for newly registered short-TTL leases (#50).
+- Make credential replacement transactional: preserve prior settings and lease ownership on failed reconnect, retire old IDs only after successful handoff, and retain failed cleanup for retry or shutdown (#50).
+- Capture each lease's issuing Vault client, deduplicate revocation, prevent retired candidates from being reinstalled, and keep late renewals from recreating revoked ownership (#50).
+
 ## [1.5.22] - 2026-10-29
 
 ### Fixed

@@ -156,10 +156,18 @@ module Legion
         return if mode == :lite
 
         role = RMQ_ROLE_MAP.fetch(mode, "legionio-#{mode}")
-        response = LeaseManager.instance.vault_logical.read("rabbitmq/creds/#{role}")
-        raise "Failed to fetch identity-scoped RMQ creds for role #{role}" unless response&.data
+        manager = LeaseManager.instance
+        response = Legion::Crypt::VaultOperation.with_timeout { manager.vault_logical.read("rabbitmq/creds/#{role}") }
+        raise "Failed to fetch identity-scoped RMQ creds for role #{role}" unless response
 
-        LeaseManager.instance.register_dynamic_lease(
+        settings = Legion::Settings.loader.settings
+        settings[:transport] ||= {}
+        settings[:transport][:connection] ||= {}
+        conn = settings[:transport][:connection]
+        conn[:user] = nil unless conn.key?(:user)
+        conn[:password] = nil unless conn.key?(:password)
+
+        installed = manager.register_dynamic_lease(
           name:          :rabbitmq,
           path:          "rabbitmq/creds/#{role}",
           response:      response,
@@ -168,26 +176,9 @@ module Legion
             { path: %i[transport connection password], key: :password }
           ]
         )
+        raise 'Identity credential handoff failed — bootstrap lease NOT revoked' unless installed
 
-        settings = Legion::Settings.loader.settings
-        settings[:transport] ||= {}
-        settings[:transport][:connection] ||= {}
-        conn = settings[:transport][:connection]
-        username = response.data[:username] || response.data['username']
-        password = response.data[:password] || response.data['password']
-        raise "Identity-scoped RMQ creds for role #{role} missing username or password" unless username && password
-
-        conn[:user]     = username
-        conn[:password] = password
-
-        if defined?(Legion::Transport::Connection)
-          Legion::Transport::Connection.force_reconnect
-          raise 'Transport reconnect failed after credential swap — bootstrap lease NOT revoked' unless Legion::Transport::Connection.session_open?
-
-          log.info "Transport reconnected with identity-scoped creds (role: #{role})"
-        end
-
-        revoke_bootstrap_lease
+        Legion::Crypt::VaultOperation.with_timeout { revoke_bootstrap_lease }
       end
 
       def revoke_bootstrap_lease
