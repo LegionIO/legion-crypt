@@ -183,5 +183,48 @@ RSpec.describe Legion::Crypt::KerberosAuth do
       end.to raise_error(Legion::Crypt::KerberosAuth::AuthError)
       expect(described_class.kerberos_principal).to be_nil
     end
+
+    it 'preserves the published principal when an inactive login starts' do
+      described_class.login(vault_client: vault_client, service_principal: 'HTTP/vault.example.com')
+      allow(vault_client).to receive(:put).and_return(auth: auth_hash.merge(metadata: { username: 'stale-user' }))
+
+      described_class.login(
+        vault_client: vault_client, service_principal: 'HTTP/vault.example.com', principal_guard: ->(&_publication) { false }
+      )
+
+      expect(described_class.kerberos_principal).to eq('miverso2')
+    end
+
+    it 'does not overwrite a newer principal when a stopped login completes' do
+      entered = Queue.new
+      release = Queue.new
+      active = true
+      allow(vault_client).to receive(:put) do
+        entered << true
+        release.pop
+        response_hash
+      end
+      worker = Thread.new do
+        described_class.login(
+          vault_client:      vault_client,
+          service_principal: 'HTTP/vault.example.com',
+          principal_guard:   ->(&publication) { publication.call if active }
+        )
+      end
+      Timeout.timeout(1) { entered.pop }
+      expect(described_class.kerberos_principal).to be_nil
+
+      active = false
+      current_client = instance_double(Vault::Client, put: { auth: auth_hash.merge(metadata: { username: 'current-user' }) })
+      described_class.login(vault_client: current_client, service_principal: 'HTTP/vault.example.com')
+      release << true
+      raise 'Kerberos login did not finish' unless worker.join(1)
+
+      worker.value
+      expect(described_class.kerberos_principal).to eq('current-user')
+    ensure
+      worker&.kill
+      worker&.join(1)
+    end
   end
 end

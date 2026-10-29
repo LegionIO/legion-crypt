@@ -172,7 +172,7 @@ RSpec.describe Legion::Crypt do
 
   describe '.start with kerberos clusters' do
     let(:mock_renewer) do
-      instance_double(Legion::Crypt::TokenRenewer, start: nil, stop: nil, running?: true)
+      instance_double(Legion::Crypt::TokenRenewer, start: nil, request_stop: nil, stop: nil, running?: true)
     end
 
     before do
@@ -259,6 +259,53 @@ RSpec.describe Legion::Crypt do
       Legion::Crypt.start
 
       expect(Legion::Crypt::TokenRenewer).to have_received(:new).once
+    end
+  end
+
+  describe 'failure-isolated shutdown' do
+    let(:configuration) do
+      Legion::Crypt::Settings.default.merge(save_private_key: false, vault: { token: nil, clusters: {}, leases: {}, connected: false })
+    end
+
+    before do
+      described_class.shutdown
+      Legion::Crypt::LeaseManager.instance.reset!
+      allow(Legion::Settings).to receive(:[]).and_call_original
+      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+    end
+
+    after { described_class.shutdown }
+
+    it 'completes cleanup and permits restart after a session revocation fails' do
+      revoked = []
+      cancelled = []
+      stopped = []
+      sys = double('Vault sys')
+      allow(Vault).to receive(:sys).and_return(sys)
+      allow(sys).to receive(:revoke) do |session|
+        raise 'revoke unavailable' if session == 'broken'
+
+        revoked << session
+      end
+      renewer = double('legacy renewer')
+      rotation = double('SVID rotation')
+      allow(renewer).to receive(:cancel) { cancelled << true }
+      allow(rotation).to receive(:stop) { stopped << true }
+
+      described_class.start
+      described_class.instance_variable_set(:@renewer, renewer)
+      described_class.instance_variable_set(:@svid_rotation, rotation)
+      described_class.add_session(path: 'broken')
+      described_class.add_session(path: 'healthy')
+      described_class.shutdown
+      expect(revoked).to eq(['healthy'])
+      expect(cancelled).to eq([true])
+      expect(stopped).to eq([true])
+
+      described_class.start
+      described_class.add_session(path: 'after-restart')
+      described_class.shutdown
+      expect(revoked).to eq(%w[healthy after-restart])
     end
   end
 end

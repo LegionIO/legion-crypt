@@ -9,6 +9,7 @@ require 'legion/crypt/cipher'
 require 'legion/crypt/jwt'
 require 'legion/crypt/vault_jwt_auth'
 require 'legion/crypt/lease_manager'
+require 'legion/crypt/vault_operation'
 require 'legion/crypt/vault_cluster'
 require 'legion/crypt/ldap_auth'
 require 'legion/crypt/token_renewer'
@@ -32,7 +33,7 @@ module Legion
     }.freeze
 
     class << self
-      attr_reader :sessions
+      attr_reader :sessions, :stopping
 
       include Legion::Logging::Helper
       include Legion::Crypt::Cipher
@@ -66,8 +67,8 @@ module Legion
 
       def start
         lifecycle_mutex.synchronize do
-          if @started
-            log.info 'Legion::Crypt start ignored because the lifecycle is already running'
+          if @started || @stopping
+            log.info 'Legion::Crypt start ignored because the lifecycle is running or stopping'
             return
           end
 
@@ -82,6 +83,7 @@ module Legion
             end
           end
           @token_renewers ||= []
+          start_session_tracking
 
           if vault_settings[:clusters]&.any?
             log.info "Legion::Crypt connecting #{vault_settings[:clusters].size} Vault cluster(s)"
@@ -240,20 +242,40 @@ module Legion
       end
 
       def shutdown
-        lifecycle_mutex.synchronize do
-          unless @started
-            log.info 'Legion::Crypt shutdown ignored because the lifecycle is not running'
-            return
-          end
+        shutdown_started = lifecycle_mutex.synchronize do
+          return unless @started
 
-          log.info 'Legion::Crypt shutdown initiated'
-          Legion::Crypt::LeaseManager.instance.shutdown
-          stop_token_renewers
-          shutdown_renewer
-          close_sessions
-          stop_svid_rotation
+          @stopping = true
           @started = false
-          log.info 'Legion::Crypt shutdown completed'
+          true
+        end
+        deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
+        manager = Legion::Crypt::LeaseManager.instance
+        [manager, *(@token_renewers || [])].each do |worker|
+          worker.request_stop
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.shutdown.request_stop')
+        end
+
+        components = [
+          [self, :stop_svid_rotation, { deadline: deadline }],
+          [self, :shutdown_renewer, {}],
+          [manager, :shutdown, { deadline: deadline }],
+          [self, :stop_token_renewers, { deadline: deadline }],
+          [self, :close_sessions, { deadline: deadline }]
+        ]
+        components.each do |owner, operation, options|
+          owner.send(operation, **options)
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: "crypt.shutdown.#{operation}")
+        end
+        log.info 'Legion::Crypt shutdown completed'
+      ensure
+        if shutdown_started
+          lifecycle_mutex.synchronize do
+            @started = false
+            @stopping = false
+          end
         end
       end
 
@@ -309,12 +331,14 @@ module Legion
         log.info "Legion::Crypt started #{started} token renewer(s)" if started.positive?
       end
 
-      def stop_token_renewers
-        return unless @token_renewers
-
-        @token_renewers.each(&:stop)
-        log.info "Legion::Crypt stopped #{@token_renewers.size} token renewer(s)" if @token_renewers.any?
-        @token_renewers.clear
+      def stop_token_renewers(deadline: nil)
+        renewers = @token_renewers || []
+        @token_renewers = []
+        renewers.each do |renewer|
+          renewer.stop(deadline: deadline)
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.stop_token_renewers')
+        end
       end
 
       def start_svid_rotation
@@ -327,11 +351,11 @@ module Legion
         handle_exception(e, level: :warn, operation: 'crypt.start_svid_rotation')
       end
 
-      def stop_svid_rotation
+      def stop_svid_rotation(deadline: nil)
         return unless @svid_rotation
 
-        log.info 'Legion::Crypt stopping SPIFFE SVID rotation'
-        @svid_rotation.stop
+        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { @svid_rotation.stop }
+      ensure
         @svid_rotation = nil
       end
 

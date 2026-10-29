@@ -12,16 +12,44 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
     }
   end
-  let(:vault_client) { instance_double(Vault::Client) }
+  let(:vault_client) { Vault::Client.new(address: 'https://vault.example.com', token: 'hvs.initial-token') }
   let(:auth_token) { double('AuthToken') }
   let(:renew_result) do
     double('RenewResult', auth: double('Auth', lease_duration: 200, client_token: 'hvs.renewed', renewable?: false))
   end
 
   let(:renewer) { described_class.new(cluster_name: cluster_name, config: config, vault_client: vault_client) }
+  let(:lease_manager) { instance_double(Legion::Crypt::LeaseManager, reissue_all: nil) }
+  let(:background_threads) { [] }
 
   before do
     allow(vault_client).to receive(:auth_token).and_return(auth_token)
+    allow(auth_token).to receive(:revoke_self)
+    allow(Legion::Crypt::LeaseManager).to receive(:instance).and_return(lease_manager)
+    allow(Legion::Crypt).to receive(:stopping).and_return(false)
+  end
+
+  after do
+    renewer.request_stop
+    background_threads.each do |thread|
+      thread.kill if thread.alive?
+      thread.join(1)
+    end
+    renewer.stop(deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1)
+  end
+
+  def run_in_background(&)
+    Thread.new(&).tap { |thread| background_threads << thread }
+  end
+
+  def await_event(queue:)
+    Timeout.timeout(1) { queue.pop }
+  end
+
+  def finish_thread(thread:)
+    raise 'background operation did not finish' unless thread.join(1)
+
+    thread.value
   end
 
   describe '#initialize' do
@@ -92,19 +120,6 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       renewer.stop
       expect(renewer.running?).to be false
     end
-
-    it 'does not start a second renewal thread when already running' do
-      allow(auth_token).to receive(:renew_self).and_return(renew_result)
-      allow(vault_client).to receive(:token).and_return('hvs.initial-token')
-      allow(auth_token).to receive(:revoke_self)
-
-      renewer.start
-      first_thread = renewer.instance_variable_get(:@thread)
-      renewer.start
-
-      expect(renewer.instance_variable_get(:@thread)).to eq(first_thread)
-      renewer.stop
-    end
   end
 
   describe '#revoke_token (private)' do
@@ -155,10 +170,15 @@ RSpec.describe Legion::Crypt::TokenRenewer do
     end
 
     context 'when revoke_self raises' do
-      it 'does not propagate the error' do
-        allow(vault_client).to receive(:token).and_return('hvs.initial-token')
+      it 'leaves the worker stopped and permits a subsequent restart' do
         allow(auth_token).to receive(:revoke_self).and_raise(StandardError, 'network error')
-        expect { renewer.send(:revoke_token) }.not_to raise_error
+        renewer.start
+
+        renewer.stop
+
+        expect(renewer.running?).to be false
+        renewer.start
+        expect(renewer.running?).to be true
       end
     end
   end
@@ -184,15 +204,227 @@ RSpec.describe Legion::Crypt::TokenRenewer do
     end
   end
 
-  describe '#stop_thread_and_revoke' do
-    it 'keeps the thread reference when the join times out' do
-      stuck_thread = instance_double(Thread, alive?: true)
-      allow(stuck_thread).to receive(:join)
-      renewer.instance_variable_set(:@thread, stuck_thread)
+  describe 'shutdown races' do
+    let(:entered) { Queue.new }
+    let(:release) { Queue.new }
+    let(:reauth_result) do
+      { token: 'hvs.late-token', lease_duration: 300, renewable: false, policies: [], metadata: {} }
+    end
 
-      renewer.send(:stop_thread_and_revoke)
+    it 'rejects a renewal completing after the nonblocking stop request' do
+      original_config = config.dup
+      allow(auth_token).to receive(:renew_self) do
+        entered << true
+        release.pop
+        renew_result
+      end
+      operation = run_in_background { renewer.renew_token }
+      await_event(queue: entered)
 
-      expect(renewer.instance_variable_get(:@thread)).to eq(stuck_thread)
+      finish_thread(thread: run_in_background { renewer.request_stop })
+      expect(operation).to be_alive
+      release << true
+
+      expect(finish_thread(thread: operation)).to be false
+      expect(config).to eq(original_config)
+      expect(vault_client.token).to eq('hvs.initial-token')
+      expect(lease_manager).not_to have_received(:reissue_all)
+    end
+
+    it 'rejects stale reauthentication after stop and a new generation has started' do
+      original_config = config.dup
+      allow(Legion::Crypt::KerberosAuth).to receive(:login) do
+        entered << true
+        release.pop
+        reauth_result
+      end
+      operation = run_in_background { renewer.reauth_kerberos }
+      await_event(queue: entered)
+
+      finish_thread(thread: run_in_background { renewer.stop })
+      renewer.start
+      release << true
+
+      expect(finish_thread(thread: operation)).to be false
+      expect(config).to eq(original_config)
+      expect(vault_client.token).to eq('hvs.initial-token')
+      expect(lease_manager).not_to have_received(:reissue_all)
+
+      allow(auth_token).to receive(:renew_self).and_return(renew_result)
+      expect(renewer.renew_token).to be true
+      expect(config[:lease_duration]).to eq(200)
+    end
+
+    it 'keeps an in-flight lease reissue cancelled after a token worker restart' do
+      allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(reauth_result)
+      allow(lease_manager).to receive(:reissue_all) do |active:|
+        entered << active
+        release.pop
+      end
+      operation = run_in_background { renewer.reauth_kerberos }
+      active = await_event(queue: entered)
+      published = []
+      expect(active.call).to be true
+      expect(active.call { published << :current }).to be true
+
+      finish_thread(thread: run_in_background { renewer.request_stop })
+      renewer.start
+
+      expect(active.call).to be false
+      expect(active.call { published << :stale }).to be false
+      expect(published).to eq([:current])
+      release << true
+      expect(finish_thread(thread: operation)).to be true
+      expect(vault_client.token).to eq('hvs.late-token')
+    end
+
+    it 'rejects completed reauthentication while global shutdown is in progress' do
+      original_config = config.dup
+      allow(Legion::Crypt::KerberosAuth).to receive(:login) do
+        entered << true
+        release.pop
+        reauth_result
+      end
+      operation = run_in_background { renewer.reauth_kerberos }
+      await_event(queue: entered)
+
+      allow(Legion::Crypt).to receive(:stopping).and_return(true)
+      release << true
+
+      expect(finish_thread(thread: operation)).to be false
+      expect(config).to eq(original_config)
+      expect(vault_client.token).to eq('hvs.initial-token')
+      expect(lease_manager).not_to have_received(:reissue_all)
+    end
+
+    it 'does not reauthenticate or mark disconnected after a stopped worker fails' do
+      allow(renewer).to receive(:sleep_duration).and_return(0)
+      allow(auth_token).to receive(:renew_self) do
+        entered << true
+        release.pop
+        raise StandardError, 'renewal failed after stop'
+      end
+      allow(Legion::Crypt::KerberosAuth).to receive(:login)
+      renewer.start
+      worker = renewer.instance_variable_get(:@thread)
+      await_event(queue: entered)
+
+      renewer.request_stop
+      release << true
+      finish_thread(thread: worker)
+
+      expect(config[:connected]).to be true
+      expect(Legion::Crypt::KerberosAuth).not_to have_received(:login)
+      expect(lease_manager).not_to have_received(:reissue_all)
+
+      allow(renewer).to receive(:sleep_duration).and_return(3600)
+      renewer.start
+      expect(renewer.next_backoff).to eq(described_class::INITIAL_BACKOFF)
+    end
+
+    it 'bounds a blocked worker join without revoking or spawning replacement workers' do
+      config[:renewable] = false
+      original_config = config.dup
+      allow(renewer).to receive(:sleep_duration).and_return(0)
+      allow(Legion::Crypt::KerberosAuth).to receive(:login) do
+        entered << Thread.current
+        release.pop
+        reauth_result
+      end
+      renewer.start
+      worker = await_event(queue: entered)
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.01
+      finish_thread(thread: run_in_background { renewer.stop(deadline: deadline) })
+      expect(renewer.running?).to be true
+      expect(auth_token).not_to have_received(:revoke_self)
+      existing_threads = Thread.list
+      3.times { renewer.start }
+      expect(Thread.list - existing_threads).to be_empty
+      renewer.request_stop
+      release << true
+      finish_thread(thread: worker)
+
+      expect(renewer.running?).to be false
+      expect(config).to eq(original_config)
+      expect(vault_client.token).to eq('hvs.initial-token')
+      expect(lease_manager).not_to have_received(:reissue_all)
+      expect(Legion::Crypt::KerberosAuth).to have_received(:login).once
+
+      allow(renewer).to receive(:sleep_duration).and_return(3600)
+      allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(reauth_result)
+      renewer.start
+      expect(renewer.reauth_kerberos).to be true
+      expect(vault_client.token).to eq('hvs.late-token')
+      expect(config[:lease_duration]).to eq(300)
+      expect(lease_manager).to have_received(:reissue_all).once
+    end
+
+    it 'wakes a sleeping worker without waiting for its scheduled renewal' do
+      allow(renewer).to receive(:sleep_duration) do
+        entered << true
+        3600
+      end
+      allow(auth_token).to receive(:renew_self)
+      renewer.start
+      await_event(queue: entered)
+      worker = renewer.instance_variable_get(:@thread)
+
+      renewer.request_stop
+      finish_thread(thread: worker)
+
+      expect(renewer.running?).to be false
+      expect(auth_token).not_to have_received(:renew_self)
+      expect(auth_token).not_to have_received(:revoke_self)
+    end
+  end
+
+  describe 'operation timeouts' do
+    let(:blocked) { Queue.new }
+
+    around do |example|
+      vault_settings = Legion::Settings[:crypt][:vault]
+      had_timeout = vault_settings.key?(:operation_timeout)
+      previous_timeout = vault_settings[:operation_timeout]
+      vault_settings[:operation_timeout] = 0.02
+      example.run
+    ensure
+      if had_timeout
+        vault_settings[:operation_timeout] = previous_timeout
+      else
+        vault_settings.delete(:operation_timeout)
+      end
+    end
+
+    it 'bounds renewal failure without changing the token configuration' do
+      original_config = config.dup
+      allow(auth_token).to receive(:renew_self) { blocked.pop }
+
+      expect(finish_thread(thread: run_in_background { renewer.renew_token })).to be false
+      expect(config).to eq(original_config)
+      expect(vault_client.token).to eq('hvs.initial-token')
+    end
+
+    it 'bounds authentication failure without changing tokens or reissuing leases' do
+      original_config = config.dup
+      allow(Legion::Crypt::KerberosAuth).to receive(:login) { blocked.pop }
+
+      expect(finish_thread(thread: run_in_background { renewer.reauth_kerberos })).to be false
+      expect(config).to eq(original_config)
+      expect(vault_client.token).to eq('hvs.initial-token')
+      expect(lease_manager).not_to have_received(:reissue_all)
+    end
+
+    it 'bounds token revocation and remains restartable' do
+      allow(auth_token).to receive(:revoke_self) { blocked.pop }
+      renewer.start
+
+      finish_thread(thread: run_in_background { renewer.stop })
+
+      expect(renewer.running?).to be false
+      expect(auth_token).to have_received(:revoke_self).once
+      renewer.start
+      expect(renewer.running?).to be true
     end
   end
 end

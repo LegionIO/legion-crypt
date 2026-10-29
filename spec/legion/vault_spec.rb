@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'concurrent'
 
 require 'legion/crypt/vault'
 
@@ -42,24 +43,205 @@ RSpec.describe Legion::Crypt::Vault do
     Legion::Crypt.connect_vault
   end
 
-  it '.add_session' do
-    expect(@vault.add_session(path: '/test')).to be_a Array
-  end
+  describe 'session lifecycle' do
+    before do
+      @original_operation_timeout = Legion::Settings[:crypt][:vault][:operation_timeout]
+      Legion::Settings[:crypt][:vault][:operation_timeout] = 0.02
+      allow(Legion::Crypt).to receive(:stopping).and_return(false)
+    end
 
-  it '.close_sessions' do
-    expect(@vault.close_sessions).to be_a Array
-  end
+    after do
+      Legion::Settings[:crypt][:vault][:operation_timeout] = @original_operation_timeout
+    end
 
-  it '.shutdown_renewer' do
-    expect(@vault.shutdown_renewer).to eq nil
-  end
+    it 'revokes later sessions after a failure and reports only completed revocations' do
+      @vault.add_session(path: 'failed')
+      @vault.add_session(path: 'healthy')
+      revoked = []
+      allow(Vault.sys).to receive(:revoke) do |session|
+        raise IOError, 'unavailable' if session == 'failed'
 
-  it '.close_session' do
-    expect(Legion::Crypt.close_sessions).to be_a Array
-  end
+        revoked << session
+        nil
+      end
+      expect(@vault).to receive(:handle_exception).with(instance_of(IOError), hash_including(level: :error))
 
-  it '.renew_sessions' do
-    expect(Legion::Crypt.renew_sessions).to eq []
+      expect(@vault.close_sessions).to eq(['healthy'])
+      expect(revoked).to eq(['healthy'])
+      expect(@vault.sessions).to eq([])
+      expect(@vault.close_sessions).to eq([])
+      expect(revoked).to eq(['healthy'])
+    end
+
+    it 'bounds a stalled revocation before continuing with a healthy session' do
+      @vault.sessions = %w[stalled healthy]
+      revoked = []
+      allow(Vault.sys).to receive(:revoke) do |session|
+        sleep 5 if session == 'stalled'
+        revoked << session
+      end
+      expect(@vault).to receive(:handle_exception).with(instance_of(Timeout::Error), hash_including(level: :error))
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      expect(@vault.close_sessions).to eq(['healthy'])
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
+      expect(revoked).to eq(['healthy'])
+    end
+
+    it 'stops all cleanup at the shared deadline rather than granting each session a fresh budget' do
+      Legion::Settings[:crypt][:vault][:operation_timeout] = 1
+      @vault.sessions = %w[stalled later]
+      attempted = []
+      allow(Vault.sys).to receive(:revoke) do |session|
+        attempted << session
+        sleep 5
+      end
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      expect(@vault.close_sessions(deadline: started + 0.04)).to eq([])
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
+      expect(attempted).to eq(['stalled'])
+      expect(@vault.sessions).to eq([])
+      expect(@vault.close_sessions).to eq([])
+    end
+
+    it 'applies a whole-close deadline even when the caller supplies none' do
+      stub_const('Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT', 0.04)
+      Legion::Settings[:crypt][:vault][:operation_timeout] = 1
+      @vault.sessions = %w[stalled later]
+      attempted = []
+      allow(Vault.sys).to receive(:revoke) do |session|
+        attempted << session
+        sleep 5
+      end
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      expect(@vault.close_sessions).to eq([])
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
+      expect(attempted).to eq(['stalled'])
+    end
+
+    it 'detaches sessions before revocation and refuses late tracking without holding a network lock' do
+      @vault.add_session(path: 'active')
+      observed_sessions = nil
+      allow(Vault.sys).to receive(:revoke) do
+        observed_sessions = @vault.sessions.dup
+        @vault.add_session(path: 'late')
+        @vault.close_sessions
+      end
+
+      expect(@vault.close_sessions).to eq(['active'])
+      expect(observed_sessions).to eq([])
+      expect(@vault.sessions).to eq([])
+    end
+
+    it 'refuses session tracking and renewal while Crypt is stopping' do
+      @vault.sessions = ['active']
+      allow(Legion::Crypt).to receive(:stopping).and_return(true)
+      expect(Vault.sys).not_to receive(:renew)
+
+      @vault.add_session(path: 'late')
+
+      expect(@vault.sessions).to eq(['active'])
+      expect(@vault.renew_sessions).to eq([])
+    end
+
+    it 'keeps session maintenance stopped after the global shutdown flag clears' do
+      @vault.sessions = ['active']
+      allow(Vault.sys).to receive(:revoke)
+      @vault.close_sessions
+      @vault.add_session(path: 'late')
+      expect(Vault.sys).not_to receive(:renew)
+
+      expect(@vault.sessions).to eq([])
+      expect(@vault.renew_sessions).to eq([])
+    end
+
+    it 'cancels a scheduled renewer even when Vault is disconnected' do
+      timer = Concurrent::ScheduledTask.execute(3600) { @vault.renew_sessions }
+      @vault.instance_variable_set(:@renewer, timer)
+      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).and_call_original
+      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).with(:connected).and_return(false)
+
+      @vault.shutdown_renewer
+      @vault.shutdown_renewer
+
+      expect { timer.value!(0) }.to raise_error(Concurrent::CancelledOperationError)
+    ensure
+      timer&.cancel
+    end
+
+    it 'isolates stalled and failed lease renewals from later healthy work' do
+      @vault.sessions = %w[stalled failed healthy]
+      renewed = []
+      allow(Vault.sys).to receive(:renew) do |session|
+        sleep 5 if session == 'stalled'
+        raise IOError, 'unavailable' if session == 'failed'
+
+        renewed << session
+      end
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      expect(@vault.renew_sessions).to eq(['healthy'])
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
+      expect(renewed).to eq(['healthy'])
+    end
+
+    it 'does not renew the remaining snapshot after shutdown starts during a renewal' do
+      @vault.sessions = %w[first later]
+      renewed = []
+      allow(Vault.sys).to receive(:renew) do |session|
+        renewed << session
+        @vault.shutdown_renewer
+      end
+
+      @vault.renew_sessions
+
+      expect(renewed).to eq(['first'])
+      expect(@vault.renew_sessions).to eq([])
+    end
+
+    it 'does not resume an old renewal snapshot when session tracking restarts' do
+      @vault.sessions = %w[first obsolete]
+      renewed = []
+      allow(Vault.sys).to receive(:renew) do |session|
+        renewed << session
+        if session == 'first'
+          @vault.shutdown_renewer
+          @vault.start_session_tracking
+          @vault.add_session(path: 'new')
+        end
+      end
+
+      @vault.renew_sessions
+      @vault.renew_sessions
+
+      expect(renewed).to eq(%w[first new])
+      expect(@vault.sessions).to eq(['new'])
+    end
+
+    it 'bounds each cluster token renewal while preserving routing and failure isolation' do
+      @vault.extend(Legion::Crypt::VaultCluster)
+      allow(@vault).to receive(:connected_clusters).and_return(stalled: {}, failed: {}, healthy: {})
+      renewed = []
+      %i[stalled failed healthy].each do |name|
+        token = double("token-#{name}")
+        client = instance_double(Vault::Client, auth_token: token)
+        allow(@vault).to receive(:vault_client).with(name).and_return(client)
+        allow(token).to receive(:renew_self) do
+          sleep 5 if name == :stalled
+          raise IOError, 'unavailable' if name == :failed
+
+          renewed << name
+        end
+      end
+      expect(Vault).not_to receive(:auth_token)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      expect(@vault.renew_sessions).to eq([:healthy])
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
+      expect(renewed).to eq([:healthy])
+    end
   end
 
   # Multi-cluster KV routing: kv_client / logical_client helpers

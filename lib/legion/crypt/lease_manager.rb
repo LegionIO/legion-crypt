@@ -3,6 +3,7 @@
 require 'legion/logging/helper'
 require 'singleton'
 require 'timeout'
+require 'legion/crypt/vault_operation'
 
 module Legion
   module Crypt
@@ -19,42 +20,41 @@ module Legion
         @running = false
         @renewal_thread = nil
         @state_mutex = Mutex.new
+        @generation = 0
+        @stopped = false
+        @renewal_generation = nil
       end
 
       def start(definitions, vault_client: nil)
-        @state_mutex.synchronize { @vault_client = vault_client }
+        generation = @state_mutex.synchronize do
+          return if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
+
+          @stopped = false
+          @vault_client = vault_client
+          @generation
+        end
         return if definitions.nil? || definitions.empty?
 
         register_at_exit_hook
-
-        log.info "LeaseManager start requested definitions=#{definitions.size}"
         definitions.each do |name, opts|
+          break unless lifecycle_current?(generation)
+
           path = opts['path'] || opts[:path]
           next unless path
+          next if lease_valid?(name)
 
-          if lease_valid?(name)
-            log.debug("LeaseManager: reusing valid cached lease for '#{name}'")
-            next
-          end
-
-          revoke_expired_lease(name)
-
-          begin
-            log.info("LeaseManager: fetching lease '#{name}' from #{path}")
-            response = logical.read(path)
+          Legion::Crypt::VaultOperation.with_timeout do
+            revoke_expired_lease(name, generation: generation)
+            response = (vault_client ? vault_client.logical : ::Vault.logical).read(path)
             unless response
-              log.warn("LeaseManager: no data at '#{name}' (#{path}) — path may not exist or role not configured")
+              log.warn("LeaseManager: no data at '#{name}' (#{path})")
               next
             end
-
             log_lease_response(name, response)
-            cache_lease(name, response, path: path)
-            log.info("LeaseManager: fetched lease '#{name}' from #{path} " \
-                     "(lease_id=#{response.lease_id.to_s[0..11]}... ttl=#{response.lease_duration}s renewable=#{response.renewable?})")
-          rescue StandardError => e
-            handle_exception(e, level: :warn, operation: 'crypt.lease_manager.start', lease_name: name, path: path)
-            log.warn("LeaseManager: failed to fetch lease '#{name}' from #{path}: #{e.message}")
+            cache_lease(name, response, path: path, generation: generation)
           end
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.lease_manager.start', lease_name: name, path: path)
         end
       end
 
@@ -77,28 +77,27 @@ module Legion
 
       attr_reader :active_leases
 
-      def register_ref(name, key, path)
-        @state_mutex.synchronize do
+      def register_ref(name, key, path, generation: @generation)
+        with_current_state(generation: generation) do
           @refs[name] ||= {}
           @refs[name][key] = path
         end
       end
 
-      def push_to_settings(name)
-        refs, data = @state_mutex.synchronize do
-          r = @refs[name] || @refs[name.to_s] || @refs[name.to_sym]
-          d = @lease_cache[name] || @lease_cache[name.to_s] || @lease_cache[name.to_sym]
-          [r&.dup, d&.dup]
-        end
-        return if refs.nil? || refs.empty?
-        return unless data
+      def push_to_settings(name, generation: @generation, active: nil)
+        count = with_current_state(generation: generation, active: active) do
+          refs = @refs[name] || @refs[name.to_s] || @refs[name.to_sym]
+          data = @lease_cache[name] || @lease_cache[name.to_s] || @lease_cache[name.to_sym]
+          return if refs.nil? || refs.empty? || data.nil?
 
-        refs.each do |key, path|
-          value = data[key.to_sym] || data[key.to_s]
-          write_setting(path, value)
+          refs.each do |key, path|
+            write_setting(path, data[key.to_sym] || data[key.to_s])
+          end
+          refs.size
         end
+        return unless count
 
-        log.info("Lease '#{name}' rotated — updated #{refs.size} settings reference(s)")
+        log.info("Lease '#{name}' rotated — updated #{count} settings reference(s)")
       end
 
       # Public Vault client accessors used by Crypt for bootstrap/swap operations.
@@ -111,23 +110,20 @@ module Legion
         sys
       end
 
-      def reissue_all
-        log.info('LeaseManager: reissue_all — re-issuing all active leases under new token')
-        lease_names = @state_mutex.synchronize { @active_leases.keys.dup }
-
+      def reissue_all(active: nil)
+        lease_names, generation = @state_mutex.synchronize { [@active_leases.keys, @generation] }
         lease_names.each do |name|
-          lease = @state_mutex.synchronize { @active_leases[name]&.dup }
-          next unless lease && lease[:path]
+          break unless lifecycle_current?(generation, active: active)
 
-          reissue_lease(name)
+          reissue_lease(name, generation: generation, active: active)
         end
-        log.info('LeaseManager: reissue_all complete')
       end
 
       def register_dynamic_lease(name:, path:, response:, settings_refs:)
+        generation = @state_mutex.synchronize { @generation }
         register_at_exit_hook
 
-        @state_mutex.synchronize do
+        with_current_state(generation: generation) do
           @lease_cache[name] = response.data || {}
           @active_leases[name] = {
             lease_id:       response.lease_id,
@@ -139,60 +135,50 @@ module Legion
           }
         end
         settings_refs.each do |ref|
-          register_ref(name, ref[:key], ref[:path])
+          register_ref(name, ref[:key], ref[:path], generation: generation)
         end
         log.info("LeaseManager: registered dynamic lease '#{name}' (path: #{path})")
       end
 
-      def reissue_lease(name)
-        lease = @state_mutex.synchronize { @active_leases[name]&.dup }
-        unless lease && lease[:path]
-          log.warn("LeaseManager: cannot reissue lease '#{name}' — no path stored for re-read")
-          return
-        end
+      def reissue_lease(name, generation: @generation, active: nil, deadline: nil)
+        lease, client = @state_mutex.synchronize { [@active_leases[name]&.dup, @vault_client] }
+        return unless lease && lease[:path] && lifecycle_current?(generation, active: active)
 
-        log.info("LeaseManager: reissuing lease '#{name}' from #{lease[:path]}")
-        response = logical.read(lease[:path])
-        unless response&.data
-          log.warn("LeaseManager: reissue for '#{name}' returned no data from #{lease[:path]}")
-          return
-        end
+        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) do
+          response = (client ? client.logical : ::Vault.logical).read(lease[:path])
+          return unless response&.data
 
-        updated = @state_mutex.synchronize do
-          active_lease = @active_leases[name]
-          next false unless active_lease
+          updated = with_current_state(generation: generation, active: active) do
+            current = @active_leases[name]
+            next false unless current && current[:lease_id] == lease[:lease_id]
 
-          @lease_cache[name] = response.data
-          active_lease.merge!(
-            lease_id:       response.lease_id,
-            lease_duration: response.lease_duration,
-            expires_at:     Time.now + (response.lease_duration || 0),
-            fetched_at:     Time.now,
-            renewable:      response.renewable?
-          )
-          true
-        end
-        unless updated
-          log.warn("LeaseManager: reissue for '#{name}' skipped — lease was removed during reissue (likely shutdown)")
-          return
-        end
+            @lease_cache[name] = response.data
+            current.merge!(
+              lease_id: response.lease_id, lease_duration: response.lease_duration,
+              expires_at: Time.now + (response.lease_duration || 0), fetched_at: Time.now, renewable: response.renewable?
+            )
+            true
+          end
+          return unless updated
 
-        lease_id_preview = response.lease_id.to_s[0..11]
-        log.info("LeaseManager: reissued lease '#{name}' " \
-                 "(new_lease_id=#{lease_id_preview}... ttl=#{response.lease_duration}s)")
-        push_to_settings(name)
-        trigger_reconnect(name)
+          push_to_settings(name, generation: generation, active: active)
+          trigger_reconnect(name, generation: generation, active: active)
+        end
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.reissue_lease', lease_name: name)
-        log.warn("LeaseManager: failed to reissue lease '#{name}': #{e.message}")
       end
 
       def start_renewal_thread
+        previous = @state_mutex.synchronize { @renewal_thread if @renewal_generation != @generation }
+        Legion::Crypt::VaultOperation.with_timeout { previous.join } if previous&.alive?
         @state_mutex.synchronize do
-          return if @renewal_thread&.alive?
+          return if @renewal_thread&.alive? || @stopped
+          return if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
 
           @running = true
-          @renewal_thread = Thread.new { renewal_loop }
+          generation = @generation
+          @renewal_generation = generation
+          @renewal_thread = Thread.new { renewal_loop(generation: generation) }
         end
         log.info 'LeaseManager renewal thread started'
       end
@@ -201,41 +187,54 @@ module Legion
         @state_mutex.synchronize { @renewal_thread&.alive? || false }
       end
 
-      def shutdown
-        log.info 'LeaseManager shutdown requested'
-        stop_renewal_thread
+      def request_stop
+        thread = @state_mutex.synchronize do
+          @stopped = true
+          @running = false
+          @generation += 1
+          @renewal_thread
+        end
+        thread.wakeup if thread&.alive?
+        thread
+      rescue ThreadError => e
+        handle_exception(e, level: :debug, operation: 'crypt.lease_manager.request_stop')
+        thread
+      end
 
-        leases = @state_mutex.synchronize { @active_leases.dup }
+      def shutdown(deadline: nil)
+        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
+        request_stop
+        leases, client = @state_mutex.synchronize do
+          snapshot = @active_leases
+          @active_leases = {}
+          @lease_cache.clear
+          @refs.clear
+          owner = @vault_client
+          @vault_client = nil
+          [snapshot, owner]
+        end
+        stop_renewal_thread(deadline: deadline)
         leases.each do |name, meta|
           lease_id = meta[:lease_id]
           next if lease_id.nil? || lease_id.empty?
 
-          begin
-            sys.revoke(lease_id)
-            log.debug("LeaseManager: revoked lease '#{name}' (#{lease_id})")
-          rescue StandardError => e
-            handle_exception(e, level: :warn, operation: 'crypt.lease_manager.shutdown', lease_name: name)
-            log.warn("LeaseManager: failed to revoke lease '#{name}' (#{lease_id}): #{e.message}")
+          Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) do
+            (client ? client.sys : ::Vault.sys).revoke(lease_id)
           end
-        end
-
-        @state_mutex.synchronize do
-          @lease_cache.clear
-          @active_leases.clear
-          @refs.clear
-          @vault_client = nil
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.lease_manager.shutdown', lease_name: name)
         end
         log.info 'LeaseManager shutdown complete'
       end
 
       def reset!
+        stop_renewal_thread
         @state_mutex.synchronize do
-          @running = false
           @lease_cache.clear
           @active_leases.clear
           @refs.clear
           @vault_client = nil
-          @renewal_thread = nil
+          @stopped = false
         end
       end
 
@@ -256,8 +255,8 @@ module Legion
         @at_exit_registered = true
       end
 
-      def cache_lease(name, response, path: nil)
-        @state_mutex.synchronize do
+      def cache_lease(name, response, path: nil, generation: @generation)
+        with_current_state(generation: generation) do
           @lease_cache[name] = response.data || {}
           @active_leases[name] = {
             lease_id:       response.lease_id,
@@ -294,43 +293,34 @@ module Legion
         client ? client.sys : ::Vault.sys
       end
 
-      def stop_renewal_thread
-        thread = @state_mutex.synchronize do
-          @running = false
-          @renewal_thread
-        end
+      def stop_renewal_thread(deadline: nil)
+        thread = request_stop
         return unless thread
 
-        begin
-          thread.wakeup if thread.alive?
-        rescue ThreadError => e
-          handle_exception(e, level: :debug, operation: 'crypt.lease_manager.stop_renewal_thread')
-        end
-        thread.join(2)
-        if thread.alive?
-          log.warn 'LeaseManager renewal thread did not stop within timeout'
-        else
-          @state_mutex.synchronize { @renewal_thread = nil }
-          log.debug 'LeaseManager renewal thread stopped'
-        end
+        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { thread.join }
+        @state_mutex.synchronize { @renewal_thread = nil if @renewal_thread.equal?(thread) }
+      rescue StandardError => e
+        handle_exception(e, level: :warn, operation: 'crypt.lease_manager.stop_renewal_thread')
       end
 
-      def renewal_loop
+      def renewal_loop(generation:)
         log.info 'LeaseManager: renewal loop started'
-        while running?
-          interruptible_sleep(RENEWAL_CHECK_INTERVAL)
-          renew_approaching_leases if running?
+        while running?(generation: generation)
+          interruptible_sleep(RENEWAL_CHECK_INTERVAL, generation: generation)
+          renew_approaching_leases(generation: generation) if running?(generation: generation)
         end
         log.info 'LeaseManager: renewal loop exiting'
       rescue StandardError => e
         handle_exception(e, level: :error, operation: 'crypt.lease_manager.renewal_loop')
         log.error("LeaseManager: renewal loop error: #{e.message} — restarting")
-        retry if running?
+        retry if running?(generation: generation)
       end
 
-      def renew_approaching_leases
+      def renew_approaching_leases(generation: @generation)
         leases = @state_mutex.synchronize { @active_leases.keys }
         leases.each do |name|
+          break unless lifecycle_current?(generation)
+
           lease = @state_mutex.synchronize { @active_leases[name]&.dup }
           next unless lease
           next unless approaching_expiry?(lease)
@@ -340,10 +330,10 @@ module Legion
                     "(remaining=#{remaining}s renewable=#{lease[:renewable]} has_path=#{!lease[:path].nil?})")
 
           if lease[:renewable]
-            renew_lease(name, lease)
+            renew_lease(name, lease, generation: generation)
           elsif lease[:path]
             log.info("LeaseManager: lease '#{name}' is non-renewable — re-issuing from #{lease[:path]}")
-            reissue_lease(name)
+            reissue_lease(name, generation: generation)
           else
             log.warn("LeaseManager: lease '#{name}' is non-renewable and has no path for reissue — " \
                      "will expire at #{lease[:expires_at]}")
@@ -351,55 +341,38 @@ module Legion
         end
       end
 
-      def renew_lease(name, lease)
-        lease_id = lease[:lease_id].to_s
-        if lease_id.empty?
-          log.warn("LeaseManager: lease '#{name}' is renewable but has no lease_id")
-          if lease[:path]
-            log.warn("LeaseManager: falling back to reissue for '#{name}' from #{lease[:path]}")
-            reissue_lease(name)
-          else
-            log.warn("LeaseManager: lease '#{name}' renewal failed and no path available for reissue — " \
-                     "lease will expire at #{lease[:expires_at]}")
+      def renew_lease(name, lease, generation: @generation)
+        return unless lifecycle_current?(generation)
+
+        operation_deadline = nil
+        client = @state_mutex.synchronize { @vault_client }
+        Legion::Crypt::VaultOperation.with_timeout do |deadline|
+          operation_deadline = deadline
+          lease_id = lease[:lease_id].to_s
+          if lease_id.empty?
+            reissue_lease(name, generation: generation, deadline: deadline) if lease[:path]
+            next
           end
-          return
-        end
 
-        log.info("LeaseManager: renewing lease '#{name}' (lease_id=#{lease_id[0..11]}...)")
-        response = sys.renew(lease_id)
-        new_ttl = response.respond_to?(:lease_duration) ? response.lease_duration : nil
-        @state_mutex.synchronize do
-          current_lease = @active_leases[name]
-          next unless current_lease
+          response = (client ? client.sys : ::Vault.sys).renew(lease_id)
+          new_ttl = response.respond_to?(:lease_duration) ? response.lease_duration : nil
+          updated = with_current_state(generation: generation) do
+            current = @active_leases[name]
+            next false unless current && current[:lease_id] == lease_id
 
-          if new_ttl
-            current_lease[:lease_duration] = new_ttl
-            current_lease[:expires_at] = Time.now + new_ttl
+            if new_ttl
+              current[:lease_duration] = new_ttl
+              current[:expires_at] = Time.now + new_ttl
+            end
+            current[:renewable] = response.renewable? if response.respond_to?(:renewable?)
+            @lease_cache[name] = response.data if response.data
+            true
           end
-          current_lease[:renewable] = response.renewable? if response.respond_to?(:renewable?)
-        end
-        if new_ttl
-          log.info("LeaseManager: renewed lease '#{name}' (new_ttl=#{new_ttl}s)")
-        else
-          log.warn("LeaseManager: renewed lease '#{name}' but Vault returned no lease_duration — keeping previous TTL")
-        end
-
-        cached_data = @state_mutex.synchronize { @lease_cache[name] }
-        if response.data && response.data != cached_data
-          @state_mutex.synchronize { @lease_cache[name] = response.data }
-          push_to_settings(name)
-          log.info("LeaseManager: lease '#{name}' credentials changed during renewal — settings updated")
+          push_to_settings(name, generation: generation) if updated
         end
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.renew_lease', lease_name: name)
-        log.warn("LeaseManager: failed to renew lease '#{name}': #{e.message}")
-        if lease[:path]
-          log.warn("LeaseManager: falling back to reissue for '#{name}' from #{lease[:path]}")
-          reissue_lease(name)
-        else
-          log.warn("LeaseManager: lease '#{name}' renewal failed and no path available for reissue — " \
-                   "lease will expire at #{lease[:expires_at]}")
-        end
+        reissue_lease(name, generation: generation, deadline: operation_deadline) if operation_deadline && !e.is_a?(Timeout::Error)
       end
 
       def lease_valid?(name)
@@ -412,7 +385,7 @@ module Legion
         expires_at > Time.now
       end
 
-      def revoke_expired_lease(name)
+      def revoke_expired_lease(name, generation:)
         meta = @state_mutex.synchronize { @active_leases[name]&.dup }
         return unless meta
 
@@ -427,6 +400,8 @@ module Legion
           log.warn("LeaseManager: failed to revoke expired lease '#{name}' (#{lease_id}): #{e.message}")
         ensure
           @state_mutex.synchronize do
+            next unless lifecycle_current?(generation) && @active_leases[name]&.dig(:lease_id) == lease_id
+
             @active_leases.delete(name)
             @lease_cache.delete(name)
           end
@@ -457,7 +432,9 @@ module Legion
         log.warn("LeaseManager: failed to write setting at #{path.join('.')}: #{e.message}")
       end
 
-      def trigger_reconnect(name)
+      def trigger_reconnect(name, generation: @generation, active: nil)
+        return unless lifecycle_current?(generation, active: active)
+
         name = name.to_sym if name.respond_to?(:to_sym)
         case name
         when :rabbitmq
@@ -508,15 +485,32 @@ module Legion
         end
       end
 
-      def running?
-        @state_mutex.synchronize { @running }
+      def with_current_state(generation:, active: nil)
+        @state_mutex.synchronize do
+          next false unless lifecycle_current?(generation)
+
+          next yield unless active
+
+          result = false
+          active.call { result = yield }
+          result
+        end
       end
 
-      def interruptible_sleep(seconds)
+      def lifecycle_current?(generation, active: nil)
+        !@stopped && generation == @generation &&
+          !(Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping) && (!active || active.call)
+      end
+
+      def running?(generation: @generation)
+        @state_mutex.synchronize { @running && lifecycle_current?(generation) }
+      end
+
+      def interruptible_sleep(seconds, generation: @generation)
         deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + seconds
         loop do
           remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
-          break if remaining <= 0 || !running?
+          break if remaining <= 0 || !running?(generation: generation)
 
           sleep([remaining, 1.0].min)
         end

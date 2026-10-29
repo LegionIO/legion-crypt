@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.20] - 2026-10-29
+
+### Fixed
+- Bound Vault maintenance and shutdown, isolate failed leases and sessions, and permit restart after cleanup failures (#44).
+- Guard late lease, token, settings, and Kerberos-principal updates with lifecycle generations and cancellation-aware publication (#44).
+
 ## [1.5.19] - 2026-10-29
 
 ### Fixed

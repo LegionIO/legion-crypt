@@ -17,7 +17,7 @@ module Legion
         attr_reader :kerberos_principal
       end
 
-      def self.login(vault_client:, service_principal:, auth_path: DEFAULT_AUTH_PATH)
+      def self.login(vault_client:, service_principal:, auth_path: DEFAULT_AUTH_PATH, principal_guard: nil)
         raise GemMissingError, 'lex-kerberos gem is required for Kerberos auth' unless spnego_available?
 
         log.info "KerberosAuth login requested auth_path=#{auth_path}"
@@ -26,12 +26,21 @@ module Legion
         ns   = vault_client.respond_to?(:namespace) ? vault_client.namespace.inspect : 'n/a'
         log.debug("KerberosAuth: login: vault_client.address=#{addr}, namespace=#{ns}")
 
-        @kerberos_principal = nil
+        if principal_guard
+          principal_guard.call { @kerberos_principal = nil }
+        else
+          @kerberos_principal = nil
+        end
         token = obtain_token(service_principal)
         log.debug("KerberosAuth: login: SPNEGO token obtained (#{token.length} chars)")
 
         result = exchange_token(vault_client, token, auth_path)
-        @kerberos_principal = result[:metadata]&.dig('username') || result[:metadata]&.dig(:username)
+        principal = result[:metadata]&.dig('username') || result[:metadata]&.dig(:username)
+        if principal_guard
+          principal_guard.call { @kerberos_principal = principal }
+        else
+          @kerberos_principal = principal
+        end
         log.debug("KerberosAuth: login: authenticated as #{@kerberos_principal.inspect}, policies=#{result[:policies].inspect}")
         log.debug("KerberosAuth: login: renewable=#{result[:renewable]}, ttl=#{result[:lease_duration]}s")
         log.info "KerberosAuth login success principal=#{@kerberos_principal || 'unknown'} auth_path=#{auth_path}"

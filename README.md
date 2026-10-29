@@ -83,6 +83,7 @@ Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh
     "connected": false,
     "renewer_time": 5,
     "renewer": true,
+    "operation_timeout": 5,
     "push_cluster_secret": true,
     "read_cluster_secret": true,
     "kv_path": "legion",
@@ -114,6 +115,8 @@ Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh
 ### Vault Integration
 
 When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. The background `VaultRenewer` thread keeps the token alive. Vault is an optional runtime dependency — the Vault module is only included if the `vault` gem is available.
+
+Lease acquisition, renewal, reissue, token maintenance, and session revocation use the finite-positive `crypt.vault.operation_timeout` budget (default: 5 seconds). Failures are isolated per item. Shutdown shares a 10-second deadline, invalidates worker generations before external cleanup, and resets lifecycle state even when revocation fails. Late callbacks cannot restore credentials or settings after their lifecycle stops.
 
 ### Dynamic Vault Leases
 

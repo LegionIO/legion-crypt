@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/crypt/vault_operation'
 require 'uri'
 require 'vault'
 
@@ -16,7 +17,8 @@ module Legion
       end
 
       def connect_vault
-        @sessions = []
+        return unless start_session_tracking
+
         vault_settings = Legion::Settings[:crypt][:vault]
         ::Vault.address = resolve_vault_address(vault_settings)
         ::Vault.ssl_verify = resolve_ssl_verify(vault_settings[:tls])
@@ -103,27 +105,59 @@ module Legion
         !kv_client(cluster_name: cluster_name).read_metadata(path).nil?
       end
 
-      def add_session(path:)
-        @sessions ||= []
-        @sessions.push(path)
+      def start_session_tracking
+        session_mutex.synchronize do
+          return false if crypt_stopping?
+
+          @sessions = []
+          @sessions_stopped = false
+          @session_generation = (@session_generation || 0) + 1
+        end
+        true
       end
 
-      def close_sessions
-        return if @sessions.nil?
+      def add_session(path:)
+        session_mutex.synchronize do
+          return if @sessions_stopped || crypt_stopping?
 
-        log.info 'Closing all Legion::Crypt vault sessions'
-
-        @sessions.each do |session|
-          close_session(session: session)
+          (@sessions ||= []).push(path)
         end
       end
 
+      def close_sessions(deadline: nil)
+        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + VaultOperation::SHUTDOWN_TIMEOUT
+        pending = session_mutex.synchronize do
+          @sessions_stopped = true
+          @session_generation = (@session_generation || 0) + 1
+          detached = @sessions || []
+          @sessions = []
+          detached
+        end
+        log.info 'Closing all Legion::Crypt vault sessions'
+        closed = []
+        pending.each do |session|
+          break if ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) >= deadline
+
+          VaultOperation.with_timeout(deadline: deadline) { close_session(session: session) }
+          closed << session
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.vault.close_session')
+        end
+        closed
+      end
+
       def shutdown_renewer
-        return unless Legion::Settings[:crypt][:vault][:connected]
-        return if @renewer.nil?
+        renewer = session_mutex.synchronize do
+          @sessions_stopped = true
+          @session_generation = (@session_generation || 0) + 1
+          detached = @renewer
+          @renewer = nil
+          detached
+        end
+        return if renewer.nil?
 
         log.info 'Shutting down Legion::Crypt::Vault::Renewer'
-        @renewer.cancel
+        renewer.cancel
       end
 
       def close_session(session:)
@@ -135,29 +169,42 @@ module Legion
       end
 
       def renew_sessions(**_opts)
+        generation, pending = session_mutex.synchronize do
+          return [] if @sessions_stopped || crypt_stopping?
+
+          [@session_generation, (@sessions || []).dup]
+        end
         log.debug 'Vault renewal cycle start'
-        result = if respond_to?(:connected_clusters) && connected_clusters.any?
-                   renew_cluster_tokens
-                 else
-                   @sessions.each do |session|
-                     renew_session(session: session)
-                   end
-                 end
+        return renew_cluster_tokens(generation: generation) if respond_to?(:connected_clusters) && connected_clusters.any?
+
+        renewed = []
+        pending.each do |session|
+          break unless session_maintenance_active?(generation)
+
+          VaultOperation.with_timeout { renew_session(session: session) }
+          renewed << session
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.vault.renew_session')
+        end
         log.debug 'Vault renewal cycle complete'
-        result
+        renewed
       rescue StandardError => e
         handle_exception(e, level: :error, operation: 'crypt.vault.renew_sessions')
         raise
       end
 
-      def renew_cluster_tokens
+      def renew_cluster_tokens(generation: session_mutex.synchronize { @session_generation })
+        renewed = []
         connected_clusters.each_key do |name|
-          client = vault_client(name)
-          client.auth_token.renew_self
+          break unless session_maintenance_active?(generation)
+
+          VaultOperation.with_timeout { vault_client(name).auth_token.renew_self }
+          renewed << name
           log.info "Vault token renewed for cluster #{name}"
         rescue StandardError => e
           log_vault_error(name, e)
         end
+        renewed
       end
 
       def vault_exists?(name)
@@ -165,6 +212,20 @@ module Legion
       end
 
       private
+
+      def session_mutex
+        @session_mutex ||= Mutex.new
+      end
+
+      def crypt_stopping?
+        Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
+      end
+
+      def session_maintenance_active?(generation)
+        session_mutex.synchronize do
+          !@sessions_stopped && !crypt_stopping? && @session_generation == generation
+        end
+      end
 
       def kv_client(cluster_name: nil)
         mount = Legion::Settings[:crypt][:vault][:kv_path]
