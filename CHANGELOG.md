@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.19] - 2026-10-29
+
+### Fixed
+- Coalesce concurrent JWKS misses, bound unknown-key and failed-upstream refreshes with a per-URL cooldown, and preserve immediate first-miss rotation checks and cache expiry (#42).
+
 ## [1.5.18] - 2026-10-29
 
 ### Fixed

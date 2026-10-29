@@ -65,10 +65,10 @@ claims = Legion::Crypt.verify_external_token(
 )
 
 # Or use the JWT module directly
-claims = Legion::Crypt::JWT.verify_with_jwks(token, jwks_url: jwks_url)
+claims = Legion::Crypt::JWT.verify_with_jwks(token, jwks_url: jwks_url, issuers: issuers, audience: audience)
 ```
 
-Public keys are cached for 1 hour and automatically re-fetched on cache miss (handles key rotation).
+Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh. The first unknown key ID triggers an immediate rotation check; subsequent missing-key lookups are throttled for 30 seconds per URL. Failed upstream lookups share the same cooldown, while still-valid cached keys remain usable. Expired caches and explicit `fetch_keys` calls refresh normally.
 
 ## Configuration
 
