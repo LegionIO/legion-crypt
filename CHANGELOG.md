@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.35] - 2026-10-30
+
+### Fixed
+- Skip unchanged settings destinations during lease handoff so TTL-only renewals preserve live consumer connections; credential changes still publish and reconnect transactionally (#52).
+
 ## [1.5.34] - 2026-10-30
 
 ### Fixed

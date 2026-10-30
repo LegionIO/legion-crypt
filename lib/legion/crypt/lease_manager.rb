@@ -375,9 +375,10 @@ module Legion
           raise "Lease #{name} omitted referenced key #{key}" unless data.key?(key) || data.key?(key.to_s)
 
           value = data.key?(key) ? data[key] : data[key.to_s]
-          paths.map do |path|
+          paths.filter_map do |path|
             target, segment = setting_target(path)
             raise "Lease #{name} has an unwritable settings destination #{path.inspect}" unless target
+            next if target[segment] == value
 
             [target, segment, target[segment], value]
           end

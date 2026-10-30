@@ -175,6 +175,8 @@ Both `username` and `password` come from a single Vault read — one lease, one 
 
 Failed acquisition remains pending with exponential backoff from 1 second to a 60-second cap. Maintenance wakes for the next renewal or retry deadline (10 ms minimum, 5 seconds maximum), rather than waiting five seconds before servicing short-TTL leases.
 
+TTL-only renewals update lease lifetime without reconnecting consumers whose credentials and settings are unchanged. A renewal that returns rotated credentials still publishes the new values and verifies the consumer reconnect before committing.
+
 Credential replacement installs settings and cache, confirms the required consumer reconnect, then retires the previous lease. Failed handoffs restore the previous settings and cache; old and unconfirmed candidate IDs remain owned until safe cleanup or shutdown. Failed revocations are retried, using the Vault client that issued the lease. RabbitMQ must report an open session; PostgreSQL must support and successfully complete `reconnect_with_fresh_creds`; Redis must reconnect successfully and report connected when that status is available.
 
 Lease names are stable across environments. The actual Vault paths are deployment-specific config. `active_leases` uses Symbol names; `fetch` and `lease_data` accept either Strings or Symbols.

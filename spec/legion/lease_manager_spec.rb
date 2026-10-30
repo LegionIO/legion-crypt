@@ -310,6 +310,34 @@ RSpec.describe Legion::Crypt::LeaseManager do
       allow(vault_logical).to receive(:read).and_return(replacement)
     end
 
+    it 'extends a renewed lease without interrupting consumers when credentials are unchanged' do
+      renewed = double('renewed lease', data: {}, lease_id: 'old-id', lease_duration: 7200, renewable?: true)
+      allow(vault_sys).to receive(:renew).and_return(renewed)
+      original_expiry = manager.active_leases[:rabbitmq][:expires_at]
+      expect(transport).not_to receive(:force_reconnect)
+
+      manager.send(:renew_lease, :rabbitmq, manager.active_leases[:rabbitmq].dup)
+
+      expect(manager.active_leases[:rabbitmq][:expires_at]).to be > original_expiry
+      expect(manager.fetch(:rabbitmq, :username)).to eq('original')
+      expect(connection).to eq(original_response.data)
+    end
+
+    it 'reconnects consumers when renewal actually rotates their credentials' do
+      renewed = lease_response(id: 'old-id', username: 'rotated')
+      allow(vault_sys).to receive(:renew).and_return(renewed)
+      reconnected_with = []
+      allow(transport).to receive(:force_reconnect) do
+        reconnected_with << connection.dup
+        true
+      end
+
+      manager.send(:renew_lease, :rabbitmq, manager.active_leases[:rabbitmq].dup)
+
+      expect(reconnected_with).to eq([renewed.data])
+      expect(manager.fetch(:rabbitmq, :username)).to eq('rotated')
+    end
+
     it 'retires the old lease only after replacement settings and credentials reconnect successfully' do
       events = []
       allow(transport).to receive(:force_reconnect) do
