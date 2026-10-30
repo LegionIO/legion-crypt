@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.34] - 2026-10-30
+
+### Fixed
+- Transition pending renewal retries to fresh acquisition after lease expiry, including renewal timeouts, while preserving backoff and last-known lease ownership (#52).
+- Revalidate captured lease ownership before reacquisition or retry publication so stale maintenance cannot replace a newer handoff (#52).
+
 ## [1.5.33] - 2026-10-30
 
 ### Fixed

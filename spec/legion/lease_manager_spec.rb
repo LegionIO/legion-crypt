@@ -593,7 +593,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
       manager.start({ 'slow' => { path: 'slow' } })
       allow(vault_logical).to receive(:read).and_return(fresh_response)
       manager.start({ 'healthy' => { path: 'healthy' } })
-      manager.active_leases.each_value { |lease| lease[:expires_at] = Time.now }
+      manager.active_leases.each_value { |lease| lease[:expires_at] = Time.now + 0.1 }
       allow(sys).to receive(:renew) do |lease_id:|
         sleep(10) if lease_id == vault_response.lease_id
         fresh_response
@@ -602,6 +602,29 @@ RSpec.describe Legion::Crypt::LeaseManager do
       Timeout.timeout(1) { manager.send(:renew_approaching_leases) }
       expect(manager.active_leases[:healthy][:expires_at]).to be > Time.now
       expect(manager.fetch('healthy', :username)).to eq('fresh')
+    end
+
+    it 'reacquires credentials after a timed-out renewal outlives the lease' do
+      original = lease_response(id: 'short-id', ttl: 2)
+      allow(vault_logical).to receive(:read).and_return(original)
+      manager.start(lease_definitions)
+      manager.register_ref(:rabbitmq, :username, %i[transport connection username])
+      current_time = Time.now
+      allow(Time).to receive(:now).and_return(current_time + 1.1)
+      allow(sys).to receive(:renew) { sleep(10) }
+      Timeout.timeout(1) { manager.send(:renew_approaching_leases) }
+      expect(manager.fetch(:rabbitmq, :username)).to eq('rabbit_user')
+
+      monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+      allow(Time).to receive(:now).and_return(current_time + 3)
+      allow(Process).to receive(:clock_gettime).and_call_original
+      allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC).and_return(monotonic)
+      allow(vault_logical).to receive(:read).and_return(fresh_response)
+      manager.send(:renew_approaching_leases)
+
+      expect(manager.fetch(:rabbitmq, :username)).to eq('fresh')
+      expect(connection[:username]).to eq('fresh')
+      expect(sys).to have_received(:revoke).with(lease_id: 'short-id').once
     end
 
     it 'does not let a late renewal overwrite restarted cache or settings' do

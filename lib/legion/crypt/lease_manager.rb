@@ -152,7 +152,7 @@ module Legion
         return false unless lease && lease[:path] && lifecycle_current?(generation, active: active)
 
         acquire_lease(name: name, path: lease[:path], client: lease[:client], generation: generation,
-                      active: active, deadline: deadline)
+                      active: active, deadline: deadline, lease: lease)
       end
 
       def start_renewal_thread
@@ -253,7 +253,7 @@ module Legion
         deadline = options[:deadline]
         with_lease_operation(name: name, deadline: deadline) do |operation_deadline|
           return false unless lifecycle_current?(generation, active: active)
-          return false unless lease_operation_current?(name: name, pending: options[:pending])
+          return false unless lease_operation_current?(name: name, pending: options[:pending], lease: options[:lease])
           raise ArgumentError, 'Lease acquisition requires a path' unless path
 
           response = client.logical.read(path: path)
@@ -264,7 +264,8 @@ module Legion
         end
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.acquire_lease', lease_name: name, path: path)
-        schedule_retry(name: name, path: path, client: client, generation: generation, active: active, pending: options[:pending])
+        schedule_retry(name: name, path: path, client: client, generation: generation, active: active,
+                       pending: options[:pending], lease: options[:lease])
         false
       end
 
@@ -411,6 +412,7 @@ module Legion
         with_current_state(generation: generation, active: options[:active]) do
           previous = @pending[name]
           next false if options[:pending] && !previous.equal?(options[:pending])
+          next false if options[:lease] && @active_leases.dig(name, :ownership) != options[:lease][:ownership]
 
           attempts = previous && previous[:path] == path && previous[:client].equal?(client) ? previous[:attempts] : 0
           attempts = [attempts + 1, 7].min
@@ -499,10 +501,10 @@ module Legion
           next if renewal_delay(lease).positive?
 
           attempted << name
-          if lease[:renewable]
+          if lease_renewable?(lease: lease)
             renew_lease(name, lease.dup, generation: generation)
           else
-            acquire_lease(name: name, path: lease[:path], client: lease[:client], generation: generation)
+            acquire_lease(name: name, path: lease[:path], client: lease[:client], generation: generation, lease: lease)
           end
         end
         pending = @state_mutex.synchronize { @pending.to_a }
@@ -511,10 +513,10 @@ module Legion
           next if attempted.include?(name) || entry[:next_attempt_at] > monotonic_now
 
           lease = @state_mutex.synchronize { @active_leases[name]&.dup }
-          if entry[:operation] == :renew && lease
+          if entry[:operation] == :renew && lease_renewable?(lease: lease)
             renew_lease(name, lease, generation: generation, pending: entry)
           else
-            acquire_lease(name: name, path: entry[:path], client: entry[:client], generation: generation, pending: entry)
+            acquire_lease(name: name, path: entry[:path], client: entry[:client], generation: generation, pending: entry, lease: lease)
           end
         end
         retire_unused_leases if lifecycle_current?(generation)
@@ -554,8 +556,15 @@ module Legion
 
       def lease_valid?(name, path:, client:)
         lease = @state_mutex.synchronize { @active_leases[name.to_sym] }
-        lease && lease[:path] == path && lease[:client].equal?(client) &&
-          (lease[:expires_at].nil? || lease[:expires_at] > Time.now)
+        lease && lease[:path] == path && lease[:client].equal?(client) && lease_unexpired?(lease: lease)
+      end
+
+      def lease_unexpired?(lease:)
+        lease[:expires_at].nil? || lease[:expires_at] > Time.now
+      end
+
+      def lease_renewable?(lease:)
+        lease && lease[:renewable] && lease_unexpired?(lease: lease)
       end
 
       def renewal_delay(lease)
