@@ -126,6 +126,8 @@ RSpec.describe Legion::Crypt::CertRotation do
   end
 
   it 'discards a late issuance after stop and permits a clean restart' do
+    worker = nil
+    release = nil
     entered = Queue.new
     release = Queue.new
     allow(Legion::Crypt::Mtls).to receive(:issue_cert) do
@@ -147,7 +149,7 @@ RSpec.describe Legion::Crypt::CertRotation do
     rotation.start
     expect(Timeout.timeout(1) { events.pop }.last[:serial]).to eq('restarted')
   ensure
-    release << true if worker&.alive?
+    release << true if release && worker&.alive?
     worker&.join(1)
   end
 

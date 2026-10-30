@@ -190,6 +190,13 @@ RSpec.describe Legion::Crypt::VaultClient do
       expect(secret.auth.client_token).to eq('kv-token')
     end
 
+    it 'trims only boundary slashes without changing Unicode or internal separators' do
+      stubs.get('/v1/t%C3%ABam//secret/data/application') do
+        json_response(data: { data: { data: { value: 'found' } } })
+      end
+      expect(client.kv(mount: '///tëam//secret///').read(path: 'application').data).to eq(value: 'found')
+    end
+
     it 'writes the KV envelope with PUT and reads metadata without unwrapping it' do
       stubs.put('/v1/secret/data/application/config') do |env|
         expect(Legion::JSON.load(env.body)).to eq(data: { enabled: true })

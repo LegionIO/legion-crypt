@@ -246,6 +246,8 @@ RSpec.describe Legion::Crypt do
     end
 
     it 'does not install an LDAP login response completing after shutdown' do
+      operation = nil
+      release = nil
       entered = Queue.new
       release = Queue.new
       allow(logical).to receive(:write) do
@@ -268,7 +270,7 @@ RSpec.describe Legion::Crypt do
       expect(described_class.connected_clusters).to be_empty
       expect(Thread.list.none? { |thread| thread.name == 'vault-renewer-primary' }).to be(true)
     ensure
-      release << true if operation&.alive?
+      release << true if release && operation&.alive?
       operation&.join(1)
     end
   end

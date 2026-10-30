@@ -166,7 +166,9 @@ module Legion
       class KV
         def initialize(client:, mount:)
           @client = client
-          @mount = mount.to_s.sub(%r{\A/+}, '').sub(%r{/+\z}, '')
+          mount = mount.to_s
+          first = mount.index(%r{[^/]})
+          @mount = first ? mount[first..mount.rindex(%r{[^/]})] : ''
         end
 
         def read(path:)

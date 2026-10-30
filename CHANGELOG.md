@@ -9,6 +9,7 @@
 
 ### Fixed
 - Do not report tenant erasure or emit an erasure event when Vault deletion returns a failure result (#38).
+- Trim KV mount boundaries with single-character searches rather than a quantified suffix pattern, and initialize concurrency-spec cleanup state before setup can fail (#52).
 
 ## [1.5.26] - 2026-10-29
 
