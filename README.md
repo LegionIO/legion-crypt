@@ -181,9 +181,9 @@ Lease names are stable across environments. The actual Vault paths are deploymen
 
 ## Multi-Cluster Vault
 
-`VaultCluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `::Vault::Client` instance.
+`VaultCluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `Legion::Crypt::VaultClient` instance.
 
-Clients are reused only while their endpoint, namespace, TLS verification, and token match the current configuration. Connection changes retire the old client; shutdown clears and retires the cache. In-place authentication token refreshes preserve the current client.
+Clients are reused only while their endpoint, namespace, TLS verification, and token match the current configuration. Connection changes replace the cached client without disabling lease or token owners retaining its predecessor. Displaced clients are weakly tracked, so the cache does not keep unused clients alive; shutdown permanently closes all surviving clients after owner cleanup. In-place authentication token refreshes preserve the current client.
 
 ```json
 {

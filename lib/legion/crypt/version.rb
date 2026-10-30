@@ -2,6 +2,6 @@
 
 module Legion
   module Crypt
-    VERSION = '1.5.29'
+    VERSION = '1.5.30'
   end
 end

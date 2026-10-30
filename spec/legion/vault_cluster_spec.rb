@@ -103,7 +103,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
       expect(test_object.vault_client(:unknown)).to be_nil
     end
 
-    it 'replaces and retires clients when any connection attribute changes' do
+    it 'replaces clients when any connection attribute changes' do
       changes = [
         [:address, 'other.example.com', :address, 'https://other.example.com:8200'],
         [:protocol, 'http', :address, 'http://other.example.com:8200'],
@@ -114,12 +114,10 @@ RSpec.describe Legion::Crypt::VaultCluster do
       ]
       changes.each do |key, value, attribute, expected|
         previous = test_object.vault_client(:alpha)
-        allow(previous).to receive(:shutdown).and_call_original
         cluster_alpha[key] = value
         replacement = test_object.vault_client(:alpha)
         expect(replacement).not_to equal(previous)
         expect(replacement.public_send(attribute)).to eq(expected)
-        expect(previous).to have_received(:shutdown).once
       end
     end
 
@@ -149,12 +147,59 @@ RSpec.describe Legion::Crypt::VaultCluster do
       expect(client.token).to eq('renewed-token')
     end
 
-    it 'retires a removed cluster and does not return its obsolete client' do
+    it 'removes a cluster from the cache but keeps its retained client usable until shutdown' do
       client = test_object.vault_client(:alpha)
-      allow(client).to receive(:shutdown).and_call_original
+      connection = Faraday.new do |builder|
+        builder.adapter(:test) do |stub|
+          stub.get('/v1/sys/health') { [200, {}, Legion::JSON.dump({ initialized: true })] }
+        end
+      end
+      allow(client).to receive(:build_connection).and_return(connection)
       test_clusters.delete(:alpha)
+
       expect(test_object.vault_client(:alpha)).to be_nil
-      expect(client).to have_received(:shutdown).once
+      expect(client.sys.health_status.initialized?).to be(true)
+      test_object.clear_vault_clients
+      expect { client.sys.health_status }.to raise_error(IOError)
+    end
+
+    it 'keeps token renewal, lease reissue and revocation available through a replaced client' do
+      client = test_object.vault_client(:alpha)
+      revoked = []
+      reads = 0
+      connection = Faraday.new do |builder|
+        builder.adapter(:test) do |stub|
+          stub.get('/v1/database/creds/app') do
+            reads += 1
+            [200, {}, Legion::JSON.dump({ data: { username: "user-#{reads}" }, lease_id: "lease-#{reads}",
+                                         lease_duration: 3600, renewable: true })]
+          end
+          stub.put('/v1/auth/token/renew-self') do
+            [200, {}, Legion::JSON.dump({ auth: { lease_duration: 3600, renewable: true } })]
+          end
+          stub.put('/v1/sys/leases/revoke') do |request|
+            revoked << Legion::JSON.load(request.body)[:lease_id]
+            [204, {}, nil]
+          end
+        end
+      end
+      allow(client).to receive(:build_connection).and_return(connection)
+      manager = Legion::Crypt::LeaseManager.instance
+      manager.reset!
+      manager.start({ database: { path: 'database/creds/app' } }, vault_client: client)
+      renewer = Legion::Crypt::TokenRenewer.new(cluster_name: :alpha, config: cluster_alpha, vault_client: client)
+      cluster_alpha[:token] = 'new-token'
+      test_object.vault_client(:alpha)
+
+      expect(renewer.renew_token).to be(true)
+      expect(manager.reissue_lease(:database)).to be(true)
+      expect(manager.fetch(:database, :username)).to eq('user-2')
+      manager.shutdown
+      expect(revoked).to contain_exactly('lease-1', 'lease-2')
+      test_object.clear_vault_clients
+      expect { client.sys.health_status }.to raise_error(IOError)
+    ensure
+      manager&.reset!
     end
 
     it 'clears every entry even when one client cannot shut down' do

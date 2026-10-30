@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.30] - 2026-10-30
+
+### Fixed
+- Preserve replaced Vault clients while lease and token owners still reference them; weakly track displaced clients and permanently close all surviving clients only after lifecycle cleanup (#52).
+
 ## [1.5.29] - 2026-10-30
 
 ### Fixed

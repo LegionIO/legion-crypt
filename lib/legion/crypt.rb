@@ -235,7 +235,7 @@ module Legion
       def shutdown
         shutdown_started = lifecycle_mutex.synchronize do
           return if @stopping
-          return unless @started || @vault_clients&.any?
+          return unless @started || @vault_clients&.any? || @retired_vault_clients&.size&.positive?
 
           @stopping = true
           @token_generation = (@token_generation || 0) + 1

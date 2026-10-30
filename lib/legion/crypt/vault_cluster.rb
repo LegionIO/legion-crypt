@@ -13,7 +13,7 @@ module Legion
 
       def vault_client(name = nil)
         name = resolve_cluster_name(name)
-        client, previous = vault_clients_mutex.synchronize do
+        vault_clients_mutex.synchronize do
           return @vault_clients&.dig(name, :client) if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
 
           @vault_clients ||= {}
@@ -27,24 +27,25 @@ module Legion
 
           replacement = signature && build_vault_client(signature)
           @vault_clients.delete(name)
+          (@retired_vault_clients ||= ObjectSpace::WeakMap.new)[entry[:client]] = true if entry
           if replacement
             signature.transform_values! { |value| value.is_a?(String) ? value.dup.freeze : value }
             @vault_clients[name] = { client: replacement, signature: signature }
           end
-          [replacement, entry&.fetch(:client)]
+          replacement
         end
-        retire_vault_client(previous) if previous
-        client
       end
 
       def clear_vault_clients(deadline: nil)
         deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
-        entries = vault_clients_mutex.synchronize do
-          previous = @vault_clients || {}
+        clients = vault_clients_mutex.synchronize do
+          previous = (@vault_clients || {}).values.map { |entry| entry[:client] }
+          previous.concat(@retired_vault_clients.keys) if @retired_vault_clients
           @vault_clients = {}
-          previous.values
+          @retired_vault_clients = nil
+          previous.uniq
         end
-        entries.each { |entry| retire_vault_client(entry[:client], deadline: deadline) }
+        clients.each { |client| retire_vault_client(client, deadline: deadline) }
       end
 
       def cluster(name = nil)
