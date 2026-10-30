@@ -57,7 +57,7 @@ module Legion
       end
 
       def fetched_count
-        @state_mutex.synchronize { @active_leases.size }
+        @state_mutex.synchronize { @active_leases.count { |name, _lease| cached_lease_data(name: name) } }
       end
 
       def fetch(name, key)
@@ -68,7 +68,7 @@ module Legion
       end
 
       def lease_data(name)
-        @state_mutex.synchronize { @lease_cache[name.to_sym] }
+        @state_mutex.synchronize { cached_lease_data(name: name.to_sym) }
       end
 
       attr_reader :active_leases
@@ -86,7 +86,7 @@ module Legion
       def push_to_settings(name, generation: @generation, active: nil)
         count = with_current_state(generation: generation, active: active) do
           refs = @refs[name.to_sym]
-          data = @lease_cache[name.to_sym]
+          data = cached_lease_data(name: name.to_sym)
           next 0 if refs.nil? || refs.empty? || data.nil?
 
           refs.sum do |key, paths|
@@ -558,6 +558,15 @@ module Legion
       def lease_valid?(name, path:, client:)
         lease = @state_mutex.synchronize { @active_leases[name.to_sym] }
         lease && lease[:path] == path && lease[:client].equal?(client) && lease_unexpired?(lease: lease)
+      end
+
+      # Called while holding @state_mutex; expired credentials are never exposed to readers.
+      def cached_lease_data(name:)
+        lease = @active_leases[name]
+        return @lease_cache[name] if lease && lease_unexpired?(lease: lease)
+
+        @lease_cache.delete(name)
+        nil
       end
 
       def lease_unexpired?(lease:)

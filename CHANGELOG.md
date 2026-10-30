@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.36] - 2026-10-30
+
+### Fixed
+- Reject and remove expired credential cache entries from lease reads, settings publication and initialized counts, allowing `lease://` fallback after failed reacquisition while retaining lease ownership for cleanup (#52).
+
 ## [1.5.35] - 2026-10-30
 
 ### Fixed

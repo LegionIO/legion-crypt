@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'legion/crypt/lease_manager'
+require 'legion/settings/resolver'
 
 RSpec.describe Legion::Crypt::LeaseManager do
   subject(:manager) { described_class.instance }
@@ -72,6 +73,28 @@ RSpec.describe Legion::Crypt::LeaseManager do
       manager.start(lease_definitions)
       expect(manager.fetch(:rabbitmq, :username)).to eq('rabbit_user')
       manager.shutdown
+    end
+
+    it 'permits settings fallback instead of serving expired credentials after reacquisition fails' do
+      original = lease_response(id: 'expired-id', ttl: 1)
+      allow(vault_logical).to receive(:read).and_return(original)
+      manager.start(lease_definitions)
+      connection = { password: 'fallback-password' }
+      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
+      manager.register_ref(:rabbitmq, :password, %i[transport connection password])
+      allow(Time).to receive(:now).and_return(Time.now + 2)
+      allow(vault_logical).to receive(:read).and_raise(IOError, 'Vault unavailable')
+      manager.start(lease_definitions)
+
+      resolved = Legion::Settings::Resolver.resolve_value(['lease://rabbitmq#password', 'fallback-password'])
+      expect(resolved).to eq('fallback-password')
+      expect(manager.fetch(:rabbitmq, :password)).to be_nil
+      expect(manager.lease_data(:rabbitmq)).to be_nil
+      expect(manager.fetched_count).to eq(0)
+      expect(manager.push_to_settings(:rabbitmq)).to eq(0)
+      expect(connection[:password]).to eq('fallback-password')
+      manager.shutdown
+      expect(vault_sys).to have_received(:revoke).with(lease_id: 'expired-id').once
     end
   end
 
