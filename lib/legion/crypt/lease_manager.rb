@@ -240,11 +240,20 @@ module Legion
         end
       end
 
+      def lease_operation_current?(name:, pending: nil, lease: nil)
+        @state_mutex.synchronize do
+          next false if pending && !@pending[name].equal?(pending)
+
+          lease.nil? || @active_leases.dig(name, :ownership) == lease[:ownership]
+        end
+      end
+
       def acquire_lease(name:, path:, client:, generation:, **options)
         active = options[:active]
         deadline = options[:deadline]
         with_lease_operation(name: name, deadline: deadline) do |operation_deadline|
           return false unless lifecycle_current?(generation, active: active)
+          return false unless lease_operation_current?(name: name, pending: options[:pending])
           raise ArgumentError, 'Lease acquisition requires a path' unless path
 
           response = client.logical.read(path: path)
@@ -255,7 +264,7 @@ module Legion
         end
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.acquire_lease', lease_name: name, path: path)
-        schedule_retry(name: name, path: path, client: client, generation: generation, active: active)
+        schedule_retry(name: name, path: path, client: client, generation: generation, active: active, pending: options[:pending])
         false
       end
 
@@ -401,6 +410,8 @@ module Legion
       def schedule_retry(name:, path:, client:, generation:, **options)
         with_current_state(generation: generation, active: options[:active]) do
           previous = @pending[name]
+          next false if options[:pending] && !previous.equal?(options[:pending])
+
           attempts = previous && previous[:path] == path && previous[:client].equal?(client) ? previous[:attempts] : 0
           attempts = [attempts + 1, 7].min
           @pending[name] = { path: path, client: client, operation: options.fetch(:operation, :acquire), attempts: attempts,
@@ -501,21 +512,21 @@ module Legion
 
           lease = @state_mutex.synchronize { @active_leases[name]&.dup }
           if entry[:operation] == :renew && lease
-            renew_lease(name, lease, generation: generation)
+            renew_lease(name, lease, generation: generation, pending: entry)
           else
-            acquire_lease(name: name, path: entry[:path], client: entry[:client], generation: generation)
+            acquire_lease(name: name, path: entry[:path], client: entry[:client], generation: generation, pending: entry)
           end
         end
         retire_unused_leases if lifecycle_current?(generation)
       end
 
-      def renew_lease(name, lease, generation: @generation)
+      def renew_lease(name, lease, generation: @generation, pending: nil)
         name = name.to_sym
         operation_deadline = nil
         with_lease_operation(name: name) do |deadline|
           operation_deadline = deadline
           return false unless lifecycle_current?(generation)
-          return false unless @state_mutex.synchronize { @active_leases.dig(name, :ownership) == lease[:ownership] }
+          return false unless lease_operation_current?(name: name, pending: pending, lease: lease)
 
           raise 'Lease cannot be renewed without an ID' if lease[:lease_id].to_s.empty?
 
@@ -537,7 +548,7 @@ module Legion
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.renew_lease', lease_name: name)
         return reissue_lease(name, generation: generation, deadline: operation_deadline) if operation_deadline && !e.is_a?(Timeout::Error) && lease[:path]
 
-        schedule_retry(name: name, path: lease[:path], client: lease[:client], generation: generation, operation: :renew)
+        schedule_retry(name: name, path: lease[:path], client: lease[:client], generation: generation, operation: :renew, pending: pending)
         false
       end
 

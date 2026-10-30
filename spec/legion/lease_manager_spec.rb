@@ -108,6 +108,42 @@ RSpec.describe Legion::Crypt::LeaseManager do
       expect(connection[:username]).to eq('rabbit_user')
     end
 
+    it 'discards a pending retry superseded by an identity credential handoff' do
+      allow(vault_logical).to receive(:read).and_raise(IOError, 'temporarily unavailable')
+      manager.start({ blocker: { path: 'blocker' }, rabbitmq: { path: 'rabbitmq/creds/old-role' } })
+      entered = Queue.new
+      release = Queue.new
+      allow(vault_logical).to receive(:read) do |path:|
+        if path == 'blocker'
+          entered << true
+          release.pop
+        end
+        lease_response(id: "#{path}-id", username: 'old-role')
+      end
+      connection = { username: nil, password: nil }
+      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
+      clock[:now] += 1.01
+      clock[:monotonic] += 1.01
+      worker = Thread.new { manager.send(:renew_approaching_leases) }
+      Timeout.timeout(1) { entered.pop }
+
+      identity = lease_response(id: 'identity-id', username: 'worker')
+      manager.register_dynamic_lease(name: :rabbitmq, path: 'rabbitmq/creds/legionio-worker', response: identity,
+                                     settings_refs: [{ key: :username, path: %i[transport connection username] },
+                                                     { key: :password, path: %i[transport connection password] }])
+      release << true
+      Timeout.timeout(1) { worker.join }
+
+      expect(manager.fetch(:rabbitmq, :username)).to eq('worker')
+      expect(connection).to eq(identity.data)
+      expect(vault_sys).not_to have_received(:revoke).with(lease_id: 'identity-id')
+      manager.shutdown
+      expect(vault_sys).to have_received(:revoke).with(lease_id: 'identity-id').once
+    ensure
+      worker&.kill
+      worker&.join
+    end
+
     it 'backs off through sixty seconds without duplicate retries or reads before each deadline' do
       attempts = 0
       allow(vault_logical).to receive(:read) do

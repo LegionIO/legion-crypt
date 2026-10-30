@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.29] - 2026-10-30
+
+### Fixed
+- Revalidate pending lease operations under the per-lease lock and reject superseded retry publication, preventing stale acquisition or renewal work from undoing identity credential handoffs (#52).
+
 ## [1.5.28] - 2026-10-30
 
 ### Fixed
