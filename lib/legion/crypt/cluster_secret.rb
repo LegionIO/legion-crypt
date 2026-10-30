@@ -18,6 +18,8 @@ module Legion
         raise InitializationError, 'Cluster secret initialization cancelled during shutdown' if Legion::Settings[:client]&.dig(:shutting_down)
 
         %i[from_settings from_vault from_transport].each do |method|
+          break if method == :from_transport && only_member? == true
+
           result = send(method)
           next if result.nil?
 

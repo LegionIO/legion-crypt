@@ -13,6 +13,8 @@ RSpec.describe Legion::Crypt::ClusterSecret do
     @cs = Class.new.extend(described_class)
     stub_const('Legion::Transport::Queue', Class.new)
     stub_const('Legion::Transport::Messages::RequestClusterSecret', Class.new)
+    allow(Legion::Transport::Queue).to receive(:new).with('node.crypt', passive: true)
+                                                    .and_return(double(consumer_count: 1))
     allow(@cs).to receive(:require).with('legion/transport/messages/request_cluster_secret').and_return(true)
     allow(Legion::Settings).to receive(:[]).and_call_original
     allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
@@ -35,9 +37,12 @@ RSpec.describe Legion::Crypt::ClusterSecret do
     end
   end
 
-  it 'permits bootstrap after confirming an empty cluster' do
+  it 'bootstraps an empty cluster within the deadline without waiting for a nonexistent peer' do
     transport[:connected] = true
-    allow(@cs).to receive(:from_transport).and_return(nil)
+    configuration[:cluster_secret_timeout] = 0.05
+    request = double('cluster secret request')
+    allow(Legion::Transport::Messages::RequestClusterSecret).to receive(:new).and_return(request)
+    allow(request).to receive(:publish) { sleep(1) }
     allow(Legion::Transport::Queue).to receive(:new).with('node.crypt', passive: true)
                                                     .and_return(double(consumer_count: 0))
     expect(@cs.cs).to eq(Digest::SHA256.digest(configuration[:cluster_secret]))

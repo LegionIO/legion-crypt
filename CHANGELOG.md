@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.28] - 2026-10-30
+
+### Fixed
+- Bootstrap a confirmed empty cluster before waiting for a peer secret, preserving the bounded discovery deadline and refusing generation when membership is unknown (#52).
+
 ## [1.5.27] - 2026-10-30
 
 ### Changed
