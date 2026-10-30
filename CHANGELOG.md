@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.24] - 2026-10-29
+
+### Fixed
+- Retry initial certificate issuance and failed renewals with capped exponential backoff while retaining the last installed certificate (#49).
+- Schedule certificate rotation from expiry and the configured renewal window, interrupt pending waits on shutdown, and discard late issuance from stopped workers (#49).
+
 ## [1.5.23] - 2026-10-29
 
 ### Fixed

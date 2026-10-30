@@ -234,7 +234,9 @@ The SPNEGO token is sent as an HTTP `Authorization` header (not JSON body). The 
 
 ## mTLS
 
-`Crypt::Mtls` issues mTLS certificates from Vault PKI. `Crypt::CertRotation` runs a background thread renewing certs at 50% TTL. `Transport::Connection::Vault` applies tempfile-based Bunny mTLS. Feature-flagged via `security.mtls.enabled: false`.
+`Crypt::Mtls` issues mTLS certificates from Vault PKI. When `security.mtls.enabled` is true, `Legion::Service` owns a `Crypt::CertRotation` worker. The worker renews at expiry minus the certificate lifetime multiplied by `security.mtls.renewal_window` (default `0.5`), rather than waiting for a fixed polling interval. Initial issuance and renewal failures retry with exponential backoff from 1 to 60 seconds; a failed renewal retains the last installed certificate. Shutdown interrupts scheduled waits, bounds in-flight issuance with the Vault operation timeout, and prevents late results from replacing the certificate.
+
+`Transport::Connection::Vault` independently acquires and applies tempfile-based Bunny mTLS credentials. Certificate rotation does not itself close transport connections when a certificate expires. mTLS is disabled by default.
 
 ## Requirements
 
