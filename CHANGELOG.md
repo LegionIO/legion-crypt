@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.32] - 2026-10-30
+
+### Fixed
+- Replace token, expiry, renewability, connectivity and authentication strategy as one grant when LDAP, JWT or Kerberos login succeeds; restart maintenance with the new grant instead of the previous token's lifetime (#52).
+- Reject authentication results from stopped lifecycles and resume managed JWT token renewal for both legacy and multi-cluster configurations (#52).
+
 ## [1.5.31] - 2026-10-30
 
 ### Fixed

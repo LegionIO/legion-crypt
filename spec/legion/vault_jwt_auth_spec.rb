@@ -27,7 +27,7 @@ RSpec.describe Legion::Crypt::VaultJwtAuth do
   end
 
   after do
-    Legion::Crypt.clear_vault_clients
+    Legion::Crypt.shutdown
     Legion::Settings[:crypt][:vault] = @original_vault
   end
 
@@ -111,6 +111,30 @@ RSpec.describe Legion::Crypt::VaultJwtAuth do
       expect(config[:clusters][:secondary][:token]).to eq('other-token')
       expect(Legion::Crypt.vault_client).to equal(client)
       expect(client.token).to eq(vault_token)
+    end
+
+    it 'replaces the old grant lifetime and worker rather than expiring a newly authenticated token' do
+      selected = { protocol: 'http', address: 'vault.example', port: 8200, namespace: 'team', auth_method: 'ldap' }
+      config.merge!(clusters: { primary: selected }, default: :primary)
+      allow(Legion::Crypt).to receive(:vault_connected?).and_call_original
+      stubs.put('/v1/auth/ldap/login/test-user') do
+        [200, {}, Legion::JSON.dump({ auth: { client_token: 'old-ldap', lease_duration: 0.05,
+                                             renewable: false, policies: [] } })]
+      end
+      Legion::Crypt.ldap_login(cluster_name: :primary, username: 'test-user', password: 'fixture-password')
+      old_expiry = selected[:expires_at]
+      described_class.login!(jwt: sample_jwt)
+      sleep([old_expiry - Time.now + 0.02, 0].max)
+      stubs.get('/v1/secret/protected') do |request|
+        expect(request.request_headers['X-Vault-Token']).to eq(vault_token)
+        [200, {}, Legion::JSON.dump({ data: { authorized: true } })]
+      end
+
+      expect(Legion::Crypt.vault_connected?).to be(true)
+      expect(Legion::Crypt.read('secret/protected')).to eq(authorized: true)
+      expect(selected[:expires_at]).to be > Time.now + 3500
+      expect(selected[:renewable]).to be(true)
+      expect(selected[:auth_method]).to eq('jwt')
     end
 
     it 'leaves the current token intact when authentication is rejected' do

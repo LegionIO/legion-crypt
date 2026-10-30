@@ -208,7 +208,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
       current = test_object.vault_client(:alpha)
 
       expect do
-        test_object.publish_vault_token(client: previous, config: cluster_alpha, token: 'stale-token')
+        test_object.publish_vault_grant(client: previous, config: cluster_alpha, grant: { token: 'stale-token' }, auth_method: 'ldap')
       end.to raise_error(IOError)
       expect(test_object.vault_client(:alpha)).to equal(current)
       expect(current.token).to eq('token-alpha')

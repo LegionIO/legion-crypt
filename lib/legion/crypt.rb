@@ -86,15 +86,38 @@ module Legion
           if vault_settings[:clusters]&.any?
             log.info "Legion::Crypt connecting #{vault_settings[:clusters].size} Vault cluster(s)"
             connect_all_clusters
-            start_token_renewers
           else
             log.info 'Legion::Crypt connecting primary Vault client' unless settings[:vault][:token].nil?
             connect_vault unless settings[:vault][:token].nil?
           end
+          start_token_renewers
           start_lease_manager
           start_svid_rotation
           @started = true
           log.info 'Legion::Crypt startup completed'
+        end
+      end
+
+      def vault_auth_generation
+        lifecycle_mutex.synchronize do
+          raise 'Crypt is shutting down; login must be retried' if @stopping
+
+          @token_generation || 0
+        end
+      end
+
+      def install_vault_grant(client:, config:, grant:, auth_method:, generation:)
+        issued_at = Time.now
+        lifecycle_mutex.synchronize do
+          raise 'Crypt stopped during login; login must be retried' if @stopping || generation != (@token_generation || 0)
+
+          cluster_name = clusters.find { |_name, candidate| candidate.equal?(config) }&.first
+          previous = (@token_renewers || []).find { |worker| worker.cluster_name == cluster_name }
+          previous&.stop
+          raise 'Previous token worker has not stopped; login must be retried' if previous&.running?
+
+          publish_vault_grant(client: client, config: config, grant: grant, auth_method: auth_method, issued_at: issued_at)
+          start_token_renewer(cluster_name: cluster_name, config: config, vault_client: client)
         end
       end
 
@@ -310,8 +333,9 @@ module Legion
 
       def start_token_renewers
         started = 0
-        clusters.each do |name, config|
-          next unless %w[kerberos ldap].include?(config[:auth_method].to_s) && config[:connected]
+        configurations = clusters.empty? ? { nil => vault_settings } : clusters
+        configurations.each do |name, config|
+          next unless %w[kerberos ldap jwt].include?(config[:auth_method].to_s) && config[:connected]
 
           start_token_renewer(cluster_name: name, config: config, vault_client: vault_client(name))
           started += 1

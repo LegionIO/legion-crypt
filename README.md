@@ -227,6 +227,8 @@ LDAP login starts token maintenance immediately, including after `Crypt.start`. 
 
 Repeated login stops the previous token worker before installing its replacement, and shutdown stops all token workers. With clusters configured, unavailable or expired clusters cannot fall back to the legacy global Vault client.
 
+JWT and Kerberos `login!` use the same grant lifecycle: token, TTL, expiry, renewability and authentication strategy replace the previous state together. Existing token workers stop before publication and replacement workers use the new grant's lifetime. JWT tokens renew without Kerberos fallback; a login result completing after shutdown is rejected.
+
 ## Kerberos Authentication
 
 When `crypt.vault.auth_method` is set to `kerberos`, `Crypt.start` performs Kerberos auto-auth to Vault using `KerberosAuth`:

@@ -27,7 +27,7 @@ RSpec.describe Legion::Crypt::VaultKerberosAuth do
   end
 
   after do
-    Legion::Crypt.clear_vault_clients
+    Legion::Crypt.shutdown
     Legion::Settings[:crypt][:vault] = @original_vault
   end
 
@@ -97,6 +97,7 @@ RSpec.describe Legion::Crypt::VaultKerberosAuth do
   describe '.login!' do
     before do
       stubs.put('/v1/auth/kerberos/login') { [200, {}, auth_body] }
+      stubs.put('/v1/auth/token/revoke-self') { [204, {}, nil] }
     end
 
     it 'keeps the new token in config and on the selected cached client for subsequent requests' do
@@ -114,7 +115,8 @@ RSpec.describe Legion::Crypt::VaultKerberosAuth do
     end
 
     it 'updates the selected cluster without overwriting unrelated tokens' do
-      selected = { protocol: 'http', address: 'vault.example', port: 8200, token: 'cluster-old', namespace: 'team' }
+      selected = { protocol: 'http', address: 'vault.example', port: 8200, token: 'cluster-old', namespace: 'team',
+                   lease_duration: 1, renewable: false, expires_at: Time.now + 1, relogin_required: true }
       config[:clusters] = { primary: selected, secondary: selected.merge(token: 'other-token') }
       config[:default] = :primary
       client = Legion::Crypt.vault_client
@@ -126,6 +128,9 @@ RSpec.describe Legion::Crypt::VaultKerberosAuth do
       expect(config[:clusters][:secondary][:token]).to eq('other-token')
       expect(Legion::Crypt.vault_client).to equal(client)
       expect(client.token).to eq(vault_token)
+      expect(selected[:expires_at]).to be > Time.now + 3500
+      expect(selected[:renewable]).to be(true)
+      expect(Legion::Crypt.connected_clusters).to have_key(:primary)
     end
 
     it 'does not replace credentials when authentication fails' do

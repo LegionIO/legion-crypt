@@ -104,7 +104,7 @@ module Legion
         end
       rescue StandardError => e
         @state_mutex.synchronize do
-          if active_generation?(generation: generation) && @config[:auth_method].to_s == 'ldap'
+          if active_generation?(generation: generation) && @config[:auth_method].to_s != 'kerberos'
             @renewal_terminal = e.is_a?(Legion::Crypt::Vault::HTTPClientError) && ![408, 429].include?(e.code)
             if @renewal_terminal || (@expires_at && @expires_at <= Time.now)
               @config[:connected] = false
@@ -144,14 +144,8 @@ module Legion
           @state_mutex.synchronize do
             return false unless active_generation?(generation: generation)
 
-            Legion::Crypt.publish_vault_token(client: @vault_client, config: @config, token: result[:token])
-            @config[:lease_duration] = result[:lease_duration]
-            @config[:renewable]      = result[:renewable]
-            @config[:connected]      = true
-            ttl = result[:lease_duration].to_f
-            @expires_at = ttl.positive? ? Time.now + ttl : nil
-            @config[:expires_at] = @expires_at
-            @config[:relogin_required] = false
+            Legion::Crypt.publish_vault_grant(client: @vault_client, config: @config, grant: result, auth_method: 'kerberos')
+            @expires_at = @config[:expires_at]
           end
           log.info("TokenRenewer[#{@cluster_name}]: re-authenticated via Kerberos, ttl=#{result[:lease_duration]}s")
         end

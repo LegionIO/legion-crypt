@@ -36,7 +36,10 @@ module Legion
         end
       end
 
-      def publish_vault_token(client:, config:, token:)
+      def publish_vault_grant(client:, config:, grant:, auth_method:, issued_at: Time.now)
+        token = grant.fetch(:token)
+        ttl = grant[:lease_duration].to_f
+        expires_at = issued_at + ttl if ttl.positive?
         vault_clients_mutex.synchronize do
           pair = @vault_clients&.find { |_name, entry| entry[:client].equal?(client) }
           raise IOError, 'Vault client replaced during authentication' if @retired_vault_clients&.key?(client)
@@ -49,7 +52,9 @@ module Legion
             end
           end
           client.token = token
-          config[:token] = token
+          connected = expires_at.nil? || expires_at > Time.now
+          config.merge!(token: token, lease_duration: grant[:lease_duration], renewable: grant[:renewable],
+                        expires_at: expires_at, connected: connected, relogin_required: !connected, auth_method: auth_method)
           entry[:signature][:token] = token&.dup&.freeze if entry
         end
       end
@@ -81,10 +86,12 @@ module Legion
       end
 
       def connected_clusters
-        now = Time.now
-        clusters.select do |_, config|
-          config[:token] && config[:connected] && !config[:relogin_required] &&
-            (!config[:expires_at] || config[:expires_at] > now)
+        vault_clients_mutex.synchronize do
+          now = Time.now
+          clusters.select do |_, config|
+            config[:token] && config[:connected] && !config[:relogin_required] &&
+              (!config[:expires_at] || config[:expires_at] > now)
+          end
         end
       end
 
@@ -251,13 +258,7 @@ module Legion
           auth_path:         auth_path
         )
 
-        publish_vault_token(client: client, config: config, token: result[:token])
-        config[:lease_duration] = result[:lease_duration]
-        config[:renewable] = result[:renewable]
-        config[:connected] = true
-        ttl = result[:lease_duration].to_f
-        config[:expires_at] = ttl.positive? ? Time.now + ttl : nil
-        config[:relogin_required] = false
+        publish_vault_grant(client: client, config: config, grant: result, auth_method: 'kerberos')
         log_vault_debug("connect_kerberos_cluster[#{name}]: policies=#{result[:policies].inspect}")
         log_cluster_connected(name, config)
         true

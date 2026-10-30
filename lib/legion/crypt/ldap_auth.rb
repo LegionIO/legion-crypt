@@ -10,41 +10,20 @@ module Legion
 
       def ldap_login(cluster_name:, username:, password:)
         cluster_name = cluster_name.to_sym
-        generation = lifecycle_mutex.synchronize do
-          raise 'Crypt is shutting down; LDAP login must be retried' if @stopping
-
-          @token_generation || 0
-        end
+        generation = vault_auth_generation
+        config = clusters.fetch(cluster_name)
         log.info "LDAP login requested user=#{username} cluster=#{cluster_name}"
         client = vault_client(cluster_name)
         secret = Legion::Crypt::VaultOperation.with_timeout do
           client.logical.write(path: "auth/ldap/login/#{username}", data: { password: password })
         end
         auth = secret.auth
-        token = auth.client_token
 
-        ttl = auth.lease_duration.to_f
-        expires_at = ttl.positive? ? Time.now + ttl : nil
-        lifecycle_mutex.synchronize do
-          raise 'Crypt stopped during LDAP login; login must be retried' if @stopping || generation != (@token_generation || 0)
-
-          previous = (@token_renewers || []).find { |worker| worker.cluster_name == cluster_name }
-          previous&.stop
-          raise 'Previous LDAP token worker has not stopped; login must be retried' if previous&.running?
-
-          config = clusters.fetch(cluster_name)
-          publish_vault_token(client: client, config: config, token: token)
-          config[:lease_duration] = auth.lease_duration
-          config[:renewable] = auth.renewable?
-          config[:expires_at] = expires_at
-          config[:connected] = expires_at.nil? || expires_at > Time.now
-          config[:relogin_required] = !config[:connected]
-          start_token_renewer(cluster_name: cluster_name, config: config, vault_client: client)
-        end
+        grant = { token: auth.client_token, lease_duration: auth.lease_duration, renewable: auth.renewable?, policies: auth.policies }
+        install_vault_grant(client: client, config: config, grant: grant, auth_method: 'ldap', generation: generation)
 
         log.info "LDAP login success: user=#{username}, cluster=#{cluster_name}"
-        { token: token, lease_duration: auth.lease_duration,
-          renewable: auth.renewable?, policies: auth.policies }
+        grant
       rescue StandardError => e
         log.error "LDAP login failed: user=#{username}, cluster=#{cluster_name}, error=#{e.class}"
         raise

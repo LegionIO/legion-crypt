@@ -253,7 +253,7 @@ RSpec.describe Legion::Crypt do
       allow(logical).to receive(:write) do
         entered << true
         release.pop
-        double('Secret', auth: double('Auth', client_token: 'late', lease_duration: 60, renewable?: true))
+        double('Secret', auth: double('Auth', client_token: 'late', lease_duration: 60, renewable?: true, policies: []))
       end
       described_class.start
       operation = Thread.new do

@@ -38,10 +38,11 @@ module Legion
       end
 
       def self.login!(spnego_token:, auth_path: DEFAULT_AUTH_PATH)
+        generation = Legion::Crypt.vault_auth_generation
         client = Legion::Crypt.vault_client
         config = Legion::Crypt.cluster || Legion::Settings[:crypt][:vault]
         result = login(spnego_token: spnego_token, auth_path: auth_path)
-        Legion::Crypt.publish_vault_token(client: client, config: config, token: result[:token])
+        Legion::Crypt.install_vault_grant(client: client, config: config, grant: result, auth_method: 'kerberos', generation: generation)
         log.info "[crypt:vault_kerberos] authenticated via Kerberos auth, policies=#{result[:policies].join(',')}"
         result
       end
