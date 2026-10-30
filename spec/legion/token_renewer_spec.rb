@@ -12,7 +12,7 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
     }
   end
-  let(:vault_client) { Vault::Client.new(address: 'https://vault.example.com', token: 'hvs.initial-token') }
+  let(:vault_client) { Legion::Crypt::VaultClient.new(address: 'https://vault.example.com', token: 'hvs.initial-token') }
   let(:auth_token) { double('AuthToken') }
   let(:renew_result) do
     double('RenewResult', auth: double('Auth', lease_duration: 200, client_token: 'hvs.renewed', renewable?: false))

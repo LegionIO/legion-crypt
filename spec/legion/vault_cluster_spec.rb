@@ -182,12 +182,12 @@ RSpec.describe Legion::Crypt::VaultCluster do
   end
 
   describe '#connect_all_clusters' do
-    let(:mock_alpha_client) { instance_double(Vault::Client) }
-    let(:mock_sys) { instance_double(Vault::Sys) }
+    let(:mock_alpha_client) { instance_double(Legion::Crypt::VaultClient) }
+    let(:mock_sys) { instance_double(Legion::Crypt::VaultClient::Sys) }
     let(:mock_health) { double('health', initialized?: true) }
 
     before do
-      allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
+      allow(Legion::Crypt::VaultClient).to receive(:new).and_return(mock_alpha_client)
       allow(mock_alpha_client).to receive(:namespace=)
       allow(mock_alpha_client).to receive(:sys).and_return(mock_sys)
       allow(mock_sys).to receive(:health_status).and_return(mock_health)
@@ -224,7 +224,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
         allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(
           { token: 'hvs.krb-token', lease_duration: 3600, renewable: true, policies: [], metadata: {} }
         )
-        allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
+        allow(Legion::Crypt::VaultClient).to receive(:new).and_return(mock_alpha_client)
         allow(mock_alpha_client).to receive(:namespace=)
         allow(mock_alpha_client).to receive(:token=)
 
@@ -238,7 +238,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
         allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(
           { token: 'hvs.krb-token', lease_duration: 3600, renewable: true, policies: [], metadata: {} }
         )
-        allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
+        allow(Legion::Crypt::VaultClient).to receive(:new).and_return(mock_alpha_client)
         allow(mock_alpha_client).to receive(:namespace=)
         expect(mock_alpha_client).to receive(:token=).with('hvs.krb-token')
 
@@ -248,7 +248,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
       it 'handles KerberosAuth failure gracefully' do
         allow(Legion::Crypt::KerberosAuth).to receive(:login)
           .and_raise(Legion::Crypt::KerberosAuth::AuthError, 'no TGT')
-        allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
+        allow(Legion::Crypt::VaultClient).to receive(:new).and_return(mock_alpha_client)
         allow(mock_alpha_client).to receive(:namespace=)
 
         results = test_object.connect_all_clusters
@@ -259,7 +259,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
       it 'handles missing lex-kerberos gem gracefully' do
         allow(Legion::Crypt::KerberosAuth).to receive(:login)
           .and_raise(Legion::Crypt::KerberosAuth::GemMissingError, 'lex-kerberos required')
-        allow(Vault::Client).to receive(:new).and_return(mock_alpha_client)
+        allow(Legion::Crypt::VaultClient).to receive(:new).and_return(mock_alpha_client)
         allow(mock_alpha_client).to receive(:namespace=)
 
         results = test_object.connect_all_clusters
@@ -314,11 +314,11 @@ RSpec.describe Legion::Crypt::VaultCluster do
       vault_hash = { connected: false }
       crypt_hash = { vault: vault_hash }
 
-      mock_client  = instance_double(Vault::Client)
-      mock_sys     = instance_double(Vault::Sys)
+      mock_client  = instance_double(Legion::Crypt::VaultClient)
+      mock_sys     = instance_double(Legion::Crypt::VaultClient::Sys)
       mock_health  = double('health', initialized?: true)
 
-      allow(Vault::Client).to receive(:new).and_return(mock_client)
+      allow(Legion::Crypt::VaultClient).to receive(:new).and_return(mock_client)
       allow(mock_client).to receive(:namespace=)
       allow(mock_client).to receive(:sys).and_return(mock_sys)
       allow(mock_sys).to receive(:health_status).and_return(mock_health)

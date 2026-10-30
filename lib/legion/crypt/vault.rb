@@ -2,8 +2,7 @@
 
 require 'legion/logging/helper'
 require 'legion/crypt/vault_operation'
-require 'uri'
-require 'vault'
+require 'legion/crypt/vault_client'
 
 module Legion
   module Crypt
@@ -19,33 +18,28 @@ module Legion
       def connect_vault
         return unless start_session_tracking
 
-        vault_settings = Legion::Settings[:crypt][:vault]
-        ::Vault.address = resolve_vault_address(vault_settings)
-        ::Vault.ssl_verify = resolve_ssl_verify(vault_settings[:tls])
-        namespace = vault_settings[:vault_namespace]
-        log.info "Vault connection requested address=#{::Vault.address} namespace=#{namespace || 'none'} ssl_verify=#{::Vault.ssl_verify}"
+        configuration = Legion::Settings[:crypt][:vault]
+        configuration[:token] = ENV['VAULT_DEV_ROOT_TOKEN_ID'] if ENV.key? 'VAULT_DEV_ROOT_TOKEN_ID'
+        return nil if configuration[:token].nil?
 
-        Legion::Settings[:crypt][:vault][:token] = ENV['VAULT_DEV_ROOT_TOKEN_ID'] if ENV.key? 'VAULT_DEV_ROOT_TOKEN_ID'
-        return nil if Legion::Settings[:crypt][:vault][:token].nil?
-
-        ::Vault.token = Legion::Settings[:crypt][:vault][:token]
-        ::Vault.namespace = namespace if namespace
+        client = vault_client
+        log.info "Vault connection requested address=#{client.address} namespace=#{client.namespace || 'none'} ssl_verify=#{client.ssl_verify}"
         if vault_healthy?
-          Legion::Settings[:crypt][:vault][:connected] = true
-          log.info "Vault connected at #{::Vault.address} (namespace=#{namespace || 'none'})"
+          configuration[:connected] = true
+          log.info "Vault connected at #{client.address} (namespace=#{client.namespace || 'none'})"
         end
       rescue StandardError => e
-        log_vault_connection_error(e)
+        handle_exception(e, level: :error, operation: 'crypt.vault.connect_vault')
         Legion::Settings[:crypt][:vault][:connected] = false
         false
       end
 
       def vault_healthy?
-        ::Vault.sys.health_status.initialized?
-      rescue ::Vault::HTTPError => e
+        vault_client.sys.health_status.initialized?
+      rescue Legion::Crypt::Vault::HTTPError => e
         # 429 = standby, 472 = DR secondary, 473 = performance standby
         # All indicate an initialized, healthy Vault — just not the active node.
-        return true if e.message =~ /\b(429|472|473)\b/
+        return true if [429, 472, 473].include?(e.code)
 
         raise
       end
@@ -53,7 +47,7 @@ module Legion
       def read(path, type = nil, cluster_name: nil)
         full_path = type.nil? || type.empty? ? path : "#{type}/#{path}"
         log_read_context(full_path, cluster_name: cluster_name)
-        lease = logical_client(cluster_name: cluster_name).read(full_path)
+        lease = logical_client(cluster_name: cluster_name).read(path: full_path)
         if lease.nil?
           log_vault_debug("Vault read: #{full_path} returned nil")
           return nil
@@ -70,7 +64,7 @@ module Legion
 
       def get(path, cluster_name: nil)
         log.debug "Vault kv get: path=#{path}"
-        result = kv_client(cluster_name: cluster_name).read(path)
+        result = kv_client(cluster_name: cluster_name).read(path: path)
         if result.nil?
           log.debug "Vault kv get: #{path} returned nil"
           return nil
@@ -85,7 +79,7 @@ module Legion
 
       def write(path, cluster_name: nil, **hash)
         log.info "Vault kv write requested path=#{path}"
-        kv_client(cluster_name: cluster_name).write(path, **hash)
+        kv_client(cluster_name: cluster_name).write(path: path, data: hash)
         log.info "Vault kv write complete path=#{path}"
       rescue StandardError => e
         handle_exception(e, level: :error, operation: 'crypt.vault.write', path: path)
@@ -93,7 +87,7 @@ module Legion
       end
 
       def delete(path, cluster_name: nil)
-        logical_client(cluster_name: cluster_name).delete(path)
+        logical_client(cluster_name: cluster_name).delete(path: path)
         log.info "Vault delete complete path=#{path}"
         { success: true, path: path }
       rescue StandardError => e
@@ -102,7 +96,7 @@ module Legion
       end
 
       def exist?(path, cluster_name: nil)
-        !kv_client(cluster_name: cluster_name).read_metadata(path).nil?
+        !kv_client(cluster_name: cluster_name).read_metadata(path: path).nil?
       end
 
       def start_session_tracking
@@ -161,11 +155,11 @@ module Legion
       end
 
       def close_session(session:)
-        ::Vault.sys.revoke(session)
+        vault_client.sys.revoke(lease_id: session)
       end
 
       def renew_session(session:)
-        ::Vault.sys.renew(session)
+        vault_client.sys.renew(lease_id: session)
       end
 
       def renew_sessions(**_opts)
@@ -208,7 +202,7 @@ module Legion
       end
 
       def vault_exists?(name)
-        ::Vault.sys.mounts.key?(name.to_sym)
+        vault_client.sys.mounts.key?(name.to_sym)
       end
 
       private
@@ -230,11 +224,11 @@ module Legion
       def kv_client(cluster_name: nil)
         mount = Legion::Settings[:crypt][:vault][:kv_path]
         if respond_to?(:connected_clusters) && (clusters.any? || connected_clusters.any?)
-          connected_vault_client(cluster_name).kv(mount)
+          connected_vault_client(cluster_name).kv(mount: mount)
         else
           raise ArgumentError, "Vault cluster not connected: #{cluster_name}" if cluster_name
 
-          ::Vault.kv(mount)
+          vault_client.kv(mount: mount)
         end
       end
 
@@ -244,7 +238,7 @@ module Legion
         else
           raise ArgumentError, "Vault cluster not connected: #{cluster_name}" if cluster_name
 
-          ::Vault.logical
+          vault_client.logical
         end
       end
 
@@ -253,7 +247,7 @@ module Legion
                       client = connected_vault_client(cluster_name)
                       client.respond_to?(:namespace) ? client.namespace : 'n/a'
                     else
-                      'n/a (global client)'
+                      vault_client.namespace
                     end
         log.debug "Vault read: path=#{full_path}, namespace=#{namespace}"
       end
@@ -270,32 +264,6 @@ module Legion
 
         log_vault_debug("Vault read: #{full_path} detected KV v2 envelope, unwrapping :data key")
         data[:data]
-      end
-
-      def resolve_ssl_verify(tls_config)
-        return true if tls_config.nil?
-
-        verify = tls_config[:verify]&.to_s
-        verify != 'none'
-      end
-
-      def resolve_vault_address(vault_settings)
-        protocol = vault_settings[:protocol] || 'http'
-        address  = vault_settings[:address] || 'localhost'
-        port     = vault_settings[:port] || 8200
-
-        if address.match?(%r{\Ahttps?://})
-          uri = URI.parse(address)
-          protocol = uri.scheme
-          address  = uri.host
-          port     = uri.port if vault_settings[:port].nil?
-        end
-
-        "#{protocol}://#{address}:#{port}"
-      end
-
-      def log_vault_connection_error(error)
-        handle_exception(error, level: :error, operation: 'crypt.vault.connect_vault', address: ::Vault.address)
       end
 
       def log_vault_debug(message)

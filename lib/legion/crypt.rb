@@ -11,6 +11,7 @@ require 'legion/crypt/vault_jwt_auth'
 require 'legion/crypt/lease_manager'
 require 'legion/crypt/vault_operation'
 require 'legion/crypt/vault_cluster'
+require 'legion/crypt/vault'
 require 'legion/crypt/ldap_auth'
 require 'legion/crypt/token_renewer'
 require 'legion/crypt/helper'
@@ -38,10 +39,7 @@ module Legion
       include Legion::Logging::Helper
       include Legion::Crypt::Cipher
 
-      unless Gem::Specification.find_by_name('vault').nil?
-        require 'legion/crypt/vault'
-        include Legion::Crypt::Vault
-      end
+      include Legion::Crypt::Vault
 
       def vault_settings
         Legion::Settings[:crypt][:vault]
@@ -121,7 +119,7 @@ module Legion
 
         Legion::Settings.merge_settings('transport', Legion::Transport::Settings.default) if defined?(Legion::Transport::Settings)
 
-        response = LeaseManager.instance.vault_logical.read('rabbitmq/creds/legionio-bootstrap')
+        response = LeaseManager.instance.vault_logical.read(path: 'rabbitmq/creds/legionio-bootstrap')
         return unless response&.data
 
         bootstrap_lease_ttl = Legion::Settings.dig(:crypt, :vault, :bootstrap_lease_ttl).to_i
@@ -157,7 +155,7 @@ module Legion
 
         role = RMQ_ROLE_MAP.fetch(mode, "legionio-#{mode}")
         manager = LeaseManager.instance
-        response = Legion::Crypt::VaultOperation.with_timeout { manager.vault_logical.read("rabbitmq/creds/#{role}") }
+        response = Legion::Crypt::VaultOperation.with_timeout { manager.vault_logical.read(path: "rabbitmq/creds/#{role}") }
         raise "Failed to fetch identity-scoped RMQ creds for role #{role}" unless response
 
         settings = Legion::Settings.loader.settings
@@ -184,7 +182,7 @@ module Legion
       def revoke_bootstrap_lease
         return unless @bootstrap_lease_id
 
-        LeaseManager.instance.vault_sys.revoke(@bootstrap_lease_id)
+        LeaseManager.instance.vault_sys.revoke(lease_id: @bootstrap_lease_id)
         log.info "Bootstrap RMQ lease revoked (#{@bootstrap_lease_id[0..7]}...)"
         @bootstrap_lease_id      = nil
         @bootstrap_lease_expires = nil

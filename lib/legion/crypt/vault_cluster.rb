@@ -1,17 +1,9 @@
 # frozen_string_literal: true
 
-# Ruby 4.0 freezes OpenSSL::SSL::SSLContext::DEFAULT_PARAMS by default.
-# The vault gem (0.18.x) mutates this hash in Vault.setup! — replace it
-# with a mutable dup so the require succeeds on Ruby 4.0+.
 require 'legion/logging/helper'
-require 'openssl'
-if OpenSSL::SSL::SSLContext::DEFAULT_PARAMS.frozen?
-  unfrozen = OpenSSL::SSL::SSLContext::DEFAULT_PARAMS.dup
-  OpenSSL::SSL::SSLContext.send(:remove_const, :DEFAULT_PARAMS)
-  OpenSSL::SSL::SSLContext.const_set(:DEFAULT_PARAMS, unfrozen)
-end
-
-require 'vault'
+require 'uri'
+require 'legion/crypt/vault_client'
+require 'legion/crypt/tls'
 require 'legion/crypt/vault_operation'
 
 module Legion
@@ -22,11 +14,12 @@ module Legion
       def vault_client(name = nil)
         name = resolve_cluster_name(name)
         client, previous = vault_clients_mutex.synchronize do
-          return if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
+          return @vault_clients&.dig(name, :client) if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
 
           @vault_clients ||= {}
           entry = @vault_clients[name]
-          signature = vault_client_signature(clusters[name])
+          config = name.nil? ? vault_settings : clusters[name]
+          signature = vault_client_signature(config)
           if current_vault_client?(entry, signature)
             entry[:signature][:token] = signature[:token]&.dup if entry[:signature][:token] != signature[:token]
             return entry[:client]
@@ -112,8 +105,8 @@ module Legion
 
       def cluster_healthy?(client)
         client.sys.health_status.initialized?
-      rescue ::Vault::HTTPError => e
-        return true if e.message =~ /\b(429|472|473)\b/
+      rescue Legion::Crypt::Vault::HTTPError => e
+        return true if [429, 472, 473].include?(e.code)
 
         handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.cluster_healthy')
         raise
@@ -159,8 +152,26 @@ module Legion
         entry[:signature][:token] == signature[:token] || entry[:client].token == signature[:token]
       end
 
+      def resolve_vault_address(vault_settings)
+        protocol = vault_settings[:protocol] || 'http'
+        address  = vault_settings[:address] || 'localhost'
+        port     = vault_settings[:port] || 8200
+
+        if address.match?(%r{\Ahttps?://})
+          uri = URI.parse(address)
+          protocol = uri.scheme
+          address  = uri.host
+          port     = uri.port if vault_settings[:port].nil?
+        end
+
+        "#{protocol}://#{address}:#{port}"
+      end
+
       def vault_client_signature(config)
         return unless config.is_a?(Hash)
+
+        tls = Legion::Crypt::TLS.migrate_legacy(config[:tls] || {})
+        verify = %w[none mutual].include?(tls[:verify].to_s) ? tls[:verify].to_s : 'peer'
 
         namespace =
           if config.key?(:namespace)
@@ -170,33 +181,27 @@ module Legion
             crypt_settings.respond_to?(:dig) ? crypt_settings.dig(:vault, :vault_namespace) : nil
           end
         {
-          address: "#{config[:protocol]}://#{config[:address]}:#{config[:port]}",
-          namespace: namespace, ssl_verify: resolve_cluster_ssl_verify(config[:tls]), token: config[:token]
+          address: resolve_vault_address(config), namespace: namespace, token: config[:token],
+          verify: verify, ca: tls[:ca], cert: tls[:cert], key: tls[:key],
+          timeout: vault_settings[:operation_timeout] || Legion::Crypt::VaultOperation::DEFAULT_TIMEOUT
         }
       end
 
       def build_vault_client(signature)
-        log.info "Building Vault client address=#{signature[:address]} namespace=#{signature[:namespace].inspect} ssl_verify=#{signature[:ssl_verify]}"
-        ::Vault::Client.new(**signature)
+        tls = Legion::Crypt::TLS.resolve(signature.slice(:verify, :ca, :cert, :key))
+        options = signature.slice(:address, :namespace, :token, :timeout).merge(tls: tls)
+        log.info "Building Vault client address=#{options[:address]} namespace=#{options[:namespace].inspect} tls_verify=#{tls[:verify]}"
+        Legion::Crypt::VaultClient.new(**options)
       end
 
       def retire_vault_client(client, deadline: nil)
         return unless client.respond_to?(:shutdown)
 
         Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) do
-          # vault-ruby shutdown requires a pool even when this client has not made a request.
-          client.pool if client.respond_to?(:pool)
           client.shutdown
         end
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.retire_vault_client')
-      end
-
-      def resolve_cluster_ssl_verify(tls_config)
-        return true if tls_config.nil?
-
-        verify = tls_config[:verify]&.to_s
-        verify != 'none'
       end
 
       def log_vault_error(name, error, operation: 'crypt.vault_cluster.error')

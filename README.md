@@ -114,7 +114,21 @@ Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh
 
 ### Vault Integration
 
-When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. The background `VaultRenewer` thread keeps the token alive. Vault is an optional runtime dependency — the Vault module is only included if the `vault` gem is available.
+When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. Vault requests use the core-owned `Legion::Crypt::VaultClient`, built on Faraday and `Legion::JSON`; neither vault-ruby nor a LEX extension is required. Responses have symbol keys, including with JSON 3.
+
+`Legion::Crypt.vault_client` returns the cached default client; pass a cluster name for an explicit client. Its logical, KV, and lease endpoints use keyword arguments:
+
+```ruby
+client = Legion::Crypt.vault_client
+lease = client.logical.read(path: 'database/creds/application')
+lease.data # symbol-keyed credentials
+client.sys.renew(lease_id: lease.lease_id)
+client.kv(mount: 'legion').write(path: 'application', data: { enabled: true })
+```
+
+The existing `Legion::Crypt.read`, `get`, `write`, and `delete` interfaces are unchanged. Logical reads preserve lease metadata; KV reads unwrap the KV v2 data envelope. Missing reads return `nil`, while HTTP failures raise `Legion::Crypt::Vault::HTTPClientError` (4xx), `HTTPServerError` (5xx), or their `HTTPError` base class with a numeric `code`. Redirects are not followed.
+
+Standalone clients accept `address:`, `token:`, `namespace:`, `timeout:`, and `tls:`. TLS uses the existing `verify: 'peer'`, `'none'`, or `'mutual'` configuration with `ca:`, `cert:`, and `key:` material. CA, certificate, and key values can be PEM or file paths; client identities also accept OpenSSL objects. `shutdown` permanently retires a client, including retained endpoint handles.
 
 Lease acquisition, renewal, reissue, token maintenance, and session revocation use the finite-positive `crypt.vault.operation_timeout` budget (default: 5 seconds). Failures are isolated per item. Shutdown shares a 10-second deadline, invalidates worker generations before external cleanup, and resets lifecycle state even when revocation fails. Late callbacks cannot restore credentials or settings after their lifecycle stops.
 
@@ -232,7 +246,7 @@ When `crypt.vault.auth_method` is set to `kerberos`, `Crypt.start` performs Kerb
 }
 ```
 
-The SPNEGO token is sent as an HTTP `Authorization` header (not JSON body). The Vault namespace is cleared before auth (Kerberos mount is at root) and restored after. Requires Homebrew MIT Kerberos (`brew install krb5`) on macOS — the system Heimdal library is not compatible.
+The SPNEGO token is sent as an HTTP `Authorization` header (not JSON body). Kerberos auth uses the configured namespace, where the auth mount resides; configure the cluster with `"namespace": null` for a root-mounted auth method. The client namespace is not cleared or temporarily changed during authentication. Requires Homebrew MIT Kerberos (`brew install krb5`) on macOS — the system Heimdal library is not compatible.
 
 `TokenRenewer` keeps the Vault token alive: renews at 75% TTL, re-auths via Kerberos if renewal fails, uses exponential backoff.
 
@@ -253,7 +267,8 @@ Responses may split the gRPC prefix or body across HTTP/2 DATA frames and socket
 - Ruby >= 3.4
 - `ed25519` (~> 1.3)
 - `jwt` gem (>= 2.7)
-- `vault` gem (>= 0.17, optional)
+- `faraday` gem (~> 2.0)
+- `legion-json` gem (>= 1.2.0; JSON 3 supported)
 - HashiCorp Vault (optional, for secrets management)
 - `gssapi` gem (optional, required for Kerberos auth)
 

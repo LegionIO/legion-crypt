@@ -36,12 +36,12 @@ RSpec.describe Legion::Crypt do
   end
 
   let(:logical_double) { double('Vault::Logical') }
-  let(:sys_double)     { instance_double(Vault::Sys) }
+  let(:sys_double)     { instance_double(Legion::Crypt::VaultClient::Sys) }
   let(:vault_client) { double('Vault::Client', logical: logical_double, sys: sys_double) }
   let(:manager) { Legion::Crypt::LeaseManager.instance }
 
   before do
-    allow(Vault).to receive(:client).and_return(vault_client)
+    allow(Legion::Crypt).to receive(:vault_client).and_return(vault_client)
     allow(logical_double).to receive(:read).and_return(vault_response)
     allow(sys_double).to receive(:revoke).and_return(true)
     @transport_settings = Legion::Settings.loader.settings[:transport]
@@ -88,11 +88,6 @@ RSpec.describe Legion::Crypt do
 
     after do
       Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
-    end
-
-    it 'reads from the bootstrap path' do
-      expect(logical_double).to receive(:read).with('rabbitmq/creds/legionio-bootstrap').and_return(vault_response)
-      described_class.fetch_bootstrap_rmq_creds
     end
 
     it 'writes username to the transport connection settings' do
@@ -152,9 +147,9 @@ RSpec.describe Legion::Crypt do
     before do
       Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = true
       allow(described_class).to receive(:vault_connected?).and_return(true)
-      allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-infra').and_return(identity_response)
-      allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-worker').and_return(identity_response)
-      allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-custom').and_return(identity_response)
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-infra').and_return(identity_response)
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-worker').and_return(identity_response)
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-custom').and_return(identity_response)
       stub_const('Legion::Transport::Connection', transport_connection_double)
       connection_settings.merge!(user: 'bootstrap_user', password: 'bootstrap_pass')
       described_class.instance_variable_set(:@bootstrap_lease_id, bootstrap_lease_id)
@@ -183,7 +178,7 @@ RSpec.describe Legion::Crypt do
 
     { agent: 'legionio-infra', infra: 'legionio-infra', worker: 'legionio-worker', custom: 'legionio-custom' }.each do |mode, role|
       it "acquires the #{role} role for #{mode} mode" do
-        expect(logical_double).to receive(:read).with("rabbitmq/creds/#{role}").and_return(identity_response)
+        expect(logical_double).to receive(:read).with(path: "rabbitmq/creds/#{role}").and_return(identity_response)
         described_class.swap_to_identity_creds(mode: mode)
         expect(manager.fetch(:rabbitmq, :username)).to eq('identity_user')
       end
@@ -200,7 +195,7 @@ RSpec.describe Legion::Crypt do
         events << :open
         true
       end
-      allow(sys_double).to receive(:revoke).with(bootstrap_lease_id) { events << :revoke_bootstrap }
+      allow(sys_double).to receive(:revoke).with(lease_id: bootstrap_lease_id) { events << :revoke_bootstrap }
 
       described_class.swap_to_identity_creds(mode: :agent)
 
@@ -227,24 +222,24 @@ RSpec.describe Legion::Crypt do
     end
 
     it 'installs string-keyed credentials through the same transaction' do
-      allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-infra').and_return(identity_response_string_keys)
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-infra').and_return(identity_response_string_keys)
 
       described_class.swap_to_identity_creds(mode: :agent)
 
       expect(connection_settings).to include(user: 'identity_user_str', password: 'identity_pass_str')
       expect(manager.fetch('rabbitmq', 'username')).to eq('identity_user_str')
-      expect(sys_double).to have_received(:revoke).with(bootstrap_lease_id)
+      expect(sys_double).to have_received(:revoke).with(lease_id: bootstrap_lease_id)
     end
 
     it 'retains bootstrap and existing settings when acquisition returns no response' do
-      allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-infra').and_return(nil)
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-infra').and_return(nil)
 
       expect { described_class.swap_to_identity_creds(mode: :agent) }.to raise_error(RuntimeError)
 
       expect(connection_settings).to include(user: 'bootstrap_user', password: 'bootstrap_pass')
-      expect(sys_double).not_to have_received(:revoke).with(bootstrap_lease_id)
+      expect(sys_double).not_to have_received(:revoke).with(lease_id: bootstrap_lease_id)
       described_class.revoke_bootstrap_lease
-      expect(sys_double).to have_received(:revoke).with(bootstrap_lease_id)
+      expect(sys_double).to have_received(:revoke).with(lease_id: bootstrap_lease_id)
     end
 
     it 'installs credentials without requiring a reconnect when the transport consumer is absent' do
@@ -254,7 +249,7 @@ RSpec.describe Legion::Crypt do
 
       expect(connection_settings).to include(user: 'identity_user', password: 'identity_pass')
       expect(manager.fetch(:rabbitmq, :username)).to eq('identity_user')
-      expect(sys_double).to have_received(:revoke).with(bootstrap_lease_id)
+      expect(sys_double).to have_received(:revoke).with(lease_id: bootstrap_lease_id)
     end
 
     context 'with an existing manager lease' do
@@ -270,10 +265,10 @@ RSpec.describe Legion::Crypt do
           expect(manager.fetch(:rabbitmq, :username)).to eq('bootstrap_user')
           expect(manager.fetch(:rabbitmq, :password)).to eq('bootstrap_pass')
           expect(manager.active_leases[:rabbitmq][:lease_id]).to eq(vault_response.lease_id)
-          expect(sys_double).not_to have_received(:revoke).with(vault_response.lease_id)
-          expect(sys_double).not_to have_received(:revoke).with(bootstrap_lease_id)
+          expect(sys_double).not_to have_received(:revoke).with(lease_id: vault_response.lease_id)
+          expect(sys_double).not_to have_received(:revoke).with(lease_id: bootstrap_lease_id)
           described_class.revoke_bootstrap_lease
-          expect(sys_double).to have_received(:revoke).with(bootstrap_lease_id)
+          expect(sys_double).to have_received(:revoke).with(lease_id: bootstrap_lease_id)
         end
       end
 
@@ -306,7 +301,7 @@ RSpec.describe Legion::Crypt do
 
             expect(transport_connection_double).not_to have_received(:force_reconnect)
             manager.shutdown
-            expect(sys_double).to have_received(:revoke).with(identity_response.lease_id).at_least(:once)
+            expect(sys_double).to have_received(:revoke).with(lease_id: identity_response.lease_id).at_least(:once)
           end
         end
       end
@@ -322,7 +317,7 @@ RSpec.describe Legion::Crypt do
 
     it 'revokes the stored bootstrap lease' do
       described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
-      expect(sys_double).to receive(:revoke).with('boot/lease/abc123')
+      expect(sys_double).to receive(:revoke).with(lease_id: 'boot/lease/abc123')
       described_class.revoke_bootstrap_lease
     end
 

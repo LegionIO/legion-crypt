@@ -84,16 +84,16 @@ RSpec.describe Legion::Crypt do
       let(:logical) { double('logical') }
 
       before do
-        allow(Vault).to receive(:logical).and_return(logical)
+        allow(described_class).to receive(:vault_client).and_return(double('core Vault client', logical: logical, namespace: nil))
         allow(logical).to receive(:delete).and_return(true)
       end
 
       it 'removes a previously readable Vault secret' do
         path = 'secret/data/legion/workers/w-1/entra'
         store = { path => { token: 'secret' } }
-        allow(logical).to receive(:delete) { |key| store.delete(key) }
-        allow(logical).to receive(:read) do |key|
-          double('Secret', data: store[key], lease_id: nil) if store.key?(key)
+        allow(logical).to receive(:delete) { |path:| store.delete(path) }
+        allow(logical).to receive(:read) do |path:|
+          double('Secret', data: store[path], lease_id: nil) if store.key?(path)
         end
         expect(described_class.read(path)).to eq(token: 'secret')
         expect(described_class.delete(path)).to include(success: true)
@@ -103,7 +103,7 @@ RSpec.describe Legion::Crypt do
 
     context 'when Vault is not available' do
       before do
-        allow(Vault).to receive(:logical).and_raise(StandardError, 'not connected')
+        allow(described_class).to receive(:vault_client).and_raise(StandardError, 'not connected')
       end
 
       it 'returns failure without raising' do
@@ -162,7 +162,7 @@ RSpec.describe Legion::Crypt do
 
     it 'prefers the connected cluster client over the top-level vault flag' do
       leases = { 'test' => { 'path' => 'secret/test' } }
-      secondary_client = instance_double(Vault::Client)
+      secondary_client = instance_double(Legion::Crypt::VaultClient)
       settings_override = Legion::Settings[:crypt].merge(
         vault: Legion::Settings[:crypt][:vault].merge(leases: leases, connected: true)
       )
@@ -184,7 +184,7 @@ RSpec.describe Legion::Crypt do
       { protocol: 'https', address: 'vault.example.com', port: 8200, auth_method: 'ldap', connected: false }
     end
     let(:client) { described_class.vault_client(:primary) }
-    let(:logical) { instance_double(Vault::Logical) }
+    let(:logical) { instance_double(Legion::Crypt::VaultClient::Logical) }
     let(:auth_token) { double('AuthToken', revoke_self: nil) }
 
     before do
@@ -292,11 +292,11 @@ RSpec.describe Legion::Crypt do
       cancelled = []
       stopped = []
       sys = double('Vault sys')
-      allow(Vault).to receive(:sys).and_return(sys)
-      allow(sys).to receive(:revoke) do |session|
-        raise 'revoke unavailable' if session == 'broken'
+      allow(described_class).to receive(:vault_client).and_return(double('core Vault client', sys: sys))
+      allow(sys).to receive(:revoke) do |lease_id:|
+        raise 'revoke unavailable' if lease_id == 'broken'
 
-        revoked << session
+        revoked << lease_id
       end
       renewer = double('legacy renewer')
       rotation = double('SVID rotation')

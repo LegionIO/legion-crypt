@@ -18,7 +18,7 @@ module Legion
         log.info "LDAP login requested user=#{username} cluster=#{cluster_name}"
         client = vault_client(cluster_name)
         secret = Legion::Crypt::VaultOperation.with_timeout do
-          client.logical.write("auth/ldap/login/#{username}", password: password)
+          client.logical.write(path: "auth/ldap/login/#{username}", data: { password: password })
         end
         auth = secret.auth
         token = auth.client_token

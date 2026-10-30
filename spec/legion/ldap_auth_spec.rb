@@ -9,7 +9,7 @@ RSpec.describe Legion::Crypt::LdapAuth do
   let(:cluster_one) { { protocol: 'https', address: 'vault-one.example.com', port: 8200, auth_method: 'ldap', connected: false } }
   let(:cluster_two) { { protocol: 'https', address: 'vault-two.example.com', port: 8200, auth_method: 'ldap', connected: false } }
   let(:client) { crypt.vault_client(:one) }
-  let(:logical) { instance_double(Vault::Logical) }
+  let(:logical) { instance_double(Legion::Crypt::VaultClient::Logical) }
   let(:auth_token) { double('AuthToken') }
   let(:login_secret) { ldap_secret(token: 'ldap-token', ttl: 0.2, renewable: true) }
 
@@ -67,7 +67,7 @@ RSpec.describe Legion::Crypt::LdapAuth do
   end
 
   it 'immediately requires login after terminal renewal rejection' do
-    rejection = Vault::HTTPClientError.new('https://vault-one.example.com', double('Response', code: '403'), ['permission denied'])
+    rejection = Legion::Crypt::Vault::HTTPClientError.new(code: 403, errors: ['permission denied'], address: 'https://vault-one.example.com')
     allow(auth_token).to receive(:renew_self).and_raise(rejection)
     crypt.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
     worker = Thread.list.find { |thread| thread.name == 'vault-renewer-one' }
@@ -82,7 +82,7 @@ RSpec.describe Legion::Crypt::LdapAuth do
   it 'renews through the authenticated cluster without changing another cluster token' do
     configuration[:vault][:clusters][:two] = cluster_two
     second_client = crypt.vault_client(:two)
-    second_logical = instance_double(Vault::Logical)
+    second_logical = instance_double(Legion::Crypt::VaultClient::Logical)
     second_auth = double('SecondAuthToken')
     renewed = Queue.new
     allow(second_client).to receive(:logical).and_return(second_logical)
@@ -104,7 +104,7 @@ RSpec.describe Legion::Crypt::LdapAuth do
   it 'isolates login failures and redacts passwords from batch error results' do
     configuration[:vault][:clusters][:two] = cluster_two
     second_client = crypt.vault_client(:two)
-    second_logical = instance_double(Vault::Logical)
+    second_logical = instance_double(Legion::Crypt::VaultClient::Logical)
     allow(second_client).to receive(:logical).and_return(second_logical)
     allow(second_logical).to receive(:write).and_return(ldap_secret(token: 'second-token', ttl: 60, renewable: false))
     allow(logical).to receive(:write).and_raise(IOError, 'authentication rejected one-use-password')

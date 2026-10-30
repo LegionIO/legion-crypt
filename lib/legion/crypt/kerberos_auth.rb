@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/crypt/vault_client'
 
 module Legion
   module Crypt
@@ -89,11 +90,11 @@ module Legion
           namespace = vault_client.respond_to?(:namespace) ? vault_client.namespace.inspect : 'n/a'
           log.debug("KerberosAuth: exchange_token: PUT /v1/#{auth_path} (namespace=#{namespace})")
           json = vault_client.put(
-            "/v1/#{auth_path}",
-            '{}',
-            'Authorization' => "Negotiate #{spnego_token}"
+            path:    "/v1/#{auth_path}",
+            body:    '{}',
+            headers: { 'Authorization' => "Negotiate #{spnego_token}" }
           )
-          response = ::Vault::Secret.decode(json)
+          response = Legion::Crypt::VaultClient::Secret.decode(data: json)
           raise AuthError, 'Vault Kerberos auth returned no auth data' unless response&.auth
 
           auth = response.auth
@@ -104,7 +105,7 @@ module Legion
             policies:       auth.policies,
             metadata:       auth.metadata
           }
-        rescue ::Vault::HTTPClientError => e
+        rescue Legion::Crypt::Vault::HTTPClientError => e
           handle_exception(e, level: :warn, operation: 'crypt.kerberos_auth.exchange_token', auth_path: auth_path)
           log.debug("KerberosAuth: exchange_token: HTTP error: #{e.message}")
           raise AuthError, "Vault Kerberos auth failed: #{e.message}"

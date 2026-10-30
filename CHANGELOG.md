@@ -1,5 +1,15 @@
 # Legion::Crypt
 
+## [1.5.27] - 2026-10-30
+
+### Changed
+- Replace vault-ruby with the core-owned Faraday and `Legion::JSON` Vault client, supporting JSON 3 without an extension dependency (#38).
+- Migrate legacy and multi-cluster secrets, auth, leases, token renewal, PKI, and entity tracking to the same cached client contract; retain configured Kerberos namespaces and captured lease ownership (#38).
+- Support peer and mutual TLS, current credential headers, typed HTTP errors, KV v2 envelopes, finite transport timeouts, and permanent client retirement (#38).
+
+### Fixed
+- Do not report tenant erasure or emit an erasure event when Vault deletion returns a failure result (#38).
+
 ## [1.5.26] - 2026-10-29
 
 ### Fixed

@@ -32,7 +32,7 @@ module Legion
       end
 
       def start(definitions, vault_client: nil)
-        client = vault_client || ::Vault.client
+        client = vault_client || Legion::Crypt.vault_client
         generation = @state_mutex.synchronize do
           return if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
 
@@ -103,12 +103,12 @@ module Legion
       end
 
       def vault_logical
-        client = @state_mutex.synchronize { @vault_client } || ::Vault.client
+        client = @state_mutex.synchronize { @vault_client } || Legion::Crypt.vault_client
         client.logical
       end
 
       def vault_sys
-        client = @state_mutex.synchronize { @vault_client } || ::Vault.client
+        client = @state_mutex.synchronize { @vault_client } || Legion::Crypt.vault_client
         client.sys
       end
 
@@ -124,7 +124,7 @@ module Legion
       def register_dynamic_lease(name:, path:, response:, settings_refs:)
         name = name.to_sym
         generation, client = @state_mutex.synchronize { [@generation, @vault_client] }
-        client ||= ::Vault.client
+        client ||= Legion::Crypt.vault_client
         register_at_exit_hook
         ownership = track_ownership(name: name, client: client, lease_id: response.lease_id)
         install_started = false
@@ -247,7 +247,7 @@ module Legion
           return false unless lifecycle_current?(generation, active: active)
           raise ArgumentError, 'Lease acquisition requires a path' unless path
 
-          response = client.logical.read(path)
+          response = client.logical.read(path: path)
           raise "Vault returned no lease for #{name}" unless response
 
           install_lease(name: name, path: path, response: response, client: client, generation: generation,
@@ -429,7 +429,7 @@ module Legion
         end
         return unless entry
 
-        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { entry[:client].sys.revoke(entry[:lease_id]) }
+        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { entry[:client].sys.revoke(lease_id: entry[:lease_id]) }
         @state_mutex.synchronize { @owned_leases.delete(key) if @owned_leases[key].equal?(entry) }
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.revoke_owned_lease', lease_name: entry&.dig(:name))
@@ -519,7 +519,7 @@ module Legion
 
           raise 'Lease cannot be renewed without an ID' if lease[:lease_id].to_s.empty?
 
-          response = lease[:client].sys.renew(lease[:lease_id])
+          response = lease[:client].sys.renew(lease_id: lease[:lease_id])
           raise 'Lease renewal did not return a positive TTL' unless response&.lease_duration&.positive?
 
           data = response.data

@@ -14,22 +14,22 @@ RSpec.describe Legion::Crypt::LeaseManager do
   let(:vault_response) { lease_response(id: 'original-id') }
   let(:lease_definitions) { { 'rabbitmq' => { 'path' => 'rabbitmq/creds/legion-role' } } }
   let(:vault_sys) { double('Vault sys', revoke: true) }
+  let(:vault_logical) { double('Vault logical', read: vault_response) }
+  let(:default_vault_client) { double('core Vault client', logical: vault_logical, sys: vault_sys) }
 
   before do
     manager.reset!
     hide_const('Legion::Transport::Connection') if defined?(Legion::Transport::Connection)
     hide_const('Legion::Data::Connection') if defined?(Legion::Data::Connection)
     hide_const('Legion::Cache') if defined?(Legion::Cache)
-    allow(Vault).to receive(:client).and_return(Vault)
-    allow(Vault).to receive_message_chain(:logical, :read).and_return(vault_response)
-    allow(Vault).to receive(:sys).and_return(vault_sys)
+    allow(Legion::Crypt).to receive(:vault_client).and_return(default_vault_client)
   end
 
   after { manager.reset! }
 
   describe 'static acquisition and lookup' do
     it 'shares cached credentials between String and Symbol names without acquiring twice' do
-      expect(Vault.logical).to receive(:read).once.with('rabbitmq/creds/legion-role').and_return(vault_response)
+      expect(vault_logical).to receive(:read).once.with(path: 'rabbitmq/creds/legion-role').and_return(vault_response)
       manager.start(lease_definitions)
       manager.start({ rabbitmq: { path: 'rabbitmq/creds/legion-role' } })
 
@@ -46,8 +46,8 @@ RSpec.describe Legion::Crypt::LeaseManager do
       logical = double('cluster logical', read: vault_response)
       sys = double('cluster sys')
       client = double('cluster Vault client', logical: logical, sys: sys)
-      expect(Vault.logical).not_to receive(:read)
-      expect(sys).to receive(:revoke).with('original-id').once
+      expect(vault_logical).not_to receive(:read)
+      expect(sys).to receive(:revoke).with(lease_id: 'original-id').once
 
       manager.start(lease_definitions, vault_client: client)
       expect(manager.fetch(:rabbitmq, :username)).to eq('rabbit_user')
@@ -61,12 +61,12 @@ RSpec.describe Legion::Crypt::LeaseManager do
       next_owner = double('replacement default Vault client', sys: next_sys)
       logical = double('acquiring logical')
       owner = double('acquiring Vault client', logical: logical, sys: acquired_sys)
-      allow(Vault).to receive(:client).and_return(owner)
+      allow(Legion::Crypt).to receive(:vault_client).and_return(owner)
       allow(logical).to receive(:read) do
-        allow(Vault).to receive(:client).and_return(next_owner)
+        allow(Legion::Crypt).to receive(:vault_client).and_return(next_owner)
         vault_response
       end
-      expect(acquired_sys).to receive(:revoke).with('original-id').once
+      expect(acquired_sys).to receive(:revoke).with(lease_id: 'original-id').once
       expect(next_sys).not_to receive(:revoke)
 
       manager.start(lease_definitions)
@@ -88,7 +88,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
       connection = { username: 'old' }
       allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
       attempts = 0
-      allow(Vault.logical).to receive(:read) do
+      allow(vault_logical).to receive(:read) do
         attempts += 1
         raise IOError, 'unavailable' if attempts == 1
 
@@ -110,7 +110,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
 
     it 'backs off through sixty seconds without duplicate retries or reads before each deadline' do
       attempts = 0
-      allow(Vault.logical).to receive(:read) do
+      allow(vault_logical).to receive(:read) do
         attempts += 1
         raise IOError, 'still unavailable'
       end
@@ -147,7 +147,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
 
     before do
-      allow(Vault).to receive_message_chain(:logical, :read).and_return(vault_response)
+      allow(vault_logical).to receive(:read).and_return(vault_response)
       manager.start({ 'rabbitmq' => { 'path' => 'rabbitmq/creds/legion-role' } })
       allow(Legion::Settings.loader).to receive(:settings).and_return(transport: transport_settings)
     end
@@ -208,11 +208,11 @@ RSpec.describe Legion::Crypt::LeaseManager do
   describe 'expiry-aware renewal worker' do
     it 'renews a short lease before expiry rather than waiting five seconds' do
       response = lease_response(id: 'short-id', ttl: 1)
-      allow(Vault.logical).to receive(:read).and_return(response)
+      allow(vault_logical).to receive(:read).and_return(response)
       renewed = Queue.new
-      allow(vault_sys).to receive(:renew) do |id|
-        renewed << [id, Process.clock_gettime(Process::CLOCK_MONOTONIC)]
-        lease_response(id: id)
+      allow(vault_sys).to receive(:renew) do |lease_id:|
+        renewed << [lease_id, Process.clock_gettime(Process::CLOCK_MONOTONIC)]
+        lease_response(id: lease_id)
       end
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       manager.start(lease_definitions)
@@ -234,9 +234,9 @@ RSpec.describe Legion::Crypt::LeaseManager do
         maintenance_finished << Thread.current
       end
       renewed = Queue.new
-      allow(vault_sys).to receive(:renew) do |id|
-        renewed << [id, Process.clock_gettime(Process::CLOCK_MONOTONIC)]
-        lease_response(id: id)
+      allow(vault_sys).to receive(:renew) do |lease_id:|
+        renewed << [lease_id, Process.clock_gettime(Process::CLOCK_MONOTONIC)]
+        lease_response(id: lease_id)
       end
       manager.start({})
       manager.start_renewal_thread
@@ -271,7 +271,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
       stub_const('Legion::Transport::Connection', transport)
       manager.register_dynamic_lease(name: :rabbitmq, path: 'rabbitmq/creds/role',
                                      response: original_response, settings_refs: settings_refs)
-      allow(Vault.logical).to receive(:read).and_return(replacement)
+      allow(vault_logical).to receive(:read).and_return(replacement)
     end
 
     it 'retires the old lease only after replacement settings and credentials reconnect successfully' do
@@ -280,7 +280,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
         events << [:reconnect, connection.dup, manager.fetch(:rabbitmq, :username)]
         true
       end
-      allow(vault_sys).to receive(:revoke) { |id| events << [:revoke, id] }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| events << [:revoke, lease_id] }
 
       expect(manager.register_dynamic_lease(name: 'rabbitmq', path: 'rabbitmq/creds/role',
                                             response: replacement, settings_refs: settings_refs)).to be(true)
@@ -295,14 +295,14 @@ RSpec.describe Legion::Crypt::LeaseManager do
 
     it 'keeps every successful reissue owned until it has been replaced or shutdown' do
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
       manager.reissue_lease('rabbitmq')
       expect(connection).to eq(replacement.data)
       expect(manager.fetch(:rabbitmq, :username)).to eq('replacement')
       expect(revoked).to eq(['old-id'])
 
       final_response = lease_response(id: 'final-id', username: 'final')
-      allow(Vault.logical).to receive(:read).and_return(final_response)
+      allow(vault_logical).to receive(:read).and_return(final_response)
       manager.reissue_lease(:rabbitmq)
       expect(connection).to eq(final_response.data)
       expect(revoked).to eq(%w[old-id new-id])
@@ -311,9 +311,9 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
 
     it 'preserves the old settings, cache and lease when replacement acquisition fails' do
-      allow(Vault.logical).to receive(:read).and_raise(IOError, 'unavailable')
+      allow(vault_logical).to receive(:read).and_raise(IOError, 'unavailable')
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
       manager.reissue_lease(:rabbitmq)
 
       expect(connection).to eq(original_response.data)
@@ -327,8 +327,8 @@ RSpec.describe Legion::Crypt::LeaseManager do
       allow(transport).to receive(:force_reconnect).and_return(false)
       cleanup_attempts = []
       cleanup_available = false
-      allow(vault_sys).to receive(:revoke) do |id|
-        cleanup_attempts << id
+      allow(vault_sys).to receive(:revoke) do |lease_id:|
+        cleanup_attempts << lease_id
         raise IOError, 'cleanup unavailable' unless cleanup_available
       end
 
@@ -347,7 +347,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
     it 'rejects a reported RabbitMQ reconnect when the session remains closed' do
       allow(transport).to receive(:session_open?).and_return(false)
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
       manager.reissue_lease(:rabbitmq)
 
       expect(connection).to eq(original_response.data)
@@ -360,7 +360,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
     it 'rolls back reconnect exceptions without retiring the old lease' do
       allow(transport).to receive(:force_reconnect).and_raise(IOError, 'broker down')
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
       manager.reissue_lease(:rabbitmq)
 
       expect(connection).to eq(original_response.data)
@@ -377,7 +377,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
       allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
       allow(transport).to receive(:force_reconnect) { sleep(10) }
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
       Timeout.timeout(1) { manager.reissue_lease(:rabbitmq) }
 
       expect(connection).to eq(original_response.data)
@@ -393,7 +393,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
         { key: :password, path: %i[transport missing password] }
       ]
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
 
       expect(manager.register_dynamic_lease(name: :rabbitmq, path: 'rabbitmq/creds/role',
                                             response: replacement, settings_refs: invalid_refs)).to be(false)
@@ -407,8 +407,8 @@ RSpec.describe Legion::Crypt::LeaseManager do
     it 'retries an unsuccessfully retired old lease on a later maintenance pass' do
       attempts = []
       available = false
-      allow(vault_sys).to receive(:revoke) do |id|
-        attempts << id
+      allow(vault_sys).to receive(:revoke) do |lease_id:|
+        attempts << lease_id
         raise IOError, 'temporarily unavailable' unless available
       end
       manager.reissue_lease(:rabbitmq)
@@ -430,10 +430,10 @@ RSpec.describe Legion::Crypt::LeaseManager do
     it 'deduplicates an ID shared by current and failed retired ownership at shutdown' do
       cleanup_available = false
       revoked = []
-      allow(vault_sys).to receive(:revoke) do |id|
+      allow(vault_sys).to receive(:revoke) do |lease_id:|
         raise IOError, 'temporarily unavailable' unless cleanup_available
 
-        revoked << id
+        revoked << lease_id
       end
       manager.reissue_lease(:rabbitmq)
       manager.register_dynamic_lease(name: :rabbitmq, path: 'rabbitmq/creds/role',
@@ -454,7 +454,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
 
     before do
       allow(Legion::Settings.loader).to receive(:settings).and_return(consumer: connection)
-      allow(Vault.logical).to receive(:read).and_return(replacement)
+      allow(vault_logical).to receive(:read).and_return(replacement)
     end
 
     it 'preserves PostgreSQL credentials when reconnect_with_fresh_creds returns false' do
@@ -464,7 +464,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
                                      response: original_response, settings_refs: refs)
       allow(consumer).to receive(:reconnect_with_fresh_creds).and_return(false)
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
       manager.reissue_lease(:postgresql)
 
       expect(connection[:username]).to eq('original')
@@ -480,7 +480,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
       database = double('existing database', disconnect: true, test_connection: true)
       stub_const('Legion::Data::Connection', double('legacy PostgreSQL connection', sequel: database))
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
       manager.reissue_lease(:postgresql)
 
       expect(connection[:username]).to eq('original')
@@ -497,7 +497,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
                                      response: original_response, settings_refs: refs)
       allow(consumer).to receive(:restart).and_return(false)
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
       manager.reissue_lease(:redis)
 
       expect(connection[:username]).to eq('original')
@@ -514,7 +514,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
                                      response: original_response, settings_refs: refs)
       allow(consumer).to receive(:connected?).and_return(false)
       revoked = []
-      allow(vault_sys).to receive(:revoke) { |id| revoked << id }
+      allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
       manager.reissue_lease(:redis)
 
       expect(connection[:username]).to eq('original')
@@ -538,13 +538,13 @@ RSpec.describe Legion::Crypt::LeaseManager do
       allow(Legion::Settings).to receive(:[]).and_call_original
       allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
       allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
-      allow(Vault).to receive(:sys).and_return(sys)
+      allow(default_vault_client).to receive(:sys).and_return(sys)
     end
 
     after { manager.reset! }
 
     it 'continues acquisition after a stalled lease read times out' do
-      allow(Vault.logical).to receive(:read) do |path|
+      allow(vault_logical).to receive(:read) do |path:|
         sleep(10) if path == 'slow'
         fresh_response
       end
@@ -555,10 +555,10 @@ RSpec.describe Legion::Crypt::LeaseManager do
 
     it 'continues renewal after one lease times out' do
       manager.start({ 'slow' => { path: 'slow' } })
-      allow(Vault.logical).to receive(:read).and_return(fresh_response)
+      allow(vault_logical).to receive(:read).and_return(fresh_response)
       manager.start({ 'healthy' => { path: 'healthy' } })
       manager.active_leases.each_value { |lease| lease[:expires_at] = Time.now }
-      allow(sys).to receive(:renew) do |lease_id|
+      allow(sys).to receive(:renew) do |lease_id:|
         sleep(10) if lease_id == vault_response.lease_id
         fresh_response
       end
@@ -583,7 +583,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
       worker = Thread.new { manager.send(:renew_lease, :rabbitmq, snapshot) }
       Timeout.timeout(1) { entered.pop }
       manager.shutdown
-      allow(Vault.logical).to receive(:read).and_return(fresh_response)
+      allow(vault_logical).to receive(:read).and_return(fresh_response)
       manager.start(lease_definitions)
       manager.register_ref('rabbitmq', :username, %i[transport connection username])
       manager.push_to_settings('rabbitmq')
@@ -592,7 +592,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
 
       expect(manager.fetch('rabbitmq', :username)).to eq('fresh')
       expect(connection[:username]).to eq('fresh')
-      expect(sys).to have_received(:revoke).with(vault_response.lease_id).once
+      expect(sys).to have_received(:revoke).with(lease_id: vault_response.lease_id).once
     ensure
       worker&.kill
       worker&.join
@@ -614,7 +614,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
       end
       entered = Queue.new
       release = Queue.new
-      allow(Vault.logical).to receive(:read) do
+      allow(vault_logical).to receive(:read) do
         entered << true
         release.pop
         fresh_response
@@ -628,8 +628,8 @@ RSpec.describe Legion::Crypt::LeaseManager do
       expect(manager.fetch('rabbitmq', :username)).to eq('rabbit_user')
       expect(connection[:username]).to eq('original')
       manager.shutdown
-      expect(sys).to have_received(:revoke).with('fresh-id').once
-      expect(sys).to have_received(:revoke).with(vault_response.lease_id).once
+      expect(sys).to have_received(:revoke).with(lease_id: 'fresh-id').once
+      expect(sys).to have_received(:revoke).with(lease_id: vault_response.lease_id).once
     ensure
       worker&.kill
       worker&.join
@@ -637,10 +637,10 @@ RSpec.describe Legion::Crypt::LeaseManager do
 
     it 'detaches state and continues revocation after a stalled lease' do
       manager.start({ 'slow' => { path: 'slow' } })
-      allow(Vault.logical).to receive(:read).and_return(fresh_response)
+      allow(vault_logical).to receive(:read).and_return(fresh_response)
       manager.start({ 'healthy' => { path: 'healthy' } })
       revoked = []
-      allow(sys).to receive(:revoke) do |lease_id|
+      allow(sys).to receive(:revoke) do |lease_id:|
         sleep(10) if lease_id == vault_response.lease_id
         revoked << lease_id
       end

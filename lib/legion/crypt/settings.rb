@@ -55,7 +55,7 @@ module Legion
 
       def self.vault
         {
-          enabled:             !Gem::Specification.find_by_name('vault').nil?,
+          enabled:             true,
           protocol:            'http',
           address:             'localhost',
           port:                8200,

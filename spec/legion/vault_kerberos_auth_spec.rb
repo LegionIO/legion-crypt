@@ -5,150 +5,136 @@ require 'legion/crypt/vault_kerberos_auth'
 
 RSpec.describe Legion::Crypt::VaultKerberosAuth do
   let(:spnego_token) { 'fake-spnego-base64' }
-  let(:vault_token)  { 'hvs.test-token' }
-  let(:auth_double) do
-    double('VaultAuth',
-           client_token:   vault_token,
-           lease_duration: 3600,
-           renewable?:     true,
-           policies:       %w[default legion-worker],
-           metadata:       { 'username' => 'miverso2' })
+  let(:vault_token) { 'hvs.kerberos-token' }
+  let(:stubs) { Faraday::Adapter::Test::Stubs.new }
+  let(:connection) { Faraday.new { |builder| builder.adapter :test, stubs } }
+  let(:config) do
+    { protocol: 'http', address: 'vault.example', port: 8200, token: 'old-token',
+      vault_namespace: 'team', connected: true, clusters: {} }
   end
-  let(:response_double) { double('VaultResponse', auth: auth_double) }
-  let(:vault_logical)   { double('VaultLogical') }
+  let(:auth_body) do
+    Legion::JSON.dump(auth: { client_token: vault_token, lease_duration: 3600, renewable: true,
+                              policies: %w[default legion-worker], metadata: { username: 'miverso2' } })
+  end
 
   before do
-    @original_connected = Legion::Settings[:crypt][:vault][:connected]
-    Legion::Settings[:crypt][:vault][:connected] = true
-
-    stub_const('Vault', Module.new)
-    stub_const('Vault::HTTPClientError', Class.new(StandardError))
-    allow(Vault).to receive(:logical).and_return(vault_logical)
-    allow(vault_logical).to receive(:write).and_return(response_double)
+    @original_vault = Legion::Settings[:crypt][:vault]
+    Legion::Settings[:crypt][:vault] = config
+    Legion::Crypt.clear_vault_clients
+    connection
+    allow(Faraday).to receive(:new).and_return(connection)
+    allow(Legion::Crypt).to receive(:vault_connected?).and_return(true)
   end
 
   after do
-    Legion::Settings[:crypt][:vault][:connected] = @original_connected
+    Legion::Crypt.clear_vault_clients
+    Legion::Settings[:crypt][:vault] = @original_vault
   end
 
   describe '.login' do
-    context 'when Vault is connected' do
-      it 'exchanges a SPNEGO token for a Vault token' do
-        result = described_class.login(spnego_token: spnego_token)
-        expect(result[:token]).to eq(vault_token)
-        expect(result[:policies]).to include('legion-worker')
-        expect(result[:lease_duration]).to eq(3600)
-        expect(result[:renewable]).to be true
-        expect(result[:metadata]).to eq({ 'username' => 'miverso2' })
+    it 'authenticates using a Negotiate header and an empty JSON body in the target namespace' do
+      stubs.put('/v1/auth/custom-kerberos/login') do |env|
+        expect(env.body).to eq('{}')
+        expect(env.request_headers['Authorization']).to eq("Negotiate #{spnego_token}")
+        expect(env.request_headers['X-Vault-Namespace']).to eq('team')
+        [200, { 'Content-Type' => 'application/json' }, auth_body]
       end
 
-      it 'calls Vault.logical.write with Negotiate authorization header' do
-        expect(vault_logical).to receive(:write).with(
-          'auth/kerberos/login',
-          authorization: "Negotiate #{spnego_token}"
-        ).and_return(response_double)
+      result = described_class.login(spnego_token: spnego_token, auth_path: 'auth/custom-kerberos/login')
 
-        described_class.login(spnego_token: spnego_token)
-      end
-
-      it 'uses DEFAULT_AUTH_PATH by default' do
-        expect(vault_logical).to receive(:write).with(
-          Legion::Crypt::VaultKerberosAuth::DEFAULT_AUTH_PATH,
-          anything
-        ).and_return(response_double)
-
-        described_class.login(spnego_token: spnego_token)
-      end
+      expect(result).to eq(token: vault_token, lease_duration: 3600, renewable: true,
+                           policies: %w[default legion-worker], metadata: { username: 'miverso2' })
+      expect(Legion::Crypt.vault_client.token).to eq('old-token')
+      expect(Legion::Crypt.vault_client.namespace).to eq('team')
     end
 
-    context 'when Vault is not connected' do
-      before do
-        Legion::Settings[:crypt][:vault][:connected] = false
+    it 'authenticates against root only when the configured namespace is nil' do
+      config[:vault_namespace] = nil
+      stubs.put('/v1/auth/kerberos/login') do |env|
+        expect(env.request_headers['X-Vault-Namespace']).to be_nil
+        expect(env.request_headers['Authorization']).to eq("Negotiate #{spnego_token}")
+        [200, {}, auth_body]
       end
 
-      it 'raises AuthError' do
-        expect { described_class.login(spnego_token: spnego_token) }
-          .to raise_error(Legion::Crypt::VaultKerberosAuth::AuthError, 'Vault is not connected')
-      end
+      expect(described_class.login(spnego_token: spnego_token)).to include(token: vault_token)
+      expect(Legion::Crypt.vault_client.namespace).to be_nil
     end
 
-    context 'when Vault returns no auth data' do
-      it 'raises AuthError' do
-        allow(vault_logical).to receive(:write).and_return(double('VaultResponse', auth: nil))
+    it 'rejects authentication when Vault is unavailable' do
+      allow(Legion::Crypt).to receive(:vault_connected?).and_return(false)
 
-        expect { described_class.login(spnego_token: spnego_token) }
-          .to raise_error(Legion::Crypt::VaultKerberosAuth::AuthError, 'Vault Kerberos auth returned no auth data')
-      end
+      expect { described_class.login(spnego_token: spnego_token) }.to raise_error(described_class::AuthError)
     end
 
-    context 'when Vault returns nil response' do
-      it 'raises AuthError' do
-        allow(vault_logical).to receive(:write).and_return(nil)
+    it 'rejects a response without an authentication grant' do
+      stubs.put('/v1/auth/kerberos/login') { [200, {}, Legion::JSON.dump(data: {})] }
 
-        expect { described_class.login(spnego_token: spnego_token) }
-          .to raise_error(Legion::Crypt::VaultKerberosAuth::AuthError, 'Vault Kerberos auth returned no auth data')
-      end
+      expect { described_class.login(spnego_token: spnego_token) }.to raise_error(described_class::AuthError)
     end
 
-    context 'when Vault raises HTTPClientError (4xx)' do
-      it 'wraps it in AuthError' do
-        allow(vault_logical).to receive(:write).and_raise(Vault::HTTPClientError, 'permission denied')
+    it 'rejects an empty successful response' do
+      stubs.put('/v1/auth/kerberos/login') { [204, {}, ''] }
 
-        expect { described_class.login(spnego_token: spnego_token) }
-          .to raise_error(Legion::Crypt::VaultKerberosAuth::AuthError, /Vault Kerberos auth failed: permission denied/)
-      end
+      expect { described_class.login(spnego_token: spnego_token) }.to raise_error(described_class::AuthError)
     end
 
-    context 'with custom auth path' do
-      it 'uses the custom auth path' do
-        expect(vault_logical).to receive(:write).with(
-          'auth/custom-kerberos/login',
-          authorization: 'Negotiate token123'
-        ).and_return(response_double)
+    it 'maps authorization failures to AuthError without changing the namespace' do
+      stubs.put('/v1/auth/kerberos/login') { [403, {}, Legion::JSON.dump(errors: ['permission denied'])] }
 
-        result = described_class.login(spnego_token: 'token123', auth_path: 'auth/custom-kerberos/login')
-        expect(result[:token]).to eq(vault_token)
-      end
+      expect { described_class.login(spnego_token: spnego_token) }
+        .to raise_error(described_class::AuthError, /permission denied/)
+      expect(Legion::Crypt.vault_client.namespace).to eq('team')
+    end
+
+    it 'preserves server errors and their HTTP status for callers' do
+      stubs.put('/v1/auth/kerberos/login') { [503, {}, Legion::JSON.dump(errors: ['sealed'])] }
+
+      expect { described_class.login(spnego_token: spnego_token) }
+        .to raise_error(Legion::Crypt::Vault::HTTPServerError) { |error| expect(error.code).to eq(503) }
     end
   end
 
   describe '.login!' do
     before do
-      allow(Vault).to receive(:token=)
+      stubs.put('/v1/auth/kerberos/login') { [200, {}, auth_body] }
     end
 
-    it 'sets the Vault token after login' do
+    it 'keeps the new token in config and on the selected cached client for subsequent requests' do
+      client = Legion::Crypt.vault_client
       described_class.login!(spnego_token: spnego_token)
-      expect(Vault).to have_received(:token=).with(vault_token)
+
+      expect(config[:token]).to eq(vault_token)
+      expect(Legion::Crypt.vault_client).to equal(client)
+      expect(client.token).to eq(vault_token)
+      stubs.get('/v1/secret/data/protected') do |env|
+        expect(env.request_headers['X-Vault-Token']).to eq(vault_token)
+        [200, {}, Legion::JSON.dump(data: { authorized: true })]
+      end
+      expect(Legion::Crypt.vault_client.logical.read(path: 'secret/data/protected').data).to eq(authorized: true)
     end
 
-    it 'returns the auth result' do
-      result = described_class.login!(spnego_token: spnego_token)
-      expect(result[:token]).to eq(vault_token)
+    it 'updates the selected cluster without overwriting unrelated tokens' do
+      selected = { protocol: 'http', address: 'vault.example', port: 8200, token: 'cluster-old', namespace: 'team' }
+      config[:clusters] = { primary: selected, secondary: selected.merge(token: 'other-token') }
+      config[:default] = :primary
+      client = Legion::Crypt.vault_client
+
+      described_class.login!(spnego_token: spnego_token)
+
+      expect(selected[:token]).to eq(vault_token)
+      expect(config[:token]).to eq('old-token')
+      expect(config[:clusters][:secondary][:token]).to eq('other-token')
+      expect(Legion::Crypt.vault_client).to equal(client)
+      expect(client.token).to eq(vault_token)
     end
 
-    it 'propagates AuthError from login' do
-      Legion::Settings[:crypt][:vault][:connected] = false
+    it 'does not replace credentials when authentication fails' do
+      allow(Legion::Crypt).to receive(:vault_connected?).and_return(false)
+      client = Legion::Crypt.vault_client
 
-      expect { described_class.login!(spnego_token: spnego_token) }
-        .to raise_error(Legion::Crypt::VaultKerberosAuth::AuthError, 'Vault is not connected')
-    end
-  end
-
-  describe 'AuthError' do
-    it 'inherits from StandardError' do
-      expect(Legion::Crypt::VaultKerberosAuth::AuthError.ancestors).to include(StandardError)
-    end
-
-    it 'carries the error message' do
-      err = Legion::Crypt::VaultKerberosAuth::AuthError.new('something went wrong')
-      expect(err.message).to eq('something went wrong')
-    end
-  end
-
-  describe 'constants' do
-    it 'DEFAULT_AUTH_PATH is auth/kerberos/login' do
-      expect(described_class::DEFAULT_AUTH_PATH).to eq('auth/kerberos/login')
+      expect { described_class.login!(spnego_token: spnego_token) }.to raise_error(described_class::AuthError)
+      expect(config[:token]).to eq('old-token')
+      expect(client.token).to eq('old-token')
     end
   end
 end

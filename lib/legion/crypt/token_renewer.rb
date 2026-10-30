@@ -3,6 +3,7 @@
 require 'legion/logging/helper'
 require 'legion/crypt/kerberos_auth'
 require 'legion/crypt/vault_operation'
+require 'legion/crypt/vault_client'
 
 module Legion
   module Crypt
@@ -104,7 +105,7 @@ module Legion
       rescue StandardError => e
         @state_mutex.synchronize do
           if active_generation?(generation: generation) && @config[:auth_method].to_s == 'ldap'
-            @renewal_terminal = e.is_a?(::Vault::HTTPClientError) && ![408, 429].include?(e.code)
+            @renewal_terminal = e.is_a?(Legion::Crypt::Vault::HTTPClientError) && ![408, 429].include?(e.code)
             if @renewal_terminal || (@expires_at && @expires_at <= Time.now)
               @config[:connected] = false
               @config[:relogin_required] = true
