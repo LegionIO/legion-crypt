@@ -236,6 +236,12 @@ The SPNEGO token is sent as an HTTP `Authorization` header (not JSON body). The 
 
 `TokenRenewer` keeps the Vault token alive: renews at 75% TTL, re-auths via Kerberos if renewal fails, uses exponential backoff.
 
+## SPIFFE Workload API
+
+The local Unix-socket Workload API exchange has a shared 10-second monotonic deadline. Connection, HTTP/2 handshake, request writes, and flushes additionally share a 5-second setup budget; response reads use the remaining operation time. Availability probes are bounded to 5 seconds, and failed exchanges close acquired sockets.
+
+Responses may split the gRPC prefix or body across HTTP/2 DATA frames and socket reads. JWT-SVID audiences use protobuf varint lengths, including audiences of 128 bytes or longer. X.509 fallback remains opt-in; JWT-SVID failures raise `Spiffe::SvidError`.
+
 ## mTLS
 
 `Crypt::Mtls` issues mTLS certificates from Vault PKI. When `security.mtls.enabled` is true, `Legion::Service` owns a `Crypt::CertRotation` worker. The worker renews at expiry minus the certificate lifetime multiplied by `security.mtls.renewal_window` (default `0.5`), rather than waiting for a fixed polling interval. Initial issuance and renewal failures retry with exponential backoff from 1 to 60 seconds; a failed renewal retains the last installed certificate. Shutdown interrupts scheduled waits, bounds in-flight issuance with the Vault operation timeout, and prevents late results from replacing the certificate.

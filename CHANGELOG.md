@@ -1,5 +1,12 @@
 # Legion::Crypt
 
+## [1.5.26] - 2026-10-29
+
+### Fixed
+- Bound SPIFFE socket connection, handshake, request writes, flushes, and response reads with shared monotonic deadlines; close sockets when setup or exchange fails (#43).
+- Reassemble gRPC prefixes and message bodies across HTTP/2 DATA frames and partial socket reads, returning only the declared message bytes (#43).
+- Encode JWT-SVID audience lengths as canonical protobuf varints, including lengths of 128 bytes and larger (#43).
+
 ## [1.5.25] - 2026-10-29
 
 ### Fixed

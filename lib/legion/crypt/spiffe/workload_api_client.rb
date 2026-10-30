@@ -3,6 +3,7 @@
 require 'legion/logging/helper'
 require 'socket'
 require 'openssl'
+require 'timeout'
 
 module Legion
   module Crypt
@@ -14,9 +15,8 @@ module Legion
       # a full gRPC stack by implementing just enough of the HTTP/2 framing to
       # send a single unary RPC call and parse a single response.
       #
-      # For environments that cannot make a real SPIRE call (CI, lite mode,
-      # no socket present) the client returns a self-signed fallback SVID so
-      # that callers never have to special-case the nil case.
+      # X.509 fallback is available only when explicitly enabled; otherwise
+      # unavailable or invalid Workload API responses fail closed.
       class WorkloadApiClient
         include Legion::Logging::Helper
 
@@ -40,7 +40,7 @@ module Legion
 
         # Fetch an X.509 SVID from the SPIRE Workload API.
         # Returns a populated X509Svid struct.
-        # Falls back to a self-signed certificate when the Workload API is unavailable.
+        # Uses a self-signed fallback only when explicitly enabled.
         def fetch_x509_svid
           log.info("[SPIFFE] Fetching X.509 SVID from Workload API socket=#{@socket_path}")
           raw = call_workload_api(FETCH_X509_METHOD, '')
@@ -82,11 +82,13 @@ module Legion
 
         # Returns true when the SPIRE agent socket exists and is reachable.
         def available?
-          return false unless ::File.exist?(@socket_path)
+          with_socket_deadline(deadline: ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + CONNECT_TIMEOUT) do
+            return false unless ::File.exist?(@socket_path)
 
-          sock = UNIXSocket.new(@socket_path)
-          sock.close
-          true
+            sock = UNIXSocket.new(@socket_path)
+            sock.close
+            true
+          end
         rescue StandardError => e
           handle_exception(e, level: :debug, operation: 'crypt.spiffe.workload_api_client.available',
                            socket_path: @socket_path)
@@ -96,16 +98,28 @@ module Legion
         private
 
         # Minimal HTTP/2 + gRPC unary call over a Unix domain socket.
-        # This is intentionally simple: one request frame, one response frame.
+        # One bounded request; response DATA frames may split a gRPC message.
         def call_workload_api(method_path, request_body)
           log.debug("[SPIFFE] Calling Workload API method=#{method_path}")
-          sock = connect_socket
-          begin
-            send_grpc_request(sock, method_path, request_body)
-            read_grpc_response(sock)
-          ensure
-            close_workload_api_socket(sock, method_path)
+          deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + READ_TIMEOUT
+          sock = nil
+          with_socket_deadline(deadline: deadline) do
+            connect_deadline = [deadline, ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + CONNECT_TIMEOUT].min
+            with_socket_deadline(deadline: connect_deadline) do
+              raise WorkloadApiError, "SPIRE agent socket not found at '#{@socket_path}'" unless ::File.exist?(@socket_path)
+
+              sock = UNIXSocket.new(@socket_path)
+              sock.write(HTTP2_PREFACE)
+              sock.write(HTTP2_SETTINGS_FRAME)
+              sock.flush
+              send_grpc_request(sock, method_path, request_body)
+            end
+            read_grpc_response(sock, deadline: deadline)
           end
+        rescue Errno::EACCES => e
+          raise WorkloadApiError, "Cannot connect to SPIRE agent socket: #{e.message}"
+        ensure
+          close_workload_api_socket(sock, method_path) if sock
         end
 
         def close_workload_api_socket(sock, method_path)
@@ -116,23 +130,13 @@ module Legion
           nil
         end
 
-        def connect_socket
-          raise WorkloadApiError, "SPIRE agent socket not found at '#{@socket_path}'" unless ::File.exist?(@socket_path)
+        def with_socket_deadline(deadline:, &)
+          remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+          raise WorkloadApiError, 'Workload API operation timed out' unless remaining.positive?
 
-          sock = UNIXSocket.new(@socket_path)
-          # Write HTTP/2 connection preface and initial SETTINGS frame.
-          sock.write(HTTP2_PREFACE)
-          sock.write(HTTP2_SETTINGS_FRAME)
-          sock.flush
-          sock
-        rescue Errno::ENOENT => e
-          handle_exception(e, level: :debug, operation: 'crypt.spiffe.workload_api_client.connect_socket',
-                           socket_path: @socket_path)
-          raise WorkloadApiError, "SPIRE agent socket not found at '#{@socket_path}'"
-        rescue Errno::ECONNREFUSED, Errno::EACCES => e
-          handle_exception(e, level: :debug, operation: 'crypt.spiffe.workload_api_client.connect_socket',
-                           socket_path: @socket_path)
-          raise WorkloadApiError, "Cannot connect to SPIRE agent socket: #{e.message}"
+          Timeout.timeout(remaining, &)
+        rescue Timeout::Error
+          raise WorkloadApiError, 'Workload API operation timed out'
         end
 
         # Build and send a minimal gRPC/HTTP2 HEADERS + DATA frame.
@@ -195,61 +199,58 @@ module Legion
             payload.b
         end
 
-        def read_grpc_response(sock)
-          # Read until we see a DATA frame containing a gRPC message or timeout.
-          deadline = Time.now + READ_TIMEOUT
-          buffer   = ''.b
-
+        def read_grpc_response(sock, deadline:)
+          buffer = ''.b
+          message = ''.b
           loop do
-            raise WorkloadApiError, 'Workload API read timeout' if Time.now > deadline
-
-            ready = sock.wait_readable(1.0)
-            next unless ready
+            remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+            raise WorkloadApiError, 'Workload API read timeout' unless remaining.positive?
+            next unless sock.wait_readable(remaining)
 
             chunk = sock.read_nonblock(4096, exception: false)
-            break if chunk == :wait_readable || chunk.nil?
+            next if chunk == :wait_readable
+            break if chunk.nil?
 
-            buffer += chunk.b
-            result  = extract_grpc_body(buffer)
-            return result if result
+            buffer << chunk
+            result = extract_grpc_body(buffer, message: message)
+            return result unless result.nil?
           end
 
           raise WorkloadApiError, 'No valid gRPC response received from Workload API'
         end
 
-        # Scan the raw HTTP/2 buffer for a DATA frame (type=0x00) that contains
-        # a non-empty gRPC message and return the message body bytes.
-        def extract_grpc_body(buffer)
+        # Consume complete HTTP/2 frames and accumulate stream 1 DATA bytes.
+        # The gRPC prefix and body can each span multiple frames and reads.
+        def extract_grpc_body(buffer, message:)
           pos = 0
           while pos + 9 <= buffer.bytesize
             frame_length = (buffer.getbyte(pos) << 16) | (buffer.getbyte(pos + 1) << 8) | buffer.getbyte(pos + 2)
-            frame_type   = buffer.getbyte(pos + 3)
-            pos         += 9 # skip frame header
+            frame_end = pos + 9 + frame_length
+            break if frame_end > buffer.bytesize
 
-            if pos + frame_length > buffer.bytesize
-              # Incomplete frame — need more data.
-              return nil
+            frame_type = buffer.getbyte(pos + 3)
+            flags = buffer.getbyte(pos + 4)
+            stream_id = buffer.unpack1('N', offset: pos + 5) & 0x7FFFFFFF
+            pos += 9
+            if frame_type.zero? && stream_id == 1
+              if flags.anybits?(0x08)
+                padding = buffer.getbyte(pos)
+                raise WorkloadApiError, 'Invalid padded HTTP/2 DATA frame' if frame_length.zero? || padding >= frame_length
+
+                pos += 1
+                frame_length -= padding + 1
+              end
+              message << buffer.byteslice(pos, frame_length)
             end
+            pos = frame_end
+            next if message.bytesize < 5
 
-            payload = buffer.byteslice(pos, frame_length)
-            pos    += frame_length
+            raise WorkloadApiError, 'Compressed gRPC responses are unsupported' unless message.getbyte(0).zero?
 
-            next unless frame_type.zero? && payload && payload.bytesize >= 5
-
-            # gRPC message: 1-byte compressed flag + 4-byte length + body
-            compressed = payload.getbyte(0)
-            msg_length = (payload.getbyte(1) << 24) | (payload.getbyte(2) << 16) |
-                         (payload.getbyte(3) << 8)  | payload.getbyte(4)
-            next if msg_length.zero?
-
-            msg_body = payload.byteslice(5, msg_length)
-            next if msg_body.nil? || msg_body.bytesize < msg_length
-
-            # Compressed gRPC responses are not expected from SPIRE; skip them.
-            next unless compressed.zero?
-
-            return msg_body
+            length = message.unpack1('N', offset: 1)
+            return message.byteslice(5, length) if message.bytesize >= length + 5
           end
+          buffer.slice!(0, pos) if pos.positive?
           nil
         end
 
@@ -258,7 +259,18 @@ module Legion
         def encode_jwt_request(audience)
           audience_bytes = audience.b
           # Field 1, wire type 2 (length-delimited) = tag 0x0A
-          "\n#{[audience_bytes.bytesize].pack('C')}#{audience_bytes}"
+          "\x0A".b + encode_varint(audience_bytes.bytesize) + audience_bytes
+        end
+
+        def encode_varint(value)
+          bytes = ''.b
+          loop do
+            byte = value & 0x7F
+            value >>= 7
+            bytes << (value.zero? ? byte : byte | 0x80)
+            break if value.zero?
+          end
+          bytes
         end
 
         # Parse the raw protobuf bytes from FetchX509SVIDResponse into an X509Svid.
