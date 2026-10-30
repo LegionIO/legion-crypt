@@ -130,7 +130,7 @@ module Legion
           nil
         end
 
-        def with_socket_deadline(deadline:, &)
+        def with_socket_deadline(deadline:, **, &)
           remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
           raise WorkloadApiError, 'Workload API operation timed out' unless remaining.positive?
 
@@ -259,10 +259,10 @@ module Legion
         def encode_jwt_request(audience)
           audience_bytes = audience.b
           # Field 1, wire type 2 (length-delimited) = tag 0x0A
-          "\x0A".b + encode_varint(audience_bytes.bytesize) + audience_bytes
+          "\x0A".b + encode_varint(value: audience_bytes.bytesize) + audience_bytes
         end
 
-        def encode_varint(value)
+        def encode_varint(value:, **)
           bytes = ''.b
           loop do
             byte = value & 0x7F

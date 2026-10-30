@@ -38,15 +38,15 @@ RSpec.describe Legion::Crypt::TokenRenewer do
     renewer.stop(deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1)
   end
 
-  def run_in_background(&)
+  def run_in_background(**, &)
     Thread.new(&).tap { |thread| background_threads << thread }
   end
 
-  def await_event(queue:)
+  def await_event(queue:, **)
     Timeout.timeout(1) { queue.pop }
   end
 
-  def finish_thread(thread:)
+  def finish_thread(thread:, **)
     raise 'background operation did not finish' unless thread.join(1)
 
     thread.value

@@ -173,7 +173,7 @@ module Legion
 
         renewed = []
         pending.each do |session|
-          break unless session_maintenance_active?(generation)
+          break unless session_maintenance_active?(generation: generation)
 
           VaultOperation.with_timeout { renew_session(session: session) }
           renewed << session
@@ -190,7 +190,7 @@ module Legion
       def renew_cluster_tokens(generation: session_mutex.synchronize { @session_generation })
         renewed = []
         connected_clusters.each_key do |name|
-          break unless session_maintenance_active?(generation)
+          break unless session_maintenance_active?(generation: generation)
 
           VaultOperation.with_timeout { vault_client(name).auth_token.renew_self }
           renewed << name
@@ -215,7 +215,7 @@ module Legion
         Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
       end
 
-      def session_maintenance_active?(generation)
+      def session_maintenance_active?(generation:, **)
         session_mutex.synchronize do
           !@sessions_stopped && !crypt_stopping? && @session_generation == generation
         end

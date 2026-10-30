@@ -8,7 +8,7 @@ module Legion
       DEFAULT_TIMEOUT = 5
       SHUTDOWN_TIMEOUT = 10
 
-      def self.with_timeout(deadline: nil)
+      def self.with_timeout(deadline: nil, **)
         configuration = defined?(Legion::Settings) ? Legion::Settings[:crypt] : nil
         timeout = configuration&.dig(:vault, :operation_timeout) || DEFAULT_TIMEOUT
         raise ArgumentError, 'Vault operation_timeout must be a finite positive number' unless timeout.is_a?(Numeric) && timeout.finite? && timeout.positive?

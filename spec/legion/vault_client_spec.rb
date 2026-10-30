@@ -27,11 +27,11 @@ RSpec.describe Legion::Crypt::VaultClient do
     stubs.verify_stubbed_calls
   end
 
-  def json_response(data:, status: 200)
+  def json_response(data:, status: 200, **)
     [status, { 'Content-Type' => 'application/json' }, Legion::JSON.dump(data)]
   end
 
-  def certificate_for(key:, common_name:, serial:)
+  def certificate_for(key:, common_name:, serial:, **)
     OpenSSL::X509::Certificate.new.tap do |certificate|
       certificate.version = 2
       certificate.serial = serial

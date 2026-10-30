@@ -42,7 +42,7 @@ module Legion
         end
         register_at_exit_hook
         (definitions || {}).each do |name, opts|
-          break unless lifecycle_current?(generation)
+          break unless lifecycle_current?(generation: generation)
 
           name = name.to_sym
           path = opts['path'] || opts[:path]
@@ -115,7 +115,7 @@ module Legion
       def reissue_all(active: nil)
         names, generation = @state_mutex.synchronize { [@active_leases.keys, @generation] }
         names.each do |name|
-          break unless lifecycle_current?(generation, active: active)
+          break unless lifecycle_current?(generation: generation, active: active)
 
           reissue_lease(name, generation: generation, active: active)
         end
@@ -149,7 +149,7 @@ module Legion
       def reissue_lease(name, generation: @generation, active: nil, deadline: nil)
         name = name.to_sym
         lease = @state_mutex.synchronize { @active_leases[name]&.dup }
-        return false unless lease && lease[:path] && lifecycle_current?(generation, active: active)
+        return false unless lease && lease[:path] && lifecycle_current?(generation: generation, active: active)
 
         acquire_lease(name: name, path: lease[:path], client: lease[:client], generation: generation,
                       active: active, deadline: deadline, lease: lease)
@@ -233,14 +233,14 @@ module Legion
         ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
       end
 
-      def with_lease_operation(name:, deadline: nil)
+      def with_lease_operation(name:, deadline: nil, **)
         lock = @state_mutex.synchronize { @lease_locks[name] ||= Mutex.new }
         Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) do |operation_deadline|
           lock.synchronize { yield operation_deadline }
         end
       end
 
-      def lease_operation_current?(name:, pending: nil, lease: nil)
+      def lease_operation_current?(name:, pending: nil, lease: nil, **)
         @state_mutex.synchronize do
           next false if pending && !@pending[name].equal?(pending)
 
@@ -252,7 +252,7 @@ module Legion
         active = options[:active]
         deadline = options[:deadline]
         with_lease_operation(name: name, deadline: deadline) do |operation_deadline|
-          return false unless lifecycle_current?(generation, active: active)
+          return false unless lifecycle_current?(generation: generation, active: active)
           return false unless lease_operation_current?(name: name, pending: options[:pending], lease: options[:lease])
           raise ArgumentError, 'Lease acquisition requires a path' unless path
 
@@ -269,7 +269,7 @@ module Legion
         false
       end
 
-      def track_ownership(name:, client:, lease_id:)
+      def track_ownership(name:, client:, lease_id:, **)
         return if lease_id.nil? || lease_id.empty?
 
         key = [client, lease_id]
@@ -314,7 +314,7 @@ module Legion
         retire_unused_leases(name: name, deadline: context[:deadline])
       end
 
-      def stage_install(handoff:)
+      def stage_install(handoff:, **)
         name = handoff[:name]
         data = handoff[:data]
         context = handoff[:context]
@@ -338,7 +338,7 @@ module Legion
         end
       end
 
-      def validate_lease_data!(name:, data:, require_credentials:)
+      def validate_lease_data!(name:, data:, require_credentials:, **)
         raise "Vault returned invalid lease data for #{name}" unless data.is_a?(Hash)
         return unless name == :rabbitmq && require_credentials
 
@@ -347,14 +347,14 @@ module Legion
         raise 'RabbitMQ lease requires username and password' unless username && password
       end
 
-      def abort_install(handoff:)
+      def abort_install(handoff:, **)
         name = handoff[:name]
         context = handoff[:context]
         generation = context.fetch(:generation)
         active = context[:active]
         ownership = handoff[:ownership]
         restored = rollback_install(name: name, transaction: handoff[:transaction], generation: generation, active: active)
-        safe_to_retire = !handoff[:attempted_reconnect] || !lifecycle_current?(generation, active: active)
+        safe_to_retire = !handoff[:attempted_reconnect] || !lifecycle_current?(generation: generation, active: active)
         if handoff[:attempted_reconnect] && restored
           begin
             safe_to_retire = Legion::Crypt::VaultOperation.with_timeout(deadline: context[:deadline]) do
@@ -370,13 +370,13 @@ module Legion
         end
       end
 
-      def setting_snapshots(name:, data:)
+      def setting_snapshots(name:, data:, **)
         (@refs[name] || {}).flat_map do |key, paths|
           raise "Lease #{name} omitted referenced key #{key}" unless data.key?(key) || data.key?(key.to_s)
 
           value = data.key?(key) ? data[key] : data[key.to_s]
           paths.filter_map do |path|
-            target, segment = setting_target(path)
+            target, segment = setting_target(path: path)
             raise "Lease #{name} has an unwritable settings destination #{path.inspect}" unless target
             next if target[segment] == value
 
@@ -385,7 +385,7 @@ module Legion
         end
       end
 
-      def rollback_install(name:, transaction:, generation:, active:)
+      def rollback_install(name:, transaction:, generation:, active:, **)
         return false unless transaction
 
         with_current_state(generation: generation, active: active) do
@@ -423,7 +423,7 @@ module Legion
         end
       end
 
-      def retire_unused_leases(name: nil, deadline: nil, force: false)
+      def retire_unused_leases(name: nil, deadline: nil, force: false, **)
         keys = @state_mutex.synchronize do
           @owned_leases.filter_map do |key, entry|
             key if entry[:retired] && (!name || entry[:name] == name) && (force || entry[:next_attempt_at] <= monotonic_now)
@@ -432,7 +432,7 @@ module Legion
         keys.each { |key| revoke_owned_lease(key: key, deadline: deadline) }
       end
 
-      def revoke_owned_lease(key:, deadline:)
+      def revoke_owned_lease(key:, deadline:, **)
         entry = @state_mutex.synchronize do
           item = @owned_leases[key]
           next unless item && item[:retired] && !item[:revoking]
@@ -482,7 +482,7 @@ module Legion
       def next_maintenance_delay
         delays = @pending.values.map { |entry| entry[:next_attempt_at] - monotonic_now }
         @active_leases.each do |name, lease|
-          delays << renewal_delay(lease) unless @pending.key?(name)
+          delays << renewal_delay(lease: lease) unless @pending.key?(name)
         end
         @owned_leases.each do |key, entry|
           next unless entry[:retired] && !entry[:revoking]
@@ -494,12 +494,12 @@ module Legion
       end
 
       def renew_approaching_leases(generation: @generation)
-        leases = @state_mutex.synchronize { @active_leases.to_a.sort_by { |_name, lease| renewal_delay(lease) } }
+        leases = @state_mutex.synchronize { @active_leases.to_a.sort_by { |_name, lease| renewal_delay(lease: lease) } }
         attempted = []
         leases.each do |name, lease|
-          break unless lifecycle_current?(generation)
+          break unless lifecycle_current?(generation: generation)
           next if @state_mutex.synchronize { @pending.key?(name) }
-          next if renewal_delay(lease).positive?
+          next if renewal_delay(lease: lease).positive?
 
           attempted << name
           if lease_renewable?(lease: lease)
@@ -510,7 +510,7 @@ module Legion
         end
         pending = @state_mutex.synchronize { @pending.to_a }
         pending.each do |name, entry|
-          break unless lifecycle_current?(generation)
+          break unless lifecycle_current?(generation: generation)
           next if attempted.include?(name) || entry[:next_attempt_at] > monotonic_now
 
           lease = @state_mutex.synchronize { @active_leases[name]&.dup }
@@ -520,7 +520,7 @@ module Legion
             acquire_lease(name: name, path: entry[:path], client: entry[:client], generation: generation, pending: entry, lease: lease)
           end
         end
-        retire_unused_leases if lifecycle_current?(generation)
+        retire_unused_leases if lifecycle_current?(generation: generation)
       end
 
       def renew_lease(name, lease, generation: @generation, pending: nil)
@@ -528,7 +528,7 @@ module Legion
         operation_deadline = nil
         with_lease_operation(name: name) do |deadline|
           operation_deadline = deadline
-          return false unless lifecycle_current?(generation)
+          return false unless lifecycle_current?(generation: generation)
           return false unless lease_operation_current?(name: name, pending: pending, lease: lease)
 
           raise 'Lease cannot be renewed without an ID' if lease[:lease_id].to_s.empty?
@@ -561,7 +561,7 @@ module Legion
       end
 
       # Called while holding @state_mutex; expired credentials are never exposed to readers.
-      def cached_lease_data(name:)
+      def cached_lease_data(name:, **)
         lease = @active_leases[name]
         return @lease_cache[name] if lease && lease_unexpired?(lease: lease)
 
@@ -569,15 +569,15 @@ module Legion
         nil
       end
 
-      def lease_unexpired?(lease:)
+      def lease_unexpired?(lease:, **)
         lease[:expires_at].nil? || lease[:expires_at] > Time.now
       end
 
-      def lease_renewable?(lease:)
+      def lease_renewable?(lease:, **)
         lease && lease[:renewable] && lease_unexpired?(lease: lease)
       end
 
-      def renewal_delay(lease)
+      def renewal_delay(lease:, **)
         ttl = lease[:lease_duration] || 0
         return lease[:fetched_at] + RENEWAL_CHECK_INTERVAL - Time.now unless ttl.positive?
         return 0 unless lease[:expires_at]
@@ -585,7 +585,7 @@ module Legion
         lease[:expires_at] - Time.now - (ttl * 0.5)
       end
 
-      def setting_target(path)
+      def setting_target(path:, **)
         return unless path.is_a?(Array) && !path.empty?
 
         target = Legion::Settings.get.settings
@@ -603,7 +603,7 @@ module Legion
       end
 
       def write_setting(path, value)
-        target, key = setting_target(path)
+        target, key = setting_target(path: path)
         return false unless target
 
         target[key] = value
@@ -614,7 +614,7 @@ module Legion
       end
 
       def trigger_reconnect(name, generation: @generation, active: nil)
-        return false unless lifecycle_current?(generation, active: active)
+        return false unless lifecycle_current?(generation: generation, active: active)
 
         case name.to_sym
         when :rabbitmq
@@ -645,9 +645,9 @@ module Legion
         false
       end
 
-      def with_current_state(generation:, active: nil)
+      def with_current_state(generation:, active: nil, **)
         @state_mutex.synchronize do
-          next false unless lifecycle_current?(generation)
+          next false unless lifecycle_current?(generation: generation)
 
           next yield unless active
 
@@ -657,18 +657,18 @@ module Legion
         end
       end
 
-      def lifecycle_current?(generation, active: nil)
+      def lifecycle_current?(generation:, active: nil, **)
         !@stopped && generation == @generation &&
           !(Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping) && (!active || active.call)
       end
 
       def running?(generation: @generation)
-        @state_mutex.synchronize { @running && lifecycle_current?(generation) }
+        @state_mutex.synchronize { @running && lifecycle_current?(generation: generation) }
       end
 
       def interruptible_sleep(seconds = nil, generation: @generation)
         @state_mutex.synchronize do
-          @wake.wait(@state_mutex, seconds || next_maintenance_delay) if @running && lifecycle_current?(generation)
+          @wake.wait(@state_mutex, seconds || next_maintenance_delay) if @running && lifecycle_current?(generation: generation)
         end
       end
     end

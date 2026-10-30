@@ -23,7 +23,7 @@ module Legion
         include Legion::Logging::Helper
 
         def fetch_keys(jwks_url)
-          with_url_lock(jwks_url) { refresh_keys(jwks_url) }
+          with_url_lock(jwks_url) { refresh_keys(jwks_url: jwks_url) }
         end
 
         def find_key(jwks_url, kid)
@@ -42,7 +42,7 @@ module Legion
               raise Legion::Crypt::JWT::InvalidTokenError, "signing key not found: #{kid}"
             end
 
-            keys = refresh_keys(jwks_url, requested_kid: kid)
+            keys = refresh_keys(jwks_url: jwks_url, requested_kid: kid)
             return keys[kid] if keys[kid]
 
             raise Legion::Crypt::JWT::InvalidTokenError, "signing key not found: #{kid}"
@@ -84,7 +84,7 @@ module Legion
 
         private
 
-        def refresh_keys(jwks_url, requested_kid: nil)
+        def refresh_keys(jwks_url:, requested_kid: nil, **)
           previous = cache_read(jwks_url)
           refreshing_miss = requested_kid && previous && !expired?(previous[:fetched_at])
           log.debug "JWKS fetch: #{jwks_url}"

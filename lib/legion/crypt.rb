@@ -106,7 +106,7 @@ module Legion
         end
       end
 
-      def install_vault_grant(client:, config:, grant:, auth_method:, generation:)
+      def install_vault_grant(client:, config:, grant:, auth_method:, generation:, **)
         issued_at = Time.now
         lifecycle_mutex.synchronize do
           raise 'Crypt stopped during login; login must be retried' if @stopping || generation != (@token_generation || 0)
@@ -343,7 +343,7 @@ module Legion
         log.info "Legion::Crypt started #{started} token renewer(s)" if started.positive?
       end
 
-      def start_token_renewer(cluster_name:, config:, vault_client:)
+      def start_token_renewer(cluster_name:, config:, vault_client:, **)
         @token_renewers ||= []
         return if @token_renewers.any? { |worker| worker.cluster_name == cluster_name && worker.running? }
 

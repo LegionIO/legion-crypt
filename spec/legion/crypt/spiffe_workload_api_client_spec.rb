@@ -124,7 +124,7 @@ RSpec.describe Legion::Crypt::Spiffe::WorkloadApiClient do
 
     after { sockets.each { |entry| entry.close unless entry.closed? } }
 
-    def data_frame(payload:, stream: 1, flags: 0)
+    def data_frame(payload:, stream: 1, flags: 0, **)
       length = payload.bytesize
       [length >> 16, (length >> 8) & 0xFF, length & 0xFF, 0, flags, stream].pack('CCCCCN') + payload
     end

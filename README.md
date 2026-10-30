@@ -116,7 +116,7 @@ Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh
 
 When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. Vault requests use the core-owned `Legion::Crypt::VaultClient`, built on Faraday and `Legion::JSON`; neither vault-ruby nor a LEX extension is required. Responses have symbol keys, including with JSON 3.
 
-`Legion::Crypt.vault_client` returns the cached default client; pass a cluster name for an explicit client. Its logical, KV, and lease endpoints use keyword arguments:
+`Legion::Crypt.vault_client` returns the cached default client; pass a cluster name for an explicit client. Its logical, KV, and lease endpoints use keyword arguments and ignore extra keywords while still enforcing required arguments. Existing high-level Crypt and LeaseManager call signatures are unchanged:
 
 ```ruby
 client = Legion::Crypt.vault_client

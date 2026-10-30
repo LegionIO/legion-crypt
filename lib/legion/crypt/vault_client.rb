@@ -11,7 +11,7 @@ module Legion
       class HTTPError < StandardError
         attr_reader :code, :errors, :address
 
-        def initialize(code:, errors: [], address: nil)
+        def initialize(code:, errors: [], address: nil, **)
           @code = Integer(code)
           @errors = Array(errors)
           @address = address
@@ -29,7 +29,7 @@ module Legion
       attr_reader(*CONNECTION_ATTRIBUTES, :logical, :sys, :auth_token, :token)
       attr_accessor :namespace
 
-      def initialize(address:, token: nil, namespace: nil, tls: {}, timeout: 5)
+      def initialize(address:, token: nil, namespace: nil, tls: {}, timeout: 5, **)
         @address = validate_address(address: address)
         @timeout = validate_timeout(timeout: timeout)
         @token = token
@@ -69,15 +69,15 @@ module Legion
         end
       end
 
-      def kv(mount:)
+      def kv(mount:, **)
         KV.new(client: self, mount: mount)
       end
 
-      def put(path:, body:, headers: {})
+      def put(path:, body:, headers: {}, **)
         request(method: :put, path: path, body: body, headers: headers) || {}
       end
 
-      def request(method:, path:, body: nil, headers: {}, nil_on_not_found: false)
+      def request(method:, path:, body: nil, headers: {}, nil_on_not_found: false, **)
         connection, request_headers, address = @mutex.synchronize do
           raise IOError, 'Vault client has been shut down' if @retired
 
@@ -105,19 +105,19 @@ module Legion
       end
 
       class Logical
-        def initialize(client:)
+        def initialize(client:, **)
           @client = client
         end
 
-        def read(path:)
+        def read(path:, **)
           Secret.decode(data: @client.request(method: :get, path: path, nil_on_not_found: true))
         end
 
-        def write(path:, data:)
+        def write(path:, data:, **)
           Secret.decode(data: @client.put(path: path, body: data))
         end
 
-        def delete(path:)
+        def delete(path:, **)
           @client.request(method: :delete, path: path)
           true
         end
@@ -125,7 +125,7 @@ module Legion
 
       class Sys
         class HealthStatus
-          def initialize(data:)
+          def initialize(data:, **)
             @initialized = data[:initialized]
           end
 
@@ -134,7 +134,7 @@ module Legion
           end
         end
 
-        def initialize(client:)
+        def initialize(client:, **)
           @client = client
         end
 
@@ -146,18 +146,18 @@ module Legion
           @client.request(method: :get, path: 'sys/mounts').fetch(:data)
         end
 
-        def renew(lease_id:)
+        def renew(lease_id:, **)
           Secret.decode(data: @client.put(path: 'sys/leases/renew', body: { lease_id: lease_id }))
         end
 
-        def revoke(lease_id:)
+        def revoke(lease_id:, **)
           @client.put(path: 'sys/leases/revoke', body: { lease_id: lease_id })
           true
         end
       end
 
       class AuthToken
-        def initialize(client:)
+        def initialize(client:, **)
           @client = client
         end
 
@@ -172,25 +172,25 @@ module Legion
       end
 
       class KV
-        def initialize(client:, mount:)
+        def initialize(client:, mount:, **)
           @client = client
           mount = mount.to_s
           first = mount.index(%r{[^/]})
           @mount = first ? mount[first..mount.rindex(%r{[^/]})] : ''
         end
 
-        def read(path:)
+        def read(path:, **)
           response = @client.request(method: :get, path: "#{@mount}/data/#{path}", nil_on_not_found: true)
           return nil if response.nil?
 
           Secret.decode(data: response.merge(data: response.dig(:data, :data)))
         end
 
-        def write(path:, data:)
+        def write(path:, data:, **)
           Secret.decode(data: @client.put(path: "#{@mount}/data/#{path}", body: { data: data }))
         end
 
-        def read_metadata(path:)
+        def read_metadata(path:, **)
           Secret.decode(data: @client.request(method: :get, path: "#{@mount}/metadata/#{path}", nil_on_not_found: true))
         end
       end
@@ -198,13 +198,13 @@ module Legion
       class Secret
         attr_reader :data, :auth, :lease_id, :lease_duration
 
-        def self.decode(data:)
+        def self.decode(data:, **)
           return nil if data.nil? || data.empty?
 
           new(data: data)
         end
 
-        def initialize(data:)
+        def initialize(data:, **)
           @data = data[:data]
           @auth = Auth.new(data: data[:auth]) unless data[:auth].nil?
           @lease_id = data[:lease_id]
@@ -224,7 +224,7 @@ module Legion
       class Auth
         attr_reader :client_token, :lease_duration, :policies, :metadata
 
-        def initialize(data:)
+        def initialize(data:, **)
           @client_token = data[:client_token]
           @lease_duration = data[:lease_duration]
           @policies = data[:policies]
@@ -243,7 +243,7 @@ module Legion
 
       private
 
-      def validate_address(address:)
+      def validate_address(address:, **)
         uri = URI.parse(address.to_s)
         unless uri.is_a?(URI::HTTP) && uri.host && !uri.userinfo && !uri.query && !uri.fragment
           raise ArgumentError, 'Vault address must be an HTTP(S) URL without credentials, query, or fragment'
@@ -254,14 +254,14 @@ module Legion
         raise ArgumentError, 'Vault address must be a valid HTTP(S) URL'
       end
 
-      def validate_timeout(timeout:)
+      def validate_timeout(timeout:, **)
         seconds = Float(timeout)
         raise ArgumentError, 'Vault timeout must be positive and finite' unless seconds.positive? && seconds.finite?
 
         seconds
       end
 
-      def vault_headers(headers:)
+      def vault_headers(headers:, **)
         result = Faraday::Utils::Headers.new('Accept' => 'application/json', 'Content-Type' => 'application/json')
         result.update(headers)
         result.delete('X-Vault-Token')
@@ -271,7 +271,7 @@ module Legion
         result
       end
 
-      def request_path(path:)
+      def request_path(path:, **)
         relative = path.to_s.sub(%r{\A/v1(?:/|\z)}, '').sub(%r{\A/+}, '')
         encoded = relative.split('/', -1).map do |segment|
           if ['.', '..'].include?(segment)
@@ -312,7 +312,7 @@ module Legion
         options
       end
 
-      def tls_certificate(certificate:)
+      def tls_certificate(certificate:, **)
         return certificate if certificate.is_a?(OpenSSL::X509::Certificate)
 
         pem = certificate.include?('-----BEGIN') ? certificate : File.read(certificate)
@@ -322,13 +322,13 @@ module Legion
         certificates.map { |entry| OpenSSL::X509::Certificate.new(entry) }
       end
 
-      def tls_key(key:)
+      def tls_key(key:, **)
         return key if key.is_a?(OpenSSL::PKey::PKey)
 
         OpenSSL::PKey.read(key.include?('-----BEGIN') ? key : File.read(key))
       end
 
-      def decode_response(response:, address:)
+      def decode_response(response:, address:, **)
         status = response.status
         unless (200..299).cover?(status)
           error_class = if (400..499).cover?(status)

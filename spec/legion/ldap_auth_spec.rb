@@ -27,7 +27,7 @@ RSpec.describe Legion::Crypt::LdapAuth do
 
   after { crypt.shutdown }
 
-  def ldap_secret(token:, ttl:, renewable:)
+  def ldap_secret(token:, ttl:, renewable:, **)
     double('Secret', auth: double('Auth', client_token: token, lease_duration: ttl, renewable?: renewable, policies: ['default']))
   end
 

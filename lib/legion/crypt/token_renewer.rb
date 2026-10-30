@@ -192,7 +192,7 @@ module Legion
         Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
       end
 
-      def active_generation?(generation:)
+      def active_generation?(generation:, **)
         !@stop && !crypt_stopping? && @generation == generation
       end
 
@@ -220,7 +220,7 @@ module Legion
         retry if @state_mutex.synchronize { active_generation?(generation: generation) }
       end
 
-      def renewal_policy(generation:)
+      def renewal_policy(generation:, **)
         @state_mutex.synchronize do
           return unless active_generation?(generation: generation)
 

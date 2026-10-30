@@ -20,7 +20,7 @@ module Legion
 
             @vault_clients ||= {}
             entry = @vault_clients[name]
-            signature = vault_client_signature(name.nil? ? vault_settings : clusters[name])
+            signature = vault_client_signature(config: name.nil? ? vault_settings : clusters[name])
             cached = cached_vault_client(entry: entry, signature: signature)
             return cached if cached
 
@@ -36,11 +36,11 @@ module Legion
           accepted = install_vault_client(name: name, signature: signature, client: candidate, generation: generation)
           return accepted if accepted
         ensure
-          retire_vault_client(candidate) unless accepted.equal?(candidate)
+          retire_vault_client(client: candidate) unless accepted.equal?(candidate)
         end
       end
 
-      def publish_vault_grant(client:, config:, grant:, auth_method:, issued_at: Time.now)
+      def publish_vault_grant(client:, config:, grant:, auth_method:, issued_at: Time.now, **)
         token = grant.fetch(:token)
         ttl = grant[:lease_duration].to_f
         expires_at = issued_at + ttl if ttl.positive?
@@ -51,7 +51,7 @@ module Legion
           if pair
             name, entry = pair
             current_config = name.nil? ? vault_settings : clusters[name]
-            unless config.equal?(current_config) && current_vault_client?(entry, vault_client_signature(current_config))
+            unless config.equal?(current_config) && current_vault_client?(entry: entry, signature: vault_client_signature(config: current_config))
               raise IOError, 'Vault client configuration changed during authentication'
             end
           end
@@ -63,7 +63,7 @@ module Legion
         end
       end
 
-      def clear_vault_clients(deadline: nil)
+      def clear_vault_clients(deadline: nil, **)
         deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
         clients = vault_clients_mutex.synchronize do
           @vault_client_generation = (@vault_client_generation || 0) + 1
@@ -73,7 +73,7 @@ module Legion
           @retired_vault_clients = nil
           previous.uniq
         end
-        clients.each { |client| retire_vault_client(client, deadline: deadline) }
+        clients.each { |client| retire_vault_client(client: client, deadline: deadline) }
       end
 
       def cluster(name = nil)
@@ -176,27 +176,27 @@ module Legion
         @vault_clients_mutex ||= Mutex.new
       end
 
-      def current_vault_client?(entry, signature)
+      def current_vault_client?(entry:, signature:, **)
         return false unless entry && signature
         return false unless entry[:signature].all? { |key, value| key == :token || value == signature[key] }
 
         entry[:signature][:token] == signature[:token] || entry[:client].token == signature[:token]
       end
 
-      def cached_vault_client(entry:, signature:)
-        return unless current_vault_client?(entry, signature)
+      def cached_vault_client(entry:, signature:, **)
+        return unless current_vault_client?(entry: entry, signature: signature)
 
         entry[:signature][:token] = signature[:token]&.dup if entry[:signature][:token] != signature[:token]
         entry[:client]
       end
 
-      def install_vault_client(name:, signature:, client:, generation:)
+      def install_vault_client(name:, signature:, client:, generation:, **)
         vault_clients_mutex.synchronize do
           raise IOError, 'Vault clients cleared during construction' unless generation == (@vault_client_generation || 0)
           raise IOError, 'Crypt stopped during client construction' if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
 
           entry = @vault_clients[name]
-          current_signature = vault_client_signature(name.nil? ? vault_settings : clusters[name])
+          current_signature = vault_client_signature(config: name.nil? ? vault_settings : clusters[name])
           cached = cached_vault_client(entry: entry, signature: current_signature)
           return cached if cached
           return unless signature == current_signature
@@ -207,7 +207,7 @@ module Legion
         end
       end
 
-      def resolve_vault_address(vault_settings)
+      def resolve_vault_address(vault_settings:, **)
         protocol = vault_settings[:protocol] || 'http'
         address  = vault_settings[:address] || 'localhost'
         port     = vault_settings[:port] || 8200
@@ -222,7 +222,7 @@ module Legion
         "#{protocol}://#{address}:#{port}"
       end
 
-      def vault_client_signature(config)
+      def vault_client_signature(config:, **)
         return unless config.is_a?(Hash)
 
         tls = Legion::Crypt::TLS.migrate_legacy(config[:tls] || {})
@@ -236,7 +236,7 @@ module Legion
             crypt_settings.respond_to?(:dig) ? crypt_settings.dig(:vault, :vault_namespace) : nil
           end
         {
-          address: resolve_vault_address(config), namespace: namespace, token: config[:token],
+          address: resolve_vault_address(vault_settings: config), namespace: namespace, token: config[:token],
           verify: verify, ca: tls[:ca], cert: tls[:cert], key: tls[:key],
           timeout: vault_settings[:operation_timeout] || Legion::Crypt::VaultOperation::DEFAULT_TIMEOUT
         }
@@ -261,7 +261,7 @@ module Legion
         end
       end
 
-      def retire_vault_client(client, deadline: nil)
+      def retire_vault_client(client:, deadline: nil, **)
         return unless client.respond_to?(:shutdown)
 
         Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) do

@@ -1,5 +1,10 @@
 # Legion::Crypt
 
+## [1.5.37] - 2026-10-30
+
+### Changed
+- Use keyword arguments and accept unused extra keywords in methods introduced by this PR; migrate internal callers while preserving pre-existing method signatures and Ruby assignment protocols (#52).
+
 ## [1.5.36] - 2026-10-30
 
 ### Fixed

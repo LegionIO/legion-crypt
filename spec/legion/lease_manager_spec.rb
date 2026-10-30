@@ -7,7 +7,7 @@ require 'legion/settings/resolver'
 RSpec.describe Legion::Crypt::LeaseManager do
   subject(:manager) { described_class.instance }
 
-  def lease_response(id:, username: 'rabbit_user', ttl: 3600, renewable: true)
+  def lease_response(id:, username: 'rabbit_user', ttl: 3600, renewable: true, **)
     double('Vault::Secret', data: { username: username, password: "#{username}_pass" },
                            lease_id: id, lease_duration: ttl, renewable?: renewable)
   end
