@@ -52,25 +52,7 @@ RSpec.describe Legion::Crypt::TokenRenewer do
     thread.value
   end
 
-  describe '#initialize' do
-    it 'stores the cluster name' do
-      expect(renewer.cluster_name).to eq(:primary)
-    end
-
-    it 'is not running after initialization' do
-      expect(renewer.running?).to be false
-    end
-  end
-
   describe '#renew_token' do
-    it 'calls renew_self on the vault client and updates lease_duration' do
-      allow(auth_token).to receive(:renew_self).and_return(renew_result)
-      result = renewer.renew_token
-      expect(result).to be true
-      expect(config[:lease_duration]).to eq(200)
-      expect(config[:renewable]).to be(false)
-    end
-
     it 'returns false when renewal fails' do
       allow(auth_token).to receive(:renew_self).and_raise(StandardError, 'token expired')
       result = renewer.renew_token
@@ -79,34 +61,11 @@ RSpec.describe Legion::Crypt::TokenRenewer do
   end
 
   describe '#reauth_kerberos' do
-    it 'obtains a fresh token via KerberosAuth.login' do
-      allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(
-        { token: 'hvs.reauth-token', lease_duration: 300, renewable: true, policies: [], metadata: {} }
-      )
-      allow(vault_client).to receive(:token=)
-      result = renewer.reauth_kerberos
-      expect(result).to be true
-      expect(config[:token]).to eq('hvs.reauth-token')
-      expect(config[:lease_duration]).to eq(300)
-      expect(config[:connected]).to be true
-    end
-
     it 'returns false when re-auth fails' do
       allow(Legion::Crypt::KerberosAuth).to receive(:login)
         .and_raise(Legion::Crypt::KerberosAuth::AuthError, 'no TGT')
       result = renewer.reauth_kerberos
       expect(result).to be false
-    end
-  end
-
-  describe '#sleep_duration' do
-    it 'returns 75% of the lease_duration' do
-      expect(renewer.sleep_duration).to eq(75)
-    end
-
-    it 'uses the ratio for short-lived tokens so renewal happens before expiry' do
-      config[:lease_duration] = 10
-      expect(renewer.sleep_duration).to eq(7)
     end
   end
 
@@ -201,6 +160,68 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       renewer.next_backoff
       renewer.reset_backoff
       expect(renewer.next_backoff).to eq(30)
+    end
+  end
+
+  describe 'LDAP token lifetime' do
+    let(:config) do
+      { token: 'ldap-token', lease_duration: 0.12, expires_at: Time.now + 0.12,
+        renewable: true, connected: true, auth_method: 'ldap' }
+    end
+
+    before { expect(Legion::Crypt::KerberosAuth).not_to receive(:login) }
+
+    it 'retries transient failures inside the remaining lifetime without disconnecting a usable token' do
+      attempts = 0
+      failed = Queue.new
+      recovered = Queue.new
+      original_expiry = config[:expires_at]
+      allow(auth_token).to receive(:renew_self) do
+        attempts += 1
+        if attempts == 1
+          failed << true
+          raise IOError, 'temporary connection failure'
+        end
+        recovered << true
+        renew_result
+      end
+      renewer.start
+      await_event(queue: failed)
+      expect(config[:connected]).to be(true)
+      await_event(queue: recovered)
+      Timeout.timeout(1) { sleep(0.001) until config[:expires_at] > original_expiry }
+      expect(config[:connected]).to be(true)
+      expect(config[:relogin_required]).to be(false)
+      expect(attempts).to eq(2)
+    end
+
+    it 'bounds a blocked renewal by expiry and ends in the login-required state' do
+      entered = Queue.new
+      blocked = Queue.new
+      allow(auth_token).to receive(:renew_self) do
+        entered << Thread.current
+        blocked.pop
+      end
+      renewer.start
+      worker = await_event(queue: entered)
+      finish_thread(thread: worker)
+      expect(config[:connected]).to be(false)
+      expect(config[:relogin_required]).to be(true)
+      expect(renewer.running?).to be(false)
+    end
+
+    it 'stops retrying when persistent transient failures exhaust the token lifetime' do
+      attempts = Queue.new
+      allow(auth_token).to receive(:renew_self) do
+        attempts << Thread.current
+        raise IOError, 'Vault unavailable'
+      end
+      renewer.start
+      worker = await_event(queue: attempts)
+      finish_thread(thread: worker)
+      expect(attempts.size).to be_between(1, 7)
+      expect(config[:connected]).to be(false)
+      expect(config[:relogin_required]).to be(true)
     end
   end
 

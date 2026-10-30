@@ -201,13 +201,17 @@ Clients are reused only while their endpoint, namespace, TLS verification, and t
 Legion::Crypt.ldap_login_all(username: 'user', password: 'pass')
 
 # Read from specific cluster
-Legion::Crypt.read('secret/data/mykey', cluster: :secondary)
+Legion::Crypt.read('secret/data/mykey', cluster_name: :secondary)
 
 # Get a Vault client for a specific cluster
 client = Legion::Crypt.vault_client(:primary)
 ```
 
 When `clusters` is empty, the legacy single-cluster path is used (backward compatible).
+
+LDAP login starts token maintenance immediately, including after `Crypt.start`. Cluster state retains `lease_duration`, `renewable`, `expires_at`, and `relogin_required`; passwords are used only for the login request. Renewable tokens renew at 75% of their lifetime through the same cluster client. Transient failures retry within the remaining lifetime; nonrenewable tokens remain available until expiry. Expiry or a terminal renewal rejection marks the cluster disconnected and sets `relogin_required: true`. Authenticate again with `ldap_login` or `ldap_login_all`; LDAP never falls back to Kerberos authentication.
+
+Repeated login stops the previous token worker before installing its replacement, and shutdown stops all token workers. With clusters configured, unavailable or expired clusters cannot fall back to the legacy global Vault client.
 
 ## Kerberos Authentication
 

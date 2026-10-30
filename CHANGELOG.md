@@ -1,5 +1,12 @@
 # Legion::Crypt
 
+## [1.5.25] - 2026-10-29
+
+### Fixed
+- Start an expiry-aware renewal lifecycle immediately after LDAP login, retain token lifetime metadata, and renew through the authenticated cluster without retaining passwords or invoking Kerberos (#51).
+- Preserve nonrenewable tokens until expiry, bound renewal retries and requests by remaining lifetime, and expose disconnected/login-required state after expiry or terminal renewal rejection (#51).
+- Replace prior LDAP workers safely on repeated login, reject late login results after shutdown, and prevent expired multi-cluster credentials from falling back to the global Vault client (#51).
+
 ## [1.5.24] - 2026-10-29
 
 ### Fixed

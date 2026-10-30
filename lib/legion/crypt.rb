@@ -196,6 +196,8 @@ module Legion
       end
 
       def vault_connected?
+        return connected_clusters.any? if settings.dig(:vault, :clusters)&.any?
+
         return true if settings.dig(:vault, :connected) == true
         return true if respond_to?(:connected_clusters) && connected_clusters.any?
 
@@ -238,6 +240,7 @@ module Legion
           return unless @started || @vault_clients&.any?
 
           @stopping = true
+          @token_generation = (@token_generation || 0) + 1
           @started = false
           true
         end
@@ -310,18 +313,22 @@ module Legion
       def start_token_renewers
         started = 0
         clusters.each do |name, config|
-          next unless config[:auth_method]&.to_s == 'kerberos' && config[:connected]
+          next unless %w[kerberos ldap].include?(config[:auth_method].to_s) && config[:connected]
 
-          renewer = Legion::Crypt::TokenRenewer.new(
-            cluster_name: name,
-            config:       config,
-            vault_client: vault_client(name)
-          )
-          renewer.start
-          @token_renewers << renewer
+          start_token_renewer(cluster_name: name, config: config, vault_client: vault_client(name))
           started += 1
         end
         log.info "Legion::Crypt started #{started} token renewer(s)" if started.positive?
+      end
+
+      def start_token_renewer(cluster_name:, config:, vault_client:)
+        @token_renewers ||= []
+        return if @token_renewers.any? { |worker| worker.cluster_name == cluster_name && worker.running? }
+
+        @token_renewers.reject! { |worker| worker.cluster_name == cluster_name }
+        renewer = Legion::Crypt::TokenRenewer.new(cluster_name: cluster_name, config: config, vault_client: vault_client)
+        @token_renewers << renewer
+        renewer.start
       end
 
       def stop_token_renewers(deadline: nil)

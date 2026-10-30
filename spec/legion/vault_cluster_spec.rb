@@ -137,6 +137,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
     end
 
     it 'keeps the current client after Kerberos reauthentication updates its token' do
+      cluster_alpha[:auth_method] = 'kerberos'
       cluster_alpha[:kerberos] = { service_principal: 'HTTP/vault.example.com' }
       client = test_object.vault_client(:alpha)
       allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(

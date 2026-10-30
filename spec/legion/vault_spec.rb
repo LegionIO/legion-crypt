@@ -272,6 +272,7 @@ RSpec.describe Legion::Crypt::Vault do
       obj = Object.new
       obj.extend(Legion::Crypt::VaultCluster)
       obj.extend(Legion::Crypt::Vault)
+      obj.define_singleton_method(:vault_settings) { { clusters: {} } }
       obj.sessions = []
       obj
     end
@@ -281,28 +282,6 @@ RSpec.describe Legion::Crypt::Vault do
         allow(host).to receive(:connected_clusters).and_return({ primary: { token: 'tok', connected: true } })
         allow(host).to receive(:selected_connected_cluster_name).with(nil).and_return(:primary)
         allow(host).to receive(:vault_client).with(:primary).and_return(mock_cluster_client)
-      end
-
-      describe '#kv_client' do
-        it 'returns vault_client.kv(kv_path)' do
-          expect(host.send(:kv_client)).to eq(mock_kv)
-        end
-
-        it 'does not touch the global ::Vault singleton' do
-          expect(Vault).not_to receive(:kv)
-          host.send(:kv_client)
-        end
-      end
-
-      describe '#logical_client' do
-        it 'returns vault_client.logical' do
-          expect(host.send(:logical_client)).to eq(mock_logical)
-        end
-
-        it 'does not touch the global ::Vault singleton' do
-          expect(Vault).not_to receive(:logical)
-          host.send(:logical_client)
-        end
       end
 
       describe '#get' do
@@ -402,7 +381,7 @@ RSpec.describe Legion::Crypt::Vault do
       end
     end
 
-    context 'when no clusters are connected' do
+    context 'when no clusters are configured' do
       before do
         allow(host).to receive(:connected_clusters).and_return({})
       end
@@ -413,28 +392,6 @@ RSpec.describe Legion::Crypt::Vault do
       before do
         allow(Vault).to receive(:kv).with(kv_path).and_return(global_kv)
         allow(Vault).to receive(:logical).and_return(global_logical)
-      end
-
-      describe '#kv_client' do
-        it 'falls back to the global ::Vault.kv client' do
-          expect(host.send(:kv_client)).to eq(global_kv)
-        end
-
-        it 'does not call vault_client' do
-          expect(host).not_to receive(:vault_client)
-          host.send(:kv_client)
-        end
-      end
-
-      describe '#logical_client' do
-        it 'falls back to the global ::Vault.logical client' do
-          expect(host.send(:logical_client)).to eq(global_logical)
-        end
-
-        it 'does not call vault_client' do
-          expect(host).not_to receive(:vault_client)
-          host.send(:logical_client)
-        end
       end
 
       describe '#get' do

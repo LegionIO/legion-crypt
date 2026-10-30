@@ -13,6 +13,7 @@ module Legion
       MAX_BACKOFF     = 600
       MIN_SLEEP       = 30
       RENEWAL_RATIO   = 0.75
+      MINIMUM_WAIT = 0.01
 
       attr_reader :cluster_name
 
@@ -27,6 +28,9 @@ module Legion
         @wake         = ConditionVariable.new
         @generation   = 0
         @stopping     = false
+        ttl = config[:lease_duration].to_f
+        @expires_at = config[:expires_at] || (Time.now + ttl if ttl.positive?)
+        @renewal_terminal = false
       end
 
       def start
@@ -78,18 +82,35 @@ module Legion
         generation ||= @state_mutex.synchronize { @generation }
         return false unless @state_mutex.synchronize { active_generation?(generation: generation) }
 
-        VaultOperation.with_timeout do
+        deadline = @state_mutex.synchronize do
+          ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + (@expires_at - Time.now) if @expires_at
+        end
+        VaultOperation.with_timeout(deadline: deadline) do
           result = @vault_client.auth_token.renew_self
           @state_mutex.synchronize do
             return false unless active_generation?(generation: generation)
 
             @config[:lease_duration] = result.auth.lease_duration
             @config[:renewable] = result.auth.renewable? if result.auth.respond_to?(:renewable?)
+            ttl = result.auth.lease_duration.to_f
+            @expires_at = ttl.positive? ? Time.now + ttl : nil
+            @config[:expires_at] = @expires_at
+            @config[:connected] = true
+            @config[:relogin_required] = false
           end
           log.info("TokenRenewer[#{@cluster_name}]: token renewed, ttl=#{result.auth.lease_duration}s")
           true
         end
       rescue StandardError => e
+        @state_mutex.synchronize do
+          if active_generation?(generation: generation) && @config[:auth_method].to_s == 'ldap'
+            @renewal_terminal = e.is_a?(::Vault::HTTPClientError) && ![408, 429].include?(e.code)
+            if @renewal_terminal || (@expires_at && @expires_at <= Time.now)
+              @config[:connected] = false
+              @config[:relogin_required] = true
+            end
+          end
+        end
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.renew_token', cluster_name: @cluster_name)
         log.warn("TokenRenewer[#{@cluster_name}]: token renewal failed: #{e.message}")
         false
@@ -99,6 +120,7 @@ module Legion
         generation ||= @state_mutex.synchronize { @generation }
         krb_config = @state_mutex.synchronize do
           return false unless active_generation?(generation: generation)
+          return false unless @config[:auth_method].to_s == 'kerberos'
 
           (@config[:kerberos] || {}).dup
         end
@@ -126,6 +148,10 @@ module Legion
             @config[:renewable]      = result[:renewable]
             @config[:connected]      = true
             @vault_client.token      = result[:token]
+            ttl = result[:lease_duration].to_f
+            @expires_at = ttl.positive? ? Time.now + ttl : nil
+            @config[:expires_at] = @expires_at
+            @config[:relogin_required] = false
           end
           log.info("TokenRenewer[#{@cluster_name}]: re-authenticated via Kerberos, ttl=#{result[:lease_duration]}s")
         end
@@ -138,11 +164,14 @@ module Legion
       end
 
       def sleep_duration
-        lease_duration = @state_mutex.synchronize { @config[:lease_duration].to_i }
-        duration = [(lease_duration * RENEWAL_RATIO).to_i, 1].max
-        return [duration, lease_duration - 1].min if lease_duration.positive? && lease_duration < MIN_SLEEP
+        @state_mutex.synchronize do
+          return MIN_SLEEP unless @expires_at
 
-        [duration, MIN_SLEEP].max
+          remaining = @expires_at - Time.now
+          renewable = @config[:renewable] || @config[:auth_method].to_s == 'kerberos'
+          delay = renewable ? remaining - (@config[:lease_duration].to_f * (1 - RENEWAL_RATIO)) : remaining
+          [delay, MINIMUM_WAIT].max
+        end
       end
 
       def next_backoff(generation: nil)
@@ -177,12 +206,11 @@ module Legion
         interruptible_sleep(sleep_duration, generation: generation)
 
         loop do
-          renewable = @state_mutex.synchronize do
-            return unless active_generation?(generation: generation)
+          policy = renewal_policy(generation: generation)
+          return unless policy
 
-            @config[:renewable]
-          end
-          renewed = (renewable && renew_token(generation: generation)) || reauth_kerberos(generation: generation)
+          renewable, kerberos = policy
+          renewed = (renewable && renew_token(generation: generation)) || (kerberos && reauth_kerberos(generation: generation))
           return unless @state_mutex.synchronize { active_generation?(generation: generation) }
 
           if renewed
@@ -194,7 +222,24 @@ module Legion
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.renewal_loop', cluster_name: @cluster_name)
         log.warn("TokenRenewer[#{@cluster_name}]: renewal loop error: #{e.message}")
+        on_renewal_failure(generation: generation)
         retry if @state_mutex.synchronize { active_generation?(generation: generation) }
+      end
+
+      def renewal_policy(generation:)
+        @state_mutex.synchronize do
+          return unless active_generation?(generation: generation)
+
+          kerberos = @config[:auth_method].to_s == 'kerberos'
+          if @expires_at && @expires_at <= Time.now
+            @config[:connected] = false
+            @config[:relogin_required] = true unless kerberos
+            return unless kerberos
+          end
+          return if !kerberos && (!@config[:renewable] || @config[:relogin_required])
+
+          [@config[:renewable], kerberos]
+        end
       end
 
       def on_renewal_success(generation:)
@@ -204,14 +249,22 @@ module Legion
       end
 
       def on_renewal_failure(generation:)
-        @state_mutex.synchronize do
-          return unless active_generation?(generation: generation)
-
-          @config[:connected] = false
-        end
         delay = next_backoff(generation: generation)
         return unless delay
 
+        @state_mutex.synchronize do
+          return unless active_generation?(generation: generation)
+
+          kerberos = @config[:auth_method].to_s == 'kerberos'
+          remaining = @expires_at && (@expires_at - Time.now)
+          if kerberos || @renewal_terminal || (remaining && !remaining.positive?)
+            @config[:connected] = false
+            @config[:relogin_required] = true unless kerberos
+          end
+          return if !kerberos && @config[:relogin_required]
+
+          delay = [delay, [remaining / 2, MINIMUM_WAIT].max, remaining].min if remaining&.positive?
+        end
         log.warn("TokenRenewer[#{@cluster_name}]: backoff retry in #{delay}s")
         interruptible_sleep(delay, generation: generation)
       end

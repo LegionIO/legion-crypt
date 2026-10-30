@@ -229,7 +229,7 @@ module Legion
 
       def kv_client(cluster_name: nil)
         mount = Legion::Settings[:crypt][:vault][:kv_path]
-        if respond_to?(:connected_clusters) && connected_clusters.any?
+        if respond_to?(:connected_clusters) && (clusters.any? || connected_clusters.any?)
           connected_vault_client(cluster_name).kv(mount)
         else
           raise ArgumentError, "Vault cluster not connected: #{cluster_name}" if cluster_name
@@ -239,7 +239,7 @@ module Legion
       end
 
       def logical_client(cluster_name: nil)
-        if respond_to?(:connected_clusters) && connected_clusters.any?
+        if respond_to?(:connected_clusters) && (clusters.any? || connected_clusters.any?)
           connected_vault_client(cluster_name).logical
         else
           raise ArgumentError, "Vault cluster not connected: #{cluster_name}" if cluster_name
@@ -260,9 +260,9 @@ module Legion
 
       def connected_vault_client(cluster_name = nil)
         selected_cluster = selected_connected_cluster_name(cluster_name)
-        raise ArgumentError, "Vault cluster not connected: #{cluster_name}" if selected_cluster.nil? && cluster_name
+        raise ArgumentError, "Vault cluster not connected: #{cluster_name || default_cluster_name}" if selected_cluster.nil?
 
-        selected_cluster ? vault_client(selected_cluster) : nil
+        vault_client(selected_cluster)
       end
 
       def unwrap_kv_v2(data, full_path)

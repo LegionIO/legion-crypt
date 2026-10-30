@@ -78,6 +78,8 @@ RSpec.describe Legion::Crypt do
   end
 
   describe '.delete' do
+    before { allow(described_class).to receive(:vault_settings).and_return(clusters: {}) }
+
     context 'when Vault is available' do
       let(:logical) { double('logical') }
 
@@ -86,10 +88,16 @@ RSpec.describe Legion::Crypt do
         allow(logical).to receive(:delete).and_return(true)
       end
 
-      it 'deletes the Vault path' do
-        result = Legion::Crypt.delete('secret/data/legion/workers/w-1/entra')
-        expect(logical).to have_received(:delete).with('secret/data/legion/workers/w-1/entra')
-        expect(result).to include(success: true)
+      it 'removes a previously readable Vault secret' do
+        path = 'secret/data/legion/workers/w-1/entra'
+        store = { path => { token: 'secret' } }
+        allow(logical).to receive(:delete) { |key| store.delete(key) }
+        allow(logical).to receive(:read) do |key|
+          double('Secret', data: store[key], lease_id: nil) if store.key?(key)
+        end
+        expect(described_class.read(path)).to eq(token: 'secret')
+        expect(described_class.delete(path)).to include(success: true)
+        expect(described_class.read(path)).to be_nil
       end
     end
 
@@ -170,95 +178,98 @@ RSpec.describe Legion::Crypt do
     end
   end
 
-  describe '.start with kerberos clusters' do
-    let(:mock_renewer) do
-      instance_double(Legion::Crypt::TokenRenewer, start: nil, request_stop: nil, stop: nil, running?: true)
+  describe 'cluster token lifecycle' do
+    let(:configuration) { Legion::Crypt::Settings.default.merge(save_private_key: false) }
+    let(:cluster_config) do
+      { protocol: 'https', address: 'vault.example.com', port: 8200, auth_method: 'ldap', connected: false }
     end
+    let(:client) { described_class.vault_client(:primary) }
+    let(:logical) { instance_double(Vault::Logical) }
+    let(:auth_token) { double('AuthToken', revoke_self: nil) }
 
     before do
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:start)
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:start_renewal_thread)
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:shutdown)
-      allow(Legion::Crypt).to receive(:connect_all_clusters)
+      described_class.shutdown
+      configuration[:vault].merge!(token: nil, connected: false, clusters: { primary: cluster_config }, leases: {}, operation_timeout: 0.05)
+      allow(Legion::Settings).to receive(:[]).and_call_original
+      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      allow(client).to receive(:logical).and_return(logical)
+      allow(client).to receive(:auth_token).and_return(auth_token)
     end
 
-    after do
-      Legion::Crypt.shutdown
-      Legion::Settings[:crypt][:vault][:clusters] = {}
+    after { described_class.shutdown }
+
+    it 'preserves automatic Kerberos reauthentication and revokes the owned token on shutdown' do
+      cluster_config.merge!(auth_method: 'kerberos', kerberos: { service_principal: 'HTTP/vault.example.com' })
+      attempts = 0
+      renewed = Queue.new
+      allow(Legion::Crypt::KerberosAuth).to receive(:login) do
+        attempts += 1
+        renewed << Thread.current if attempts > 1
+        { token: attempts == 1 ? 'initial' : 'reauthenticated', lease_duration: attempts == 1 ? 0.08 : 60,
+          renewable: false, policies: [] }
+      end
+      revoked = []
+      allow(auth_token).to receive(:revoke_self) { revoked << client.token }
+      described_class.start
+      described_class.start
+      worker = Timeout.timeout(1) { renewed.pop }
+      Timeout.timeout(1) { sleep(0.001) until client.token == 'reauthenticated' }
+      expect(described_class.vault_connected?).to be(true)
+      described_class.shutdown
+      expect(worker.alive?).to be(false)
+      expect(revoked).to eq(['reauthenticated'])
+      expect(attempts).to eq(2)
     end
 
-    it 'starts a TokenRenewer for connected kerberos clusters' do
-      Legion::Settings[:crypt][:vault][:clusters] = {
-        primary: {
-          protocol: 'https', address: 'vault.example.com', port: 8200,
-          auth_method: 'kerberos', connected: true, token: 'hvs.krb-token',
-          lease_duration: 3600, renewable: true,
-          kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
-        }
-      }
-      mock_client = instance_double(Vault::Client)
-      allow(Vault::Client).to receive(:new).and_return(mock_client)
-      allow(mock_client).to receive(:namespace=)
-      allow(Legion::Crypt::TokenRenewer).to receive(:new).and_return(mock_renewer)
-
-      Legion::Crypt.start
-      expect(Legion::Crypt::TokenRenewer).to have_received(:new)
-      expect(mock_renewer).to have_received(:start)
+    it 'replaces a pending LDAP renewal without duplicate workers and stops the replacement on shutdown' do
+      entered = Queue.new
+      blocked = Queue.new
+      first = double('Secret', auth: double('Auth', client_token: 'first', lease_duration: 0.08, renewable?: true, policies: []))
+      second = double('Secret', auth: double('Auth', client_token: 'second', lease_duration: 60, renewable?: false, policies: []))
+      allow(logical).to receive(:write).and_return(first, second)
+      allow(auth_token).to receive(:renew_self) do
+        entered << Thread.current
+        blocked.pop
+      end
+      expect(Legion::Crypt::KerberosAuth).not_to receive(:login)
+      described_class.start
+      described_class.ldap_login(cluster_name: :primary, username: 'user', password: 'one-use')
+      previous = Timeout.timeout(1) { entered.pop }
+      described_class.ldap_login(cluster_name: :primary, username: 'user', password: 'one-use')
+      workers = Thread.list.select { |thread| thread.name == 'vault-renewer-primary' }
+      expect(previous.alive?).to be(false)
+      expect(workers.size).to eq(1)
+      expect(client.token).to eq('second')
+      expect(described_class.vault_connected?).to be(true)
+      described_class.shutdown
+      expect(workers.first.alive?).to be(false)
     end
 
-    it 'skips non-kerberos clusters' do
-      Legion::Settings[:crypt][:vault][:clusters] = {
-        token_based: {
-          protocol: 'https', address: 'vault.example.com', port: 8200,
-          token: 'hvs.static', connected: true
-        }
-      }
-      mock_client = instance_double(Vault::Client)
-      allow(Vault::Client).to receive(:new).and_return(mock_client)
-      allow(mock_client).to receive(:namespace=)
-      allow(mock_client).to receive(:sys).and_return(double('sys', health_status: double(initialized?: true)))
-
-      Legion::Crypt.start
-      expect(Legion::Crypt::TokenRenewer).not_to receive(:new)
-    end
-
-    it 'stops all token renewers on shutdown' do
-      Legion::Settings[:crypt][:vault][:clusters] = {
-        primary: {
-          protocol: 'https', address: 'vault.example.com', port: 8200,
-          auth_method: 'kerberos', connected: true, token: 'hvs.krb-token',
-          lease_duration: 3600, renewable: true,
-          kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
-        }
-      }
-      mock_client = instance_double(Vault::Client)
-      allow(Vault::Client).to receive(:new).and_return(mock_client)
-      allow(mock_client).to receive(:namespace=)
-      allow(Legion::Crypt::TokenRenewer).to receive(:new).and_return(mock_renewer)
-
-      Legion::Crypt.start
-      Legion::Crypt.shutdown
-      expect(mock_renewer).to have_received(:stop)
-    end
-
-    it 'ignores repeated start calls once the lifecycle is already running' do
-      Legion::Settings[:crypt][:vault][:clusters] = {
-        primary: {
-          protocol: 'https', address: 'vault.example.com', port: 8200,
-          auth_method: 'kerberos', connected: true, token: 'hvs.krb-token',
-          lease_duration: 3600, renewable: true,
-          kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
-        }
-      }
-      mock_client = instance_double(Vault::Client)
-      allow(Vault::Client).to receive(:new).and_return(mock_client)
-      allow(mock_client).to receive(:namespace=)
-      allow(Legion::Crypt::TokenRenewer).to receive(:new).and_return(mock_renewer)
-
-      Legion::Crypt.start
-      Legion::Crypt.start
-
-      expect(Legion::Crypt::TokenRenewer).to have_received(:new).once
+    it 'does not install an LDAP login response completing after shutdown' do
+      entered = Queue.new
+      release = Queue.new
+      allow(logical).to receive(:write) do
+        entered << true
+        release.pop
+        double('Secret', auth: double('Auth', client_token: 'late', lease_duration: 60, renewable?: true))
+      end
+      described_class.start
+      operation = Thread.new do
+        described_class.ldap_login(cluster_name: :primary, username: 'user', password: 'one-use')
+      rescue StandardError => e
+        e
+      end
+      Timeout.timeout(1) { entered.pop }
+      described_class.shutdown
+      release << true
+      expect(operation.join(1)).to eq(operation)
+      expect(operation.value).to be_a(RuntimeError)
+      expect(cluster_config[:token]).to be_nil
+      expect(described_class.connected_clusters).to be_empty
+      expect(Thread.list.none? { |thread| thread.name == 'vault-renewer-primary' }).to be(true)
+    ensure
+      release << true if operation&.alive?
+      operation&.join(1)
     end
   end
 

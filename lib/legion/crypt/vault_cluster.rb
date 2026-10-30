@@ -69,7 +69,11 @@ module Legion
       end
 
       def connected_clusters
-        clusters.select { |_, config| config[:token] && config[:connected] }
+        now = Time.now
+        clusters.select do |_, config|
+          config[:token] && config[:connected] && !config[:relogin_required] &&
+            (!config[:expires_at] || config[:expires_at] > now)
+        end
       end
 
       def connect_all_clusters
@@ -227,6 +231,9 @@ module Legion
         config[:lease_duration] = result[:lease_duration]
         config[:renewable] = result[:renewable]
         config[:connected] = true
+        ttl = result[:lease_duration].to_f
+        config[:expires_at] = ttl.positive? ? Time.now + ttl : nil
+        config[:relogin_required] = false
         client.token = result[:token]
         log_vault_debug("connect_kerberos_cluster[#{name}]: policies=#{result[:policies].inspect}")
         log_cluster_connected(name, config)
