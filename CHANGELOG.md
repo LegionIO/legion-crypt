@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.33] - 2026-10-30
+
+### Fixed
+- Resolve Vault-backed TLS material outside the client-cache lock, then revalidate settings and lifecycle generation before publishing a candidate (#52).
+- Reject unresolved explicit trust/identity material and circular Vault TLS dependencies; close superseded or shutdown-interrupted client candidates (#52).
+
 ## [1.5.32] - 2026-10-30
 
 ### Fixed

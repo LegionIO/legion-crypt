@@ -13,26 +13,30 @@ module Legion
 
       def vault_client(name = nil)
         name = resolve_cluster_name(name)
-        vault_clients_mutex.synchronize do
-          return @vault_clients&.dig(name, :client) if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
+        loop do
+          candidate = accepted = nil
+          signature, generation = vault_clients_mutex.synchronize do
+            return @vault_clients&.dig(name, :client) if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
 
-          @vault_clients ||= {}
-          entry = @vault_clients[name]
-          config = name.nil? ? vault_settings : clusters[name]
-          signature = vault_client_signature(config)
-          if current_vault_client?(entry, signature)
-            entry[:signature][:token] = signature[:token]&.dup if entry[:signature][:token] != signature[:token]
-            return entry[:client]
-          end
+            @vault_clients ||= {}
+            entry = @vault_clients[name]
+            signature = vault_client_signature(name.nil? ? vault_settings : clusters[name])
+            cached = cached_vault_client(entry: entry, signature: signature)
+            return cached if cached
 
-          replacement = signature && build_vault_client(signature)
-          @vault_clients.delete(name)
-          (@retired_vault_clients ||= ObjectSpace::WeakMap.new)[entry[:client]] = true if entry
-          if replacement
+            unless signature
+              (@retired_vault_clients ||= ObjectSpace::WeakMap.new)[entry[:client]] = true if entry
+              @vault_clients.delete(name)
+              return nil
+            end
             signature.transform_values! { |value| value.is_a?(String) ? value.dup.freeze : value }
-            @vault_clients[name] = { client: replacement, signature: signature }
+            [signature, @vault_client_generation || 0]
           end
-          replacement
+          candidate = build_vault_client(signature, name: name)
+          accepted = install_vault_client(name: name, signature: signature, client: candidate, generation: generation)
+          return accepted if accepted
+        ensure
+          retire_vault_client(candidate) unless accepted.equal?(candidate)
         end
       end
 
@@ -62,6 +66,7 @@ module Legion
       def clear_vault_clients(deadline: nil)
         deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
         clients = vault_clients_mutex.synchronize do
+          @vault_client_generation = (@vault_client_generation || 0) + 1
           previous = (@vault_clients || {}).values.map { |entry| entry[:client] }
           previous.concat(@retired_vault_clients.keys) if @retired_vault_clients
           @vault_clients = {}
@@ -178,6 +183,30 @@ module Legion
         entry[:signature][:token] == signature[:token] || entry[:client].token == signature[:token]
       end
 
+      def cached_vault_client(entry:, signature:)
+        return unless current_vault_client?(entry, signature)
+
+        entry[:signature][:token] = signature[:token]&.dup if entry[:signature][:token] != signature[:token]
+        entry[:client]
+      end
+
+      def install_vault_client(name:, signature:, client:, generation:)
+        vault_clients_mutex.synchronize do
+          raise IOError, 'Vault clients cleared during construction' unless generation == (@vault_client_generation || 0)
+          raise IOError, 'Crypt stopped during client construction' if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
+
+          entry = @vault_clients[name]
+          current_signature = vault_client_signature(name.nil? ? vault_settings : clusters[name])
+          cached = cached_vault_client(entry: entry, signature: current_signature)
+          return cached if cached
+          return unless signature == current_signature
+
+          (@retired_vault_clients ||= ObjectSpace::WeakMap.new)[entry[:client]] = true if entry
+          @vault_clients[name] = { client: client, signature: signature }
+          client
+        end
+      end
+
       def resolve_vault_address(vault_settings)
         protocol = vault_settings[:protocol] || 'http'
         address  = vault_settings[:address] || 'localhost'
@@ -213,11 +242,23 @@ module Legion
         }
       end
 
-      def build_vault_client(signature)
-        tls = Legion::Crypt::TLS.resolve(signature.slice(:verify, :ca, :cert, :key))
-        options = signature.slice(:address, :namespace, :token, :timeout).merge(tls: tls)
-        log.info "Building Vault client address=#{options[:address]} namespace=#{options[:namespace].inspect} tls_verify=#{tls[:verify]}"
-        Legion::Crypt::VaultClient.new(**options)
+      def build_vault_client(signature, name:)
+        building = Thread.current[:legion_vault_clients_building] ||= []
+        build_key = [self, name]
+        raise IOError, 'Circular Vault TLS material dependency' if building.include?(build_key)
+
+        building << build_key
+        begin
+          tls = Legion::Crypt::TLS.resolve(signature.slice(:verify, :ca, :cert, :key))
+          %i[ca cert key].each do |attribute|
+            raise IOError, "Configured Vault TLS #{attribute} could not be resolved" if signature[attribute] && tls[attribute].nil?
+          end
+          options = signature.slice(:address, :namespace, :token, :timeout).merge(tls: tls)
+          log.info "Building Vault client address=#{options[:address]} namespace=#{options[:namespace].inspect} tls_verify=#{tls[:verify]}"
+          Legion::Crypt::VaultClient.new(**options)
+        ensure
+          building.delete(build_key)
+        end
       end
 
       def retire_vault_client(client, deadline: nil)

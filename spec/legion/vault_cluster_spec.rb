@@ -3,6 +3,8 @@
 require 'spec_helper'
 require 'legion/crypt/vault_cluster'
 require 'legion/crypt/kerberos_auth'
+require 'legion/settings/resolver'
+require 'socket'
 
 RSpec.describe Legion::Crypt::VaultCluster do
   let(:cluster_alpha) do
@@ -236,6 +238,90 @@ RSpec.describe Legion::Crypt::VaultCluster do
       replacement = Timeout.timeout(0.5) { test_object.vault_client(:alpha) }
       expect(replacement.address).to eq('https://replacement.example.com:8200')
       expect(test_object.vault_client(:alpha)).to equal(replacement)
+    end
+
+    it 'uses a Vault-backed CA from another cached cluster to verify the TLS peer' do
+      resolver = Legion::Settings::Resolver
+      resolver_state = %i[@vault_available @vault_cache].to_h { |key| [key, resolver.instance_variable_get(key)] }
+      key = OpenSSL::PKey::EC.generate('prime256v1')
+      certificate = OpenSSL::X509::Certificate.new
+      certificate.version = 2
+      certificate.serial = 1
+      certificate.subject = certificate.issuer = OpenSSL::X509::Name.parse('/CN=localhost')
+      certificate.public_key = key
+      certificate.not_before = Time.now - 60
+      certificate.not_after = Time.now + 3600
+      extensions = OpenSSL::X509::ExtensionFactory.new
+      extensions.subject_certificate = extensions.issuer_certificate = certificate
+      certificate.add_extension(extensions.create_extension('basicConstraints', 'CA:TRUE', true))
+      certificate.add_extension(extensions.create_extension('subjectAltName', 'IP:127.0.0.1'))
+      certificate.sign(key, OpenSSL::Digest.new('SHA256'))
+      listener = TCPServer.new('127.0.0.1', 0)
+      context = OpenSSL::SSL::SSLContext.new
+      context.cert = certificate
+      context.key = key
+      server = OpenSSL::SSL::SSLServer.new(listener, context)
+      responder = Thread.new do
+        socket = server.accept
+        loop do
+          line = socket.gets
+          break if line.nil? || line == "\r\n"
+        end
+        body = Legion::JSON.dump({ initialized: true })
+        socket.write("HTTP/1.1 200 OK\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}")
+      ensure
+        socket&.close
+      end
+      primary = test_object.vault_client(:alpha)
+      connection = Faraday.new do |builder|
+        builder.adapter(:test) do |stub|
+          stub.get('/v1/secret/audit-ca') { [200, {}, Legion::JSON.dump({ data: { pem: certificate.to_pem } })] }
+        end
+      end
+      allow(primary).to receive(:build_connection).and_return(connection)
+      allow(Legion::Crypt).to receive(:read) { |path| test_object.vault_client(:alpha).logical.read(path: path).data }
+      allow(resolver).to receive(:vault_connected?).and_return(true)
+      resolver.resolve_secrets!({})
+      cluster_beta.merge!(address: '127.0.0.1', port: listener.addr[1], tls: { ca: 'vault://secret/audit-ca#pem' })
+
+      secondary = test_object.vault_client(:beta)
+      expect(secondary.sys.health_status.initialized?).to be(true)
+    ensure
+      listener&.close
+      responder&.kill
+      responder&.join
+      resolver_state&.each { |key, value| resolver.instance_variable_set(key, value) }
+    end
+
+    it 'rejects a client whose TLS construction finishes after the cache is cleared' do
+      entered = Queue.new
+      release = Queue.new
+      allow(Legion::Crypt::TLS).to receive(:resolve).and_wrap_original do |original, *args|
+        entered << true
+        release.pop
+        original.call(*args)
+      end
+      worker = Thread.new do
+        test_object.vault_client(:alpha)
+      rescue IOError => e
+        e
+      end
+      Timeout.timeout(1) { entered.pop }
+      test_object.clear_vault_clients
+      release << true
+      Timeout.timeout(1) { worker.join }
+
+      expect(worker.value).to be_a(IOError)
+    ensure
+      worker&.kill
+      worker&.join
+    end
+
+    it 'rejects explicitly configured TLS material that cannot be resolved' do
+      cluster_beta[:tls] = { ca: 'vault://secret/missing#pem' }
+      allow(Legion::Settings::Resolver).to receive(:resolve_value).with('vault://secret/missing#pem').and_return(nil)
+
+      expect { test_object.vault_client(:beta) }.to raise_error(IOError)
     end
   end
 

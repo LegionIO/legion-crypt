@@ -130,6 +130,8 @@ The existing `Legion::Crypt.read`, `get`, `write`, and `delete` interfaces are u
 
 Standalone clients accept `address:`, `token:`, `namespace:`, `timeout:`, and `tls:`. TLS uses the existing `verify: 'peer'`, `'none'`, or `'mutual'` configuration with `ca:`, `cert:`, and `key:` material. CA, certificate, and key values can be PEM or file paths; client identities also accept OpenSSL objects. `shutdown` permanently retires a client, including retained endpoint handles.
 
+Vault-backed TLS material can resolve through another connected cluster without holding the client-cache lock. Explicit `ca`, `cert`, or `key` references that cannot resolve fail client construction rather than silently falling back to system trust or dropping the identity. Circular TLS dependencies are rejected; bootstrap the source cluster with independently available trust material.
+
 Lease acquisition, renewal, reissue, token maintenance, and session revocation use the finite-positive `crypt.vault.operation_timeout` budget (default: 5 seconds). Failures are isolated per item. Shutdown shares a 10-second deadline, invalidates worker generations before external cleanup, and resets lifecycle state even when revocation fails. Late callbacks cannot restore credentials or settings after their lifecycle stops.
 
 ### Dynamic Vault Leases
