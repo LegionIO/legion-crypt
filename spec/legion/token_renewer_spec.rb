@@ -386,13 +386,15 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       vault_settings = Legion::Settings[:crypt][:vault]
       had_timeout = vault_settings.key?(:operation_timeout)
       previous_timeout = vault_settings[:operation_timeout]
-      vault_settings[:operation_timeout] = 0.02
-      example.run
-    ensure
-      if had_timeout
-        vault_settings[:operation_timeout] = previous_timeout
-      else
-        vault_settings.delete(:operation_timeout)
+      begin
+        vault_settings[:operation_timeout] = 0.02
+        example.run
+      ensure
+        if had_timeout
+          vault_settings[:operation_timeout] = previous_timeout
+        else
+          vault_settings.delete(:operation_timeout)
+        end
       end
     end
 
