@@ -41,8 +41,7 @@ module Legion
         client = Legion::Crypt.vault_client
         config = Legion::Crypt.cluster || Legion::Settings[:crypt][:vault]
         result = login(spnego_token: spnego_token, auth_path: auth_path)
-        config[:token] = result[:token]
-        client.token = result[:token]
+        Legion::Crypt.publish_vault_token(client: client, config: config, token: result[:token])
         log.info "[crypt:vault_kerberos] authenticated via Kerberos auth, policies=#{result[:policies].join(',')}"
         result
       end

@@ -144,11 +144,10 @@ module Legion
           @state_mutex.synchronize do
             return false unless active_generation?(generation: generation)
 
-            @config[:token]          = result[:token]
+            Legion::Crypt.publish_vault_token(client: @vault_client, config: @config, token: result[:token])
             @config[:lease_duration] = result[:lease_duration]
             @config[:renewable]      = result[:renewable]
             @config[:connected]      = true
-            @vault_client.token      = result[:token]
             ttl = result[:lease_duration].to_f
             @expires_at = ttl.positive? ? Time.now + ttl : nil
             @config[:expires_at] = @expires_at

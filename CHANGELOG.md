@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.31] - 2026-10-30
+
+### Fixed
+- Publish LDAP, JWT, Kerberos and reauthentication tokens together with client-cache signatures under one lock, rejecting late results for replaced clients or changed configuration (#52).
+- Reject token publication to clients that have already shut down (#52).
+
 ## [1.5.30] - 2026-10-30
 
 ### Fixed

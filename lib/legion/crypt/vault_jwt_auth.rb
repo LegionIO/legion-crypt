@@ -68,8 +68,7 @@ module Legion
         client = Legion::Crypt.vault_client
         config = Legion::Crypt.cluster || Legion::Settings[:crypt][:vault]
         result = login(jwt: jwt, role: role, auth_path: auth_path)
-        config[:token] = result[:token]
-        client.token = result[:token]
+        Legion::Crypt.publish_vault_token(client: client, config: config, token: result[:token])
         log.info "[crypt:vault_jwt] authenticated via JWT auth, policies=#{result[:policies].join(',')}"
         result
       end

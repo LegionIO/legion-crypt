@@ -202,6 +202,19 @@ RSpec.describe Legion::Crypt::VaultCluster do
       manager&.reset!
     end
 
+    it 'rejects a late authentication result after its client has been displaced' do
+      previous = test_object.vault_client(:alpha)
+      cluster_alpha[:namespace] = 'replacement-namespace'
+      current = test_object.vault_client(:alpha)
+
+      expect do
+        test_object.publish_vault_token(client: previous, config: cluster_alpha, token: 'stale-token')
+      end.to raise_error(IOError)
+      expect(test_object.vault_client(:alpha)).to equal(current)
+      expect(current.token).to eq('token-alpha')
+      expect(cluster_alpha[:token]).to eq('token-alpha')
+    end
+
     it 'clears every entry even when one client cannot shut down' do
       alpha = test_object.vault_client(:alpha)
       beta = test_object.vault_client(:beta)

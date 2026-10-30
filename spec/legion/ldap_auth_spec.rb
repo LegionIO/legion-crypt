@@ -50,6 +50,40 @@ RSpec.describe Legion::Crypt::LdapAuth do
     expect(cluster_one.to_s).not_to include('one-use-password')
   end
 
+  it 'keeps concurrent lookups attached to the authenticated client during token publication' do
+    entered = Queue.new
+    release = Queue.new
+    renewed = Queue.new
+    allow(client).to receive(:token=).and_wrap_original do |original, token|
+      entered << true
+      release.pop
+      original.call(token)
+    end
+    allow(auth_token).to receive(:renew_self) do
+      renewed << true
+      ldap_secret(token: 'ldap-token', ttl: 60, renewable: true)
+    end
+    login = Thread.new { crypt.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret') }
+    Timeout.timeout(1) { entered.pop }
+    lookup = Thread.new { crypt.vault_client(:one) }
+    Timeout.timeout(1) { Thread.pass until lookup.status == 'sleep' || !lookup.alive? }
+    release << true
+    Timeout.timeout(1) do
+      login.join
+      lookup.join
+      renewed.pop
+    end
+
+    expect(lookup.value).to equal(client)
+    expect(crypt.read('secret/application', cluster_name: :one)).to eq(owner: 'one')
+    expect(crypt.vault_connected?).to be(true)
+  ensure
+    [login, lookup].compact.each do |thread|
+      thread.kill
+      thread.join
+    end
+  end
+
   it 'keeps a nonrenewable token usable until expiry and then requires login' do
     allow(logical).to receive(:write).and_return(ldap_secret(token: 'finite-token', ttl: 0.1, renewable: false))
     expect(auth_token).not_to receive(:renew_self)

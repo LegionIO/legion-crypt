@@ -36,6 +36,24 @@ module Legion
         end
       end
 
+      def publish_vault_token(client:, config:, token:)
+        vault_clients_mutex.synchronize do
+          pair = @vault_clients&.find { |_name, entry| entry[:client].equal?(client) }
+          raise IOError, 'Vault client replaced during authentication' if @retired_vault_clients&.key?(client)
+
+          if pair
+            name, entry = pair
+            current_config = name.nil? ? vault_settings : clusters[name]
+            unless config.equal?(current_config) && current_vault_client?(entry, vault_client_signature(current_config))
+              raise IOError, 'Vault client configuration changed during authentication'
+            end
+          end
+          client.token = token
+          config[:token] = token
+          entry[:signature][:token] = token&.dup&.freeze if entry
+        end
+      end
+
       def clear_vault_clients(deadline: nil)
         deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
         clients = vault_clients_mutex.synchronize do
@@ -233,14 +251,13 @@ module Legion
           auth_path:         auth_path
         )
 
-        config[:token] = result[:token]
+        publish_vault_token(client: client, config: config, token: result[:token])
         config[:lease_duration] = result[:lease_duration]
         config[:renewable] = result[:renewable]
         config[:connected] = true
         ttl = result[:lease_duration].to_f
         config[:expires_at] = ttl.positive? ? Time.now + ttl : nil
         config[:relogin_required] = false
-        client.token = result[:token]
         log_vault_debug("connect_kerberos_cluster[#{name}]: policies=#{result[:policies].inspect}")
         log_cluster_connected(name, config)
         true

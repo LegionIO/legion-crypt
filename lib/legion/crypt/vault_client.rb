@@ -26,8 +26,8 @@ module Legion
     class VaultClient
       CONNECTION_ATTRIBUTES = %i[address ssl_verify ca cert key timeout].freeze
 
-      attr_reader(*CONNECTION_ATTRIBUTES, :logical, :sys, :auth_token)
-      attr_accessor :token, :namespace
+      attr_reader(*CONNECTION_ATTRIBUTES, :logical, :sys, :auth_token, :token)
+      attr_accessor :namespace
 
       def initialize(address:, token: nil, namespace: nil, tls: {}, timeout: 5)
         @address = validate_address(address: address)
@@ -58,6 +58,14 @@ module Legion
             previous&.close
           end
           value
+        end
+      end
+
+      def token=(value)
+        @mutex.synchronize do
+          raise IOError, 'Vault client has been shut down' if @retired
+
+          @token = value
         end
       end
 

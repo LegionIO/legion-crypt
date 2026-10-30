@@ -33,13 +33,12 @@ module Legion
           raise 'Previous LDAP token worker has not stopped; login must be retried' if previous&.running?
 
           config = clusters.fetch(cluster_name)
-          config[:token] = token
+          publish_vault_token(client: client, config: config, token: token)
           config[:lease_duration] = auth.lease_duration
           config[:renewable] = auth.renewable?
           config[:expires_at] = expires_at
           config[:connected] = expires_at.nil? || expires_at > Time.now
           config[:relogin_required] = !config[:connected]
-          client.token = token
           start_token_renewer(cluster_name: cluster_name, config: config, vault_client: client)
         end
 
