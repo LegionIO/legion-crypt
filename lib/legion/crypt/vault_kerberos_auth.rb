@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/crypt/vault_client'
 
 module Legion
   module Crypt
@@ -12,10 +13,13 @@ module Legion
       extend Legion::Logging::Helper
 
       def self.login(spnego_token:, auth_path: DEFAULT_AUTH_PATH)
-        raise AuthError, 'Vault is not connected' unless vault_connected?
+        raise AuthError, 'Vault is not connected' unless Legion::Crypt.vault_connected?
 
         log.info "[crypt:vault_kerberos] login requested auth_path=#{auth_path}"
-        response = ::Vault.logical.write(auth_path, authorization: "Negotiate #{spnego_token}")
+        data = Legion::Crypt.vault_client.put(
+          path: auth_path, body: '{}', headers: { 'Authorization' => "Negotiate #{spnego_token}" }
+        )
+        response = Legion::Crypt::VaultClient::Secret.decode(data: data)
         raise AuthError, 'Vault Kerberos auth returned no auth data' unless response&.auth
 
         {
@@ -25,7 +29,7 @@ module Legion
           policies:       response.auth.policies,
           metadata:       response.auth.metadata
         }
-      rescue ::Vault::HTTPClientError => e
+      rescue Legion::Crypt::Vault::HTTPClientError => e
         handle_exception(e, level: :warn, operation: 'crypt.vault_kerberos_auth.login', auth_path: auth_path)
         raise AuthError, "Vault Kerberos auth failed: #{e.message}"
       rescue StandardError => e
@@ -34,21 +38,14 @@ module Legion
       end
 
       def self.login!(spnego_token:, auth_path: DEFAULT_AUTH_PATH)
+        generation = Legion::Crypt.vault_auth_generation
+        client = Legion::Crypt.vault_client
+        config = Legion::Crypt.cluster || Legion::Settings[:crypt][:vault]
         result = login(spnego_token: spnego_token, auth_path: auth_path)
-        ::Vault.token = result[:token]
+        Legion::Crypt.install_vault_grant(client: client, config: config, grant: result, auth_method: 'kerberos', generation: generation)
         log.info "[crypt:vault_kerberos] authenticated via Kerberos auth, policies=#{result[:policies].join(',')}"
         result
       end
-
-      def self.vault_connected?
-        defined?(::Vault) && defined?(Legion::Settings) &&
-          Legion::Settings[:crypt][:vault][:connected] == true
-      rescue StandardError => e
-        handle_exception(e, level: :debug, operation: 'crypt.vault_kerberos_auth.vault_connected')
-        false
-      end
-
-      private_class_method :vault_connected?
     end
   end
 end

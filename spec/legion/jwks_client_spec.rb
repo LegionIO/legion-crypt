@@ -10,6 +10,8 @@ RSpec.describe Legion::Crypt::JwksClient do
   let(:jwks_response) do
     { 'keys' => [jwk.export.transform_keys(&:to_s)] }.to_json
   end
+  let(:rotated_key) { OpenSSL::PKey::RSA.generate(2048) }
+  let(:rotated_response) { { keys: [JWT::JWK.new(rotated_key, kid: 'rotated-kid').export] }.to_json }
 
   before { described_class.clear_cache }
 
@@ -55,60 +57,95 @@ RSpec.describe Legion::Crypt::JwksClient do
   end
 
   describe '.find_key' do
-    context 'with cached keys' do
-      before do
-        allow(described_class).to receive(:http_get).and_return(jwks_response)
-        described_class.fetch_keys(jwks_url)
+    it 'coalesces five simultaneous cold misses into one upstream request' do
+      body = jwks_response
+      requests = Queue.new
+      release = Queue.new
+      allow(described_class).to receive(:http_get) do
+        requests << true
+        release.pop
+        body
       end
+      workers = 5.times.map { Thread.new { described_class.find_key(jwks_url, 'test-kid-1') } }
+      Timeout.timeout(3) { Thread.pass until workers.all?(&:stop?) }
+      5.times { release << true }
+      keys = Timeout.timeout(3) { workers.map(&:value) }
 
-      it 'returns the key for a known kid' do
-        key = described_class.find_key(jwks_url, 'test-kid-1')
-        expect(key).to be_a(OpenSSL::PKey::RSA)
-      end
-
-      it 'raises for an unknown kid after refreshing cached keys' do
-        expect(described_class).to receive(:fetch_keys).with(jwks_url).and_call_original
-
-        expect { described_class.find_key(jwks_url, 'unknown-kid') }
-          .to raise_error(Legion::Crypt::JWT::InvalidTokenError, /signing key not found/)
-      end
+      expect(requests.size).to eq(1)
+      expect(keys.map(&:to_der).uniq).to eq([rsa_key.public_key.to_der])
+    ensure
+      workers&.each(&:kill)
+      workers&.each(&:join)
     end
 
-    context 'with expired cache' do
-      before do
-        allow(described_class).to receive(:http_get).and_return(jwks_response)
-        described_class.fetch_keys(jwks_url)
-
-        # Simulate expiry
-        allow(described_class).to receive(:expired?).and_return(true)
-      end
-
-      it 're-fetches keys on expiry' do
-        expect(described_class).to receive(:fetch_keys).with(jwks_url).and_call_original
-        described_class.find_key(jwks_url, 'test-kid-1')
-      end
+    it 'uses a cached key without contacting the issuer again' do
+      allow(described_class).to receive(:http_get).and_return(jwks_response)
+      described_class.fetch_keys(jwks_url)
+      key = described_class.find_key(jwks_url, 'test-kid-1')
+      signature = rsa_key.sign('SHA256', 'cached key')
+      expect(key.verify('SHA256', signature, 'cached key')).to be(true)
+      expect(described_class).to have_received(:http_get).once
     end
 
-    context 'with no cache' do
-      it 'fetches keys on first call' do
-        allow(described_class).to receive(:http_get).and_return(jwks_response)
+    it 'allows one immediate unknown-key refresh and bounds repeated distinct misses' do
+      allow(described_class).to receive(:http_get).and_return(jwks_response)
+      described_class.fetch_keys(jwks_url)
 
-        key = described_class.find_key(jwks_url, 'test-kid-1')
-        expect(key).to be_a(OpenSSL::PKey::RSA)
+      5.times do |index|
+        expect { described_class.find_key(jwks_url, "unknown-#{index}") }
+          .to raise_error(Legion::Crypt::JWT::InvalidTokenError)
       end
+      expect(described_class).to have_received(:http_get).twice
+    end
+
+    it 'discovers a rotated key on the first unknown-key refresh' do
+      allow(described_class).to receive(:http_get).and_return(jwks_response, rotated_response)
+      described_class.fetch_keys(jwks_url)
+      key = described_class.find_key(jwks_url, 'rotated-kid')
+      expect(key.to_der).to eq(rotated_key.public_key.to_der)
+    end
+
+    it 'allows another rotation lookup once the miss cooldown expires' do
+      allow(Process).to receive(:clock_gettime).and_call_original
+      allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC).and_return(100.0)
+      allow(described_class).to receive(:http_get).and_return(jwks_response)
+      described_class.fetch_keys(jwks_url)
+      expect { described_class.find_key(jwks_url, 'rotated-kid') }
+        .to raise_error(Legion::Crypt::JWT::InvalidTokenError)
+
+      allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC)
+                                               .and_return(100.0 + described_class::MISS_REFRESH_COOLDOWN + 1)
+      allow(described_class).to receive(:http_get).and_return(rotated_response)
+      expect(described_class.find_key(jwks_url, 'rotated-kid').to_der).to eq(rotated_key.public_key.to_der)
+    end
+
+    it 'refreshes an expired cache even when the requested key was previously present' do
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+      replacement = { keys: [JWT::JWK.new(rotated_key, kid: 'test-kid-1').export] }.to_json
+      allow(described_class).to receive(:http_get).and_return(jwks_response, replacement)
+      described_class.fetch_keys(jwks_url)
+      allow(Time).to receive(:now).and_return(now + described_class::CACHE_TTL + 1)
+      expect(described_class.find_key(jwks_url, 'test-kid-1').to_der).to eq(rotated_key.public_key.to_der)
+      expect(described_class).to have_received(:http_get).twice
+    end
+
+    it 'shares upstream failures during cooldown rather than repeating failed requests' do
+      allow(described_class).to receive(:http_get).and_raise(Legion::Crypt::JWT::Error, 'issuer unavailable')
+      5.times do
+        expect { described_class.find_key(jwks_url, 'test-kid-1') }.to raise_error(Legion::Crypt::JWT::Error)
+      end
+      expect(described_class).to have_received(:http_get).once
     end
   end
 
   describe '.clear_cache' do
-    it 'empties the cache' do
-      allow(described_class).to receive(:http_get).and_return(jwks_response)
+    it 'forces the next lookup to load current upstream key material' do
+      replacement = { keys: [JWT::JWK.new(rotated_key, kid: 'test-kid-1').export] }.to_json
+      allow(described_class).to receive(:http_get).and_return(jwks_response, replacement)
       described_class.fetch_keys(jwks_url)
-
       described_class.clear_cache
-
-      # After clear, find_key must re-fetch
-      expect(described_class).to receive(:fetch_keys).with(jwks_url).and_call_original
-      described_class.find_key(jwks_url, 'test-kid-1')
+      expect(described_class.find_key(jwks_url, 'test-kid-1').to_der).to eq(rotated_key.public_key.to_der)
     end
   end
 

@@ -4,7 +4,7 @@ require 'spec_helper'
 require 'legion/crypt/kerberos_auth'
 
 RSpec.describe Legion::Crypt::KerberosAuth do
-  let(:vault_client) { instance_double(Vault::Client) }
+  let(:vault_client) { instance_double(Legion::Crypt::VaultClient) }
   let(:vault_token) { 'hvs.kerberos-token' }
   let(:auth_hash) do
     {
@@ -18,7 +18,6 @@ RSpec.describe Legion::Crypt::KerberosAuth do
   let(:response_hash) { { auth: auth_hash } }
 
   before do
-    stub_const('Vault::HTTPClientError', Class.new(StandardError))
     stub_const('Legion::Extensions::Kerberos::Helpers::Spnego',
                Module.new do
                  def obtain_spnego_token(service_principal:) # rubocop:disable Lint/UnusedMethodArgument
@@ -47,9 +46,8 @@ RSpec.describe Legion::Crypt::KerberosAuth do
 
     it 'sends the SPNEGO token as an Authorization header' do
       expect(vault_client).to receive(:put).with(
-        '/v1/auth/kerberos/login',
-        '{}',
-        'Authorization' => 'Negotiate fake-spnego-b64'
+        path: '/v1/auth/kerberos/login', body: '{}',
+        headers: { 'Authorization' => 'Negotiate fake-spnego-b64' }
       ).and_return(response_hash)
 
       described_class.login(
@@ -60,9 +58,8 @@ RSpec.describe Legion::Crypt::KerberosAuth do
 
     it 'uses a custom auth_path when provided' do
       expect(vault_client).to receive(:put).with(
-        '/v1/auth/custom/login',
-        '{}',
-        'Authorization' => 'Negotiate fake-spnego-b64'
+        path: '/v1/auth/custom/login', body: '{}',
+        headers: { 'Authorization' => 'Negotiate fake-spnego-b64' }
       ).and_return(response_hash)
 
       described_class.login(
@@ -127,7 +124,7 @@ RSpec.describe Legion::Crypt::KerberosAuth do
     context 'when Vault returns an HTTP error' do
       before do
         allow(vault_client).to receive(:put).and_raise(
-          Vault::HTTPClientError.new('permission denied')
+          Legion::Crypt::Vault::HTTPClientError.new(code: 403, errors: ['permission denied'])
         )
       end
 
@@ -177,11 +174,54 @@ RSpec.describe Legion::Crypt::KerberosAuth do
 
     it 'clears a stale principal at the start of login before attempting auth' do
       described_class.instance_variable_set(:@kerberos_principal, 'stale@EXAMPLE.COM')
-      allow(vault_client).to receive(:put).and_raise(Vault::HTTPClientError.new('forbidden'))
+      allow(vault_client).to receive(:put).and_raise(Legion::Crypt::Vault::HTTPClientError.new(code: 403, errors: ['forbidden']))
       expect do
         described_class.login(vault_client: vault_client, service_principal: 'HTTP/vault.example.com')
       end.to raise_error(Legion::Crypt::KerberosAuth::AuthError)
       expect(described_class.kerberos_principal).to be_nil
+    end
+
+    it 'preserves the published principal when an inactive login starts' do
+      described_class.login(vault_client: vault_client, service_principal: 'HTTP/vault.example.com')
+      allow(vault_client).to receive(:put).and_return(auth: auth_hash.merge(metadata: { username: 'stale-user' }))
+
+      described_class.login(
+        vault_client: vault_client, service_principal: 'HTTP/vault.example.com', principal_guard: ->(&_publication) { false }
+      )
+
+      expect(described_class.kerberos_principal).to eq('miverso2')
+    end
+
+    it 'does not overwrite a newer principal when a stopped login completes' do
+      entered = Queue.new
+      release = Queue.new
+      active = true
+      allow(vault_client).to receive(:put) do
+        entered << true
+        release.pop
+        response_hash
+      end
+      worker = Thread.new do
+        described_class.login(
+          vault_client:      vault_client,
+          service_principal: 'HTTP/vault.example.com',
+          principal_guard:   ->(&publication) { publication.call if active }
+        )
+      end
+      Timeout.timeout(1) { entered.pop }
+      expect(described_class.kerberos_principal).to be_nil
+
+      active = false
+      current_client = instance_double(Legion::Crypt::VaultClient, put: { auth: auth_hash.merge(metadata: { username: 'current-user' }) })
+      described_class.login(vault_client: current_client, service_principal: 'HTTP/vault.example.com')
+      release << true
+      raise 'Kerberos login did not finish' unless worker.join(1)
+
+      worker.value
+      expect(described_class.kerberos_principal).to eq('current-user')
+    ensure
+      worker&.kill
+      worker&.join(1)
     end
   end
 end

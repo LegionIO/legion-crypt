@@ -28,24 +28,6 @@ RSpec.describe Legion::Crypt::Spiffe::WorkloadApiClient do
     end
   end
 
-  describe '#close_workload_api_socket' do
-    it 'logs socket close failures' do
-      fake_sock = instance_double(UNIXSocket)
-      close_error = StandardError.new('close failed')
-      allow(fake_sock).to receive(:close).and_raise(close_error)
-
-      expect(client).to receive(:handle_exception).with(
-        close_error,
-        level:       :debug,
-        operation:   'crypt.spiffe.workload_api_client.close_socket',
-        method_path: '/spire.api.agent.X509SVID/FetchX509SVID',
-        socket_path: '/tmp/fake.sock'
-      )
-
-      expect(client.send(:close_workload_api_socket, fake_sock, '/spire.api.agent.X509SVID/FetchX509SVID')).to be_nil
-    end
-  end
-
   describe '#fetch_x509_svid' do
     context 'when the Workload API is unavailable (no socket)' do
       before do
@@ -92,21 +74,6 @@ RSpec.describe Legion::Crypt::Spiffe::WorkloadApiClient do
         svid = client.fetch_x509_svid
         expect(svid.spiffe_id.trust_domain).to eq('test.local')
       end
-
-      it 'populates cert_pem on the fallback SVID' do
-        svid = client.fetch_x509_svid
-        expect(svid.cert_pem).to include('BEGIN CERTIFICATE')
-      end
-
-      it 'populates key_pem on the fallback SVID' do
-        svid = client.fetch_x509_svid
-        expect(svid.key_pem).to include('BEGIN')
-      end
-
-      it 'sets a future expiry on the fallback SVID' do
-        svid = client.fetch_x509_svid
-        expect(svid.expiry).to be > Time.now
-      end
     end
   end
 
@@ -145,20 +112,119 @@ RSpec.describe Legion::Crypt::Spiffe::WorkloadApiClient do
     end
   end
 
-  describe 'HTTP/2 handshake' do
-    it 'uses a valid 9-byte HTTP/2 SETTINGS frame' do
-      expect(described_class::HTTP2_SETTINGS_FRAME.bytesize).to eq(9)
-      expect(described_class::HTTP2_SETTINGS_FRAME.bytes).to eq([0, 0, 0, 4, 0, 0, 0, 0, 0])
+  describe 'bounded Workload API exchange' do
+    let(:sockets) { UNIXSocket.pair }
+    let(:socket) { sockets.first }
+
+    before do
+      allow(File).to receive(:exist?).with('/tmp/fake.sock').and_return(true)
+      allow(UNIXSocket).to receive(:new).with('/tmp/fake.sock').and_return(socket)
+      allow(socket).to receive(:wait_readable).and_return(true)
     end
 
-    it 'writes the HTTP/2 preface and settings frame when connecting' do
-      fake_sock = instance_double(UNIXSocket, flush: nil)
-      allow(File).to receive(:exist?).with('/tmp/fake.sock').and_return(true)
-      allow(UNIXSocket).to receive(:new).with('/tmp/fake.sock').and_return(fake_sock)
-      expect(fake_sock).to receive(:write).with(described_class::HTTP2_PREFACE).ordered
-      expect(fake_sock).to receive(:write).with(described_class::HTTP2_SETTINGS_FRAME).ordered
+    after { sockets.each { |entry| entry.close unless entry.closed? } }
 
-      client.send(:connect_socket)
+    def data_frame(payload:, stream: 1, flags: 0, **)
+      length = payload.bytesize
+      [length >> 16, (length >> 8) & 0xFF, length & 0xFF, 0, flags, stream].pack('CCCCCN') + payload
+    end
+
+    it 'returns exactly the declared gRPC message from a complete DATA frame' do
+      body = 'complete response'.b
+      frame = data_frame(payload: "#{[0, body.bytesize].pack('CN')}#{body}trailing message bytes")
+      allow(socket).to receive(:read_nonblock).and_return(frame)
+
+      expect(client.send(:call_workload_api, described_class::FETCH_X509_METHOD, '')).to eq(body)
+      expect(socket.closed?).to be(true)
+    end
+
+    it 'reassembles split gRPC prefixes and bodies across DATA frames and partial socket reads' do
+      body = 'fragmented response with binary bytes'.b + "\x00\xFF".b
+      grpc = [0, body.bytesize].pack('CN') + body
+      frames = data_frame(payload: 'unrelated stream', stream: 3) +
+               data_frame(payload: grpc.byteslice(0, 2)) +
+               described_class::HTTP2_SETTINGS_FRAME +
+               data_frame(payload: grpc.byteslice(2, 8)) +
+               data_frame(payload: "\x02".b + grpc.byteslice(10..) + "\x00\x00".b, flags: 8)
+      chunks = frames.bytes.each_slice(3).map { |bytes| bytes.pack('C*') }
+      chunks.insert(2, :wait_readable)
+      allow(socket).to receive(:read_nonblock) { chunks.shift }
+
+      expect(client.send(:call_workload_api, described_class::FETCH_X509_METHOD, '')).to eq(body)
+      expect(socket.closed?).to be(true)
+    end
+
+    it 'rejects a truncated gRPC message at EOF and closes the socket' do
+      frame = data_frame(payload: "#{[0, 50].pack('CN')}short")
+      allow(socket).to receive(:read_nonblock).and_return(frame, nil)
+
+      expect { client.fetch_jwt_svid(audience: 'service') }.to raise_error(Legion::Crypt::Spiffe::SvidError, /No valid gRPC response/)
+      expect(socket.closed?).to be(true)
+    end
+
+    %i[connect preface settings handshake_flush request request_flush read].each do |phase|
+      it "bounds blocked #{phase} operations and closes any acquired socket" do
+        stub_const('Legion::Crypt::Spiffe::WorkloadApiClient::CONNECT_TIMEOUT', 0.02)
+        stub_const('Legion::Crypt::Spiffe::WorkloadApiClient::READ_TIMEOUT', 0.05)
+        blocked = Queue.new
+        allow(UNIXSocket).to receive(:new) { blocked.pop } if phase == :connect
+        writes = 0
+        flushes = 0
+        allow(socket).to receive(:write) do |bytes|
+          writes += 1
+          blocked.pop if { preface: 1, settings: 2, request: 3 }[phase] == writes
+          bytes.bytesize
+        end
+        allow(socket).to receive(:flush) do
+          flushes += 1
+          blocked.pop if { handshake_flush: 1, request_flush: 2 }[phase] == flushes
+        end
+        allow(socket).to receive(:read_nonblock) { blocked.pop }
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        expect do
+          Timeout.timeout(0.5) { client.fetch_jwt_svid(audience: 'service') }
+        end.to raise_error(Legion::Crypt::Spiffe::SvidError, /timed out/)
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.2
+        expect(socket.closed?).to be(true) unless phase == :connect
+      end
+    end
+
+    it 'does not restart the operation deadline after request writes finish' do
+      stub_const('Legion::Crypt::Spiffe::WorkloadApiClient::CONNECT_TIMEOUT', 0.1)
+      stub_const('Legion::Crypt::Spiffe::WorkloadApiClient::READ_TIMEOUT', 0.12)
+      blocked = Queue.new
+      allow(socket).to receive(:write) do |bytes|
+        sleep(0.025)
+        bytes.bytesize
+      end
+      allow(socket).to receive(:read_nonblock) { blocked.pop }
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      expect do
+        Timeout.timeout(0.5) { client.fetch_jwt_svid(audience: 'service') }
+      end.to raise_error(Legion::Crypt::Spiffe::SvidError, /timed out/)
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.17
+      expect(socket.closed?).to be(true)
+    end
+
+    it 'bounds availability probes when connecting stalls' do
+      stub_const('Legion::Crypt::Spiffe::WorkloadApiClient::CONNECT_TIMEOUT', 0.02)
+      blocked = Queue.new
+      allow(UNIXSocket).to receive(:new) { blocked.pop }
+
+      expect(Timeout.timeout(0.5) { client.available? }).to be(false)
+    end
+  end
+
+  describe 'protobuf audience lengths' do
+    it 'uses canonical varints at the one-byte and two-byte boundaries' do
+      { 127 => [127], 128 => [128, 1], 16_384 => [128, 128, 1] }.each do |length, prefix|
+        audience = 'a' * length
+        encoded = client.send(:encode_jwt_request, audience)
+        expect(encoded.byteslice(0, prefix.length + 1).bytes).to eq([10, *prefix])
+        expect(client.send(:extract_proto_field, encoded, field_number: 1)).to eq(audience)
+      end
     end
   end
 

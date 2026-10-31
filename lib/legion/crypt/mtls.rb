@@ -33,12 +33,9 @@ module Legion
           resolved_ttl = ttl || cert_ttl_setting || DEFAULT_TTL
           log.info "[mTLS] certificate issue requested common_name=#{common_name} ttl=#{resolved_ttl}"
 
-          response = ::Vault.logical.write(
-            pki_path,
-            common_name: common_name,
-            ttl:         resolved_ttl,
-            ip_sans:     local_ip,
-            alt_names:   ''
+          response = Legion::Crypt.vault_client.logical.write(
+            path: pki_path,
+            data: { common_name: common_name, ttl: resolved_ttl, ip_sans: local_ip, alt_names: '' }
           )
 
           raise "Vault PKI returned nil for #{pki_path} (common_name=#{common_name})" if response.nil?

@@ -41,6 +41,8 @@ module Legion
         end
 
         def decrypt_for_tenant(ciphertext:, init_vector:, auth_tag:, tenant_id:, master_key:)
+          raise ArgumentError, 'invalid GCM authentication tag length' unless auth_tag.is_a?(String) && auth_tag.bytesize == 16
+
           key = derive_key(master_key: master_key, tenant_id: tenant_id)
           decipher = OpenSSL::Cipher.new('aes-256-gcm')
           decipher.decrypt

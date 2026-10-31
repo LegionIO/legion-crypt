@@ -1,132 +1,158 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'legion/crypt/vault_cluster'
-require 'legion/crypt/ldap_auth'
+require 'legion/crypt'
 
 RSpec.describe Legion::Crypt::LdapAuth do
-  let(:cluster_ldap_one) do
-    { protocol: 'https', address: 'vault-1.example.com', port: 8200,
-      token: nil, connected: false, auth_method: 'ldap' }
-  end
-  let(:cluster_ldap_two) do
-    { protocol: 'https', address: 'vault-2.example.com', port: 8200,
-      token: nil, connected: false, auth_method: 'ldap' }
-  end
-  let(:cluster_token_only) do
-    { protocol: 'https', address: 'vault-3.example.com', port: 8200,
-      token: 'static-token', connected: true, auth_method: 'token' }
-  end
-
-  let(:test_clusters) { { one: cluster_ldap_one, two: cluster_ldap_two, three: cluster_token_only } }
-
-  let(:test_object) do
-    obj = Object.new
-    obj.extend(Legion::Crypt::VaultCluster)
-    obj.extend(described_class)
-    vault_settings_hash = { default: :one, clusters: test_clusters }
-    obj.define_singleton_method(:vault_settings) { vault_settings_hash }
-    obj
-  end
-
-  let(:mock_vault_client) { instance_double(Vault::Client) }
-  let(:mock_logical)      { instance_double(Vault::Logical) }
-  let(:mock_secret)       { double('secret') }
-  let(:mock_auth)         { double('auth') }
+  let(:crypt) { Legion::Crypt }
+  let(:configuration) { Legion::Crypt::Settings.default.merge(save_private_key: false) }
+  let(:cluster_one) { { protocol: 'https', address: 'vault-one.example.com', port: 8200, auth_method: 'ldap', connected: false } }
+  let(:cluster_two) { { protocol: 'https', address: 'vault-two.example.com', port: 8200, auth_method: 'ldap', connected: false } }
+  let(:client) { crypt.vault_client(:one) }
+  let(:logical) { instance_double(Legion::Crypt::VaultClient::Logical) }
+  let(:auth_token) { double('AuthToken') }
+  let(:login_secret) { ldap_secret(token: 'ldap-token', ttl: 0.2, renewable: true) }
 
   before do
-    allow(Vault::Client).to receive(:new).and_return(mock_vault_client)
-    allow(mock_vault_client).to receive(:namespace=)
-    allow(mock_vault_client).to receive(:token=)
-    allow(mock_vault_client).to receive(:logical).and_return(mock_logical)
-    allow(mock_logical).to receive(:write).and_return(mock_secret)
-    allow(mock_secret).to receive(:auth).and_return(mock_auth)
-    allow(mock_auth).to receive(:client_token).and_return('new-vault-token')
-    allow(mock_auth).to receive(:lease_duration).and_return(3600)
-    allow(mock_auth).to receive(:renewable?).and_return(true)
-    allow(mock_auth).to receive(:policies).and_return(['default'])
+    crypt.shutdown
+    configuration[:vault].merge!(token: nil, connected: false, default: :one, clusters: { one: cluster_one }, leases: {})
+    allow(Legion::Settings).to receive(:[]).and_call_original
+    allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+    allow(client).to receive(:logical).and_return(logical)
+    allow(client).to receive(:auth_token).and_return(auth_token)
+    allow(logical).to receive(:write).and_return(login_secret)
+    allow(logical).to receive(:read).and_return(double('Secret', data: { owner: 'one' }, lease_id: nil))
+    expect(Legion::Crypt::KerberosAuth).not_to receive(:login)
   end
 
-  describe '#ldap_login' do
-    it 'writes to the correct LDAP login path' do
-      expect(mock_logical).to receive(:write)
-        .with('auth/ldap/login/jdoe', password: 'secret')
-      test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
+  after { crypt.shutdown }
+
+  def ldap_secret(token:, ttl:, renewable:, **)
+    double('Secret', auth: double('Auth', client_token: token, lease_duration: ttl, renewable?: renewable, policies: ['default']))
+  end
+
+  it 'starts renewal after Crypt.start and remains usable beyond the initial token expiry' do
+    renewed = Queue.new
+    allow(auth_token).to receive(:renew_self) do
+      renewed << true
+      ldap_secret(token: 'ldap-token', ttl: 2, renewable: true)
+    end
+    crypt.start
+    result = crypt.ldap_login(cluster_name: 'one', username: 'jdoe', password: 'one-use-password')
+    original_expiry = cluster_one[:expires_at]
+    Timeout.timeout(1) { renewed.pop }
+    sleep([original_expiry - Time.now + 0.02, 0].max)
+
+    expect(result[:token]).to eq('ldap-token')
+    expect(crypt.read('secret/application', cluster_name: :one)).to eq(owner: 'one')
+    expect(crypt.vault_connected?).to be(true)
+    expect(cluster_one[:expires_at]).to be > original_expiry
+    expect(cluster_one.to_s).not_to include('one-use-password')
+  end
+
+  it 'keeps concurrent lookups attached to the authenticated client during token publication' do
+    entered = Queue.new
+    release = Queue.new
+    renewed = Queue.new
+    allow(client).to receive(:token=).and_wrap_original do |original, token|
+      entered << true
+      release.pop
+      original.call(token)
+    end
+    allow(auth_token).to receive(:renew_self) do
+      renewed << true
+      ldap_secret(token: 'ldap-token', ttl: 60, renewable: true)
+    end
+    login = Thread.new { crypt.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret') }
+    Timeout.timeout(1) { entered.pop }
+    lookup = Thread.new { crypt.vault_client(:one) }
+    Timeout.timeout(1) { Thread.pass until lookup.status == 'sleep' || !lookup.alive? }
+    release << true
+    Timeout.timeout(1) do
+      login.join
+      lookup.join
+      renewed.pop
     end
 
-    it 'stores the returned token in the cluster config' do
-      test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
-      expect(test_clusters[:one][:token]).to eq('new-vault-token')
-    end
-
-    it 'marks the cluster as connected' do
-      test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
-      expect(test_clusters[:one][:connected]).to be(true)
-    end
-
-    it 'updates the cached vault client token' do
-      test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
-      expect(mock_vault_client).to have_received(:token=).with('new-vault-token')
-    end
-
-    it 'returns a result hash with token, lease_duration, renewable, and policies' do
-      result = test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
-      expect(result).to include(
-        token:          'new-vault-token',
-        lease_duration: 3600,
-        renewable:      true,
-        policies:       ['default']
-      )
-    end
-
-    it 'accepts cluster_name as a string and converts to symbol' do
-      result = test_object.ldap_login(cluster_name: 'one', username: 'jdoe', password: 'secret')
-      expect(result[:token]).to eq('new-vault-token')
-    end
-
-    it 'does not set the top-level vault connected flag for multi-cluster LDAP auth' do
-      vault_hash = { connected: false }
-      crypt_hash = { vault: vault_hash }
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(crypt_hash)
-
-      test_object.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
-      expect(vault_hash[:connected]).to be(false)
+    expect(lookup.value).to equal(client)
+    expect(crypt.read('secret/application', cluster_name: :one)).to eq(owner: 'one')
+    expect(crypt.vault_connected?).to be(true)
+  ensure
+    [login, lookup].compact.each do |thread|
+      thread.kill
+      thread.join
     end
   end
 
-  describe '#ldap_login_all' do
-    it 'authenticates to all clusters with auth_method=ldap' do
-      results = test_object.ldap_login_all(username: 'jdoe', password: 'secret')
-      expect(results.keys).to contain_exactly(:one, :two)
+  it 'keeps a nonrenewable token usable until expiry and then requires login' do
+    allow(logical).to receive(:write).and_return(ldap_secret(token: 'finite-token', ttl: 0.1, renewable: false))
+    expect(auth_token).not_to receive(:renew_self)
+    crypt.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
+    configuration[:vault][:connected] = true
+    expect(crypt.read('secret/application')).to eq(owner: 'one')
+    worker = Thread.list.find { |thread| thread.name == 'vault-renewer-one' }
+    expect(worker.join(1)).to eq(worker)
+
+    expect(crypt.vault_connected?).to be(false)
+    expect(cluster_one[:connected]).to be(false)
+    expect(cluster_one[:relogin_required]).to be(true)
+    expect { crypt.read('secret/application') }.to raise_error(ArgumentError, /not connected/)
+    expect { crypt.get('secret/application', cluster_name: :one) }.to raise_error(ArgumentError, /not connected/)
+  end
+
+  it 'immediately requires login after terminal renewal rejection' do
+    rejection = Legion::Crypt::Vault::HTTPClientError.new(code: 403, errors: ['permission denied'], address: 'https://vault-one.example.com')
+    allow(auth_token).to receive(:renew_self).and_raise(rejection)
+    crypt.ldap_login(cluster_name: :one, username: 'jdoe', password: 'secret')
+    worker = Thread.list.find { |thread| thread.name == 'vault-renewer-one' }
+    expect(worker.join(1)).to eq(worker)
+
+    expect(cluster_one[:expires_at]).to be > Time.now
+    expect(crypt.connected_clusters).to be_empty
+    expect(cluster_one[:relogin_required]).to be(true)
+    expect { crypt.read('secret/application') }.to raise_error(ArgumentError, /not connected/)
+  end
+
+  it 'renews through the authenticated cluster without changing another cluster token' do
+    configuration[:vault][:clusters][:two] = cluster_two
+    second_client = crypt.vault_client(:two)
+    second_logical = instance_double(Legion::Crypt::VaultClient::Logical)
+    second_auth = double('SecondAuthToken')
+    renewed = Queue.new
+    allow(second_client).to receive(:logical).and_return(second_logical)
+    allow(second_client).to receive(:auth_token).and_return(second_auth)
+    allow(second_logical).to receive(:write).and_return(ldap_secret(token: 'second-token', ttl: 0.1, renewable: true))
+    allow(second_auth).to receive(:renew_self) do
+      renewed << true
+      ldap_secret(token: 'second-token', ttl: 5, renewable: false)
     end
+    expect(auth_token).not_to receive(:renew_self)
+    crypt.ldap_login(cluster_name: :two, username: 'jdoe', password: 'secret')
+    Timeout.timeout(1) { renewed.pop }
 
-    it 'skips clusters without auth_method=ldap' do
-      results = test_object.ldap_login_all(username: 'jdoe', password: 'secret')
-      expect(results).not_to have_key(:three)
-    end
+    expect(crypt.connected_clusters.keys).to eq([:two])
+    expect(client.token).to be_nil
+    expect(second_client.token).to eq('second-token')
+  end
 
-    it 'captures errors per cluster without stopping iteration' do
-      call_count = 0
-      allow(mock_logical).to receive(:write) do
-        call_count += 1
-        raise StandardError, 'connection refused' if call_count == 1
+  it 'isolates login failures and redacts passwords from batch error results' do
+    configuration[:vault][:clusters][:two] = cluster_two
+    second_client = crypt.vault_client(:two)
+    second_logical = instance_double(Legion::Crypt::VaultClient::Logical)
+    allow(second_client).to receive(:logical).and_return(second_logical)
+    allow(second_logical).to receive(:write).and_return(ldap_secret(token: 'second-token', ttl: 60, renewable: false))
+    allow(logical).to receive(:write).and_raise(IOError, 'authentication rejected one-use-password')
+    messages = []
+    logger = double('Logger', info: nil)
+    allow(logger).to receive(:error) { |message| messages << message }
+    allow(logger).to receive(:warn) { |message| messages << message }
+    allow(crypt).to receive(:log).and_return(logger)
 
-        mock_secret
-      end
+    results = crypt.ldap_login_all(username: 'jdoe', password: 'one-use-password')
 
-      results = test_object.ldap_login_all(username: 'jdoe', password: 'secret')
-      expect(results[:one]).to include(error: 'connection refused')
-      expect(results[:two]).to include(token: 'new-vault-token')
-    end
-
-    it 'returns an empty hash when no clusters use ldap auth' do
-      obj = Object.new
-      obj.extend(Legion::Crypt::VaultCluster)
-      obj.extend(described_class)
-      vault_settings_hash = { default: :three, clusters: { three: cluster_token_only } }
-      obj.define_singleton_method(:vault_settings) { vault_settings_hash }
-
-      expect(obj.ldap_login_all(username: 'jdoe', password: 'secret')).to eq({})
-    end
+    expect(results[:one]).to eq(error: 'authentication rejected [REDACTED]')
+    expect(results[:two][:token]).to eq('second-token')
+    expect(crypt.connected_clusters.keys).to eq([:two])
+    expect(messages.join).not_to include('one-use-password')
   end
 end

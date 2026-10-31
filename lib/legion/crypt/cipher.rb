@@ -37,7 +37,7 @@ module Legion
       end
 
       def decrypt(message, init_vector)
-        secret = wait_for_cluster_secret
+        secret = cs
         result = if authenticated_ciphertext?(message)
                    decrypt_authenticated(message, init_vector, secret)
                  else
@@ -94,19 +94,6 @@ module Legion
 
       private
 
-      def wait_for_cluster_secret
-        loop do
-          secret = cs
-          return secret if secret.is_a?(String)
-          break if Legion::Settings[:client][:shutting_down]
-
-          log.debug('sleeping Legion::Crypt.decrypt due to CS not being set')
-          sleep(0.5)
-        end
-
-        cs
-      end
-
       def authenticated_ciphertext?(message)
         message.start_with?("#{AUTHENTICATED_PREFIX}:")
       end
@@ -121,11 +108,14 @@ module Legion
           message:            message
         )
 
+        auth_tag = Base64.strict_decode64(encoded_auth_tag)
+        raise ArgumentError, 'invalid GCM authentication tag length' unless auth_tag.bytesize == 16
+
         decipher = OpenSSL::Cipher.new(AUTHENTICATED_CIPHER)
         decipher.decrypt
         decipher.key = secret
         decipher.iv = Base64.strict_decode64(init_vector)
-        decipher.auth_tag = Base64.strict_decode64(encoded_auth_tag)
+        decipher.auth_tag = auth_tag
         decipher.update(Base64.strict_decode64(encoded_ciphertext)) + decipher.final
       end
 

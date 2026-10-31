@@ -1,5 +1,144 @@
 # Legion::Crypt
 
+## [1.5.37] - 2026-10-30
+
+### Changed
+- Use keyword arguments and accept unused extra keywords in methods introduced by this PR; migrate internal callers while preserving pre-existing method signatures and Ruby assignment protocols (#52).
+
+## [1.5.36] - 2026-10-30
+
+### Fixed
+- Reject and remove expired credential cache entries from lease reads, settings publication and initialized counts, allowing `lease://` fallback after failed reacquisition while retaining lease ownership for cleanup (#52).
+
+## [1.5.35] - 2026-10-30
+
+### Fixed
+- Skip unchanged settings destinations during lease handoff so TTL-only renewals preserve live consumer connections; credential changes still publish and reconnect transactionally (#52).
+
+## [1.5.34] - 2026-10-30
+
+### Fixed
+- Transition pending renewal retries to fresh acquisition after lease expiry, including renewal timeouts, while preserving backoff and last-known lease ownership (#52).
+- Revalidate captured lease ownership before reacquisition or retry publication so stale maintenance cannot replace a newer handoff (#52).
+
+## [1.5.33] - 2026-10-30
+
+### Fixed
+- Resolve Vault-backed TLS material outside the client-cache lock, then revalidate settings and lifecycle generation before publishing a candidate (#52).
+- Reject unresolved explicit trust/identity material and circular Vault TLS dependencies; close superseded or shutdown-interrupted client candidates (#52).
+
+## [1.5.32] - 2026-10-30
+
+### Fixed
+- Replace token, expiry, renewability, connectivity and authentication strategy as one grant when LDAP, JWT or Kerberos login succeeds; restart maintenance with the new grant instead of the previous token's lifetime (#52).
+- Reject authentication results from stopped lifecycles and resume managed JWT token renewal for both legacy and multi-cluster configurations (#52).
+
+## [1.5.31] - 2026-10-30
+
+### Fixed
+- Publish LDAP, JWT, Kerberos and reauthentication tokens together with client-cache signatures under one lock, rejecting late results for replaced clients or changed configuration (#52).
+- Reject token publication to clients that have already shut down (#52).
+
+## [1.5.30] - 2026-10-30
+
+### Fixed
+- Preserve replaced Vault clients while lease and token owners still reference them; weakly track displaced clients and permanently close all surviving clients only after lifecycle cleanup (#52).
+
+## [1.5.29] - 2026-10-30
+
+### Fixed
+- Revalidate pending lease operations under the per-lease lock and reject superseded retry publication, preventing stale acquisition or renewal work from undoing identity credential handoffs (#52).
+
+## [1.5.28] - 2026-10-30
+
+### Fixed
+- Bootstrap a confirmed empty cluster before waiting for a peer secret, preserving the bounded discovery deadline and refusing generation when membership is unknown (#52).
+
+## [1.5.27] - 2026-10-30
+
+### Changed
+- Replace vault-ruby with the core-owned Faraday and `Legion::JSON` Vault client, supporting JSON 3 without an extension dependency (#38).
+- Migrate legacy and multi-cluster secrets, auth, leases, token renewal, PKI, and entity tracking to the same cached client contract; retain configured Kerberos namespaces and captured lease ownership (#38).
+- Support peer and mutual TLS, current credential headers, typed HTTP errors, KV v2 envelopes, finite transport timeouts, and permanent client retirement (#38).
+
+### Fixed
+- Do not report tenant erasure or emit an erasure event when Vault deletion returns a failure result (#38).
+- Trim KV mount boundaries with single-character searches rather than a quantified suffix pattern, and initialize concurrency-spec cleanup state before setup can fail (#52).
+
+## [1.5.26] - 2026-10-29
+
+### Fixed
+- Bound SPIFFE socket connection, handshake, request writes, flushes, and response reads with shared monotonic deadlines; close sockets when setup or exchange fails (#43).
+- Reassemble gRPC prefixes and message bodies across HTTP/2 DATA frames and partial socket reads, returning only the declared message bytes (#43).
+- Encode JWT-SVID audience lengths as canonical protobuf varints, including lengths of 128 bytes and larger (#43).
+
+## [1.5.25] - 2026-10-29
+
+### Fixed
+- Start an expiry-aware renewal lifecycle immediately after LDAP login, retain token lifetime metadata, and renew through the authenticated cluster without retaining passwords or invoking Kerberos (#51).
+- Preserve nonrenewable tokens until expiry, bound renewal retries and requests by remaining lifetime, and expose disconnected/login-required state after expiry or terminal renewal rejection (#51).
+- Replace prior LDAP workers safely on repeated login, reject late login results after shutdown, and prevent expired multi-cluster credentials from falling back to the global Vault client (#51).
+
+## [1.5.24] - 2026-10-29
+
+### Fixed
+- Retry initial certificate issuance and failed renewals with capped exponential backoff while retaining the last installed certificate (#49).
+- Schedule certificate rotation from expiry and the configured renewal window, interrupt pending waits on shutdown, and discard late issuance from stopped workers (#49).
+
+## [1.5.23] - 2026-10-29
+
+### Fixed
+- Retain failed lease acquisitions for capped exponential-backoff retry and schedule maintenance against lease expiry, waking promptly for newly registered short-TTL leases (#50).
+- Make credential replacement transactional: preserve prior settings and lease ownership on failed reconnect, retire old IDs only after successful handoff, and retain failed cleanup for retry or shutdown (#50).
+- Capture each lease's issuing Vault client, deduplicate revocation, prevent retired candidates from being reinstalled, and keep late renewals from recreating revoked ownership (#50).
+- Scope timeout-spec cleanup to the override/example block so failed settings snapshots preserve the original error and leave settings unchanged (#52).
+
+## [1.5.22] - 2026-10-29
+
+### Fixed
+- Rotate every unique lease-reference destination, including nested arrays, without coercing typed paths or mutating invalid destinations; report actual successful writes (#45).
+
+## [1.5.21] - 2026-10-29
+
+### Fixed
+- Invalidate cached Vault clients when connection settings change, retire clients with bounded failure-isolated cleanup, and clear the cache across shutdown/start without discarding in-place token refreshes (#47).
+
+## [1.5.20] - 2026-10-29
+
+### Fixed
+- Bound Vault maintenance and shutdown, isolate failed leases and sessions, and permit restart after cleanup failures (#44).
+- Guard late lease, token, settings, and Kerberos-principal updates with lifecycle generations and cancellation-aware publication (#44).
+
+## [1.5.19] - 2026-10-29
+
+### Fixed
+- Coalesce concurrent JWKS misses, bound unknown-key and failed-upstream refreshes with a per-URL cooldown, and preserve immediate first-miss rotation checks and cache expiry (#42).
+
+## [1.5.18] - 2026-10-29
+
+### Fixed
+- Reject malformed JWT header shapes, key identifiers, and token algorithms through JWT-domain errors before JWKS lookup, while keeping caller configuration failures distinct (#46).
+
+## [1.5.17] - 2026-10-29
+
+### Fixed
+- Resolve KV mounts from the Vault settings subtree on the composed Crypt API for both clustered and legacy clients (#48).
+
+## [1.5.16] - 2026-10-29
+
+### Fixed
+- Gate cluster-secret generation on confirmed bootstrap eligibility, refresh derived keys when settings change, and terminate failed or cancelled initialization with bounded domain errors (#39).
+
+## [1.5.15] - 2026-10-29
+
+### Fixed
+- Create saved RSA private keys with owner-only permissions and repair existing file permissions before writing, without changing save-disabled behavior (#41).
+
+## [1.5.14] - 2026-10-29
+
+### Fixed
+- Require full 16-byte GCM authentication tags for message and tenant decryption, preventing truncated-tag forgery while preserving legacy ciphertext support (#40).
+
 ## [1.5.13] - 2026-05-09
 
 ### Removed

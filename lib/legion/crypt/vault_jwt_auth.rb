@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/crypt/vault_client'
 
 module Legion
   module Crypt
@@ -30,14 +31,10 @@ module Legion
       # @param auth_path [String] Vault auth mount path (default: 'auth/jwt/login')
       # @return [Hash] { token:, lease_duration:, policies:, metadata: }
       def self.login(jwt:, role: DEFAULT_ROLE, auth_path: DEFAULT_AUTH_PATH)
-        raise AuthError, 'Vault is not connected' unless vault_connected?
+        raise AuthError, 'Vault is not connected' unless Legion::Crypt.vault_connected?
 
         log.info "[crypt:vault_jwt] authenticating role=#{role} auth_path=#{auth_path}"
-        response = ::Vault.logical.write(
-          auth_path,
-          role: role,
-          jwt:  jwt
-        )
+        response = Legion::Crypt.vault_client.logical.write(path: auth_path, data: { role: role, jwt: jwt })
 
         raise AuthError, 'Vault JWT auth returned no auth data' unless response&.auth
 
@@ -48,11 +45,11 @@ module Legion
           policies:       response.auth.policies,
           metadata:       response.auth.metadata
         }
-      rescue ::Vault::HTTPClientError => e
+      rescue Legion::Crypt::Vault::HTTPClientError => e
         handle_exception(e, level: :warn, operation: 'crypt.vault_jwt_auth.login', role: role, auth_path: auth_path,
                             category: 'client_error')
         raise AuthError, "Vault JWT auth failed: #{e.message}"
-      rescue ::Vault::HTTPServerError => e
+      rescue Legion::Crypt::Vault::HTTPServerError => e
         handle_exception(e, level: :warn, operation: 'crypt.vault_jwt_auth.login', role: role, auth_path: auth_path,
                             category: 'server_error')
         raise AuthError, "Vault server error during JWT auth: #{e.message}"
@@ -68,8 +65,11 @@ module Legion
       #
       # @return [Hash] Same as login
       def self.login!(jwt:, role: DEFAULT_ROLE, auth_path: DEFAULT_AUTH_PATH)
+        generation = Legion::Crypt.vault_auth_generation
+        client = Legion::Crypt.vault_client
+        config = Legion::Crypt.cluster || Legion::Settings[:crypt][:vault]
         result = login(jwt: jwt, role: role, auth_path: auth_path)
-        ::Vault.token = result[:token]
+        Legion::Crypt.install_vault_grant(client: client, config: config, grant: result, auth_method: 'jwt', generation: generation)
         log.info "[crypt:vault_jwt] authenticated via JWT auth, policies=#{result[:policies].join(',')}"
         result
       end
@@ -92,17 +92,6 @@ module Legion
 
         login(jwt: jwt, role: role)
       end
-
-      def self.vault_connected?
-        defined?(::Vault) &&
-          defined?(Legion::Settings) &&
-          Legion::Settings[:crypt][:vault][:connected] == true
-      rescue StandardError => e
-        handle_exception(e, level: :debug, operation: 'crypt.vault_jwt_auth.vault_connected?')
-        false
-      end
-
-      private_class_method :vault_connected?
     end
   end
 end

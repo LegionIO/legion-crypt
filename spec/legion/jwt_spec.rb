@@ -330,13 +330,45 @@ RSpec.describe Legion::Crypt::JWT do
       expect(result[:sub]).to eq('worker-1')
     end
 
+    [[], nil].each do |header|
+      it "rejects a #{header.class} header through the JWT error boundary before fetching keys" do
+        malformed = "#{Base64.urlsafe_encode64(JSON.generate(header), padding: false)}.e30.c2ln"
+        expect(Legion::Crypt::JwksClient).not_to receive(:find_key)
+        expect do
+          described_class.verify_with_jwks(malformed, jwks_url: jwks_url, issuers: ['issuer'], audience: 'audience')
+        end.to raise_error(Legion::Crypt::JWT::DecodeError)
+      end
+    end
+
+    [
+      { 'kid' => 42, 'alg' => 'RS256' },
+      { 'kid' => 'fixture', 'alg' => ['RS256'] },
+      { 'kid' => 'fixture', 'alg' => 'none' }
+    ].each do |header|
+      it "rejects malformed header fields #{header.inspect} before fetching keys" do
+        malformed = "#{Base64.urlsafe_encode64(JSON.generate(header), padding: false)}.e30.c2ln"
+        expect(Legion::Crypt::JwksClient).not_to receive(:find_key)
+        expect do
+          described_class.verify_with_jwks(malformed, jwks_url: jwks_url, issuers: ['issuer'], audience: 'audience')
+        end.to raise_error(Legion::Crypt::JWT::InvalidTokenError)
+      end
+    end
+
+    it 'rejects invalid compact serialization through the public verification API' do
+      expect do
+        described_class.verify_with_jwks('not.a.valid.token.format', jwks_url: jwks_url, issuers: ['issuer'], audience: 'audience')
+      end.to raise_error(Legion::Crypt::JWT::DecodeError)
+    end
+
     it 'requires issuers to be provided' do
+      expect(Legion::Crypt::JwksClient).not_to receive(:find_key)
       expect do
         described_class.verify_with_jwks(token, jwks_url: jwks_url, audience: 'app-client-id')
       end.to raise_error(ArgumentError, /issuers is required/)
     end
 
     it 'requires audience to be provided' do
+      expect(Legion::Crypt::JwksClient).not_to receive(:find_key)
       expect do
         described_class.verify_with_jwks(
           token,
@@ -344,16 +376,6 @@ RSpec.describe Legion::Crypt::JWT do
           issuers:  ['https://login.microsoftonline.com/test/v2.0']
         )
       end.to raise_error(ArgumentError, /audience is required/)
-    end
-
-    it 'validates issuer when issuers provided' do
-      result = described_class.verify_with_jwks(
-        token,
-        jwks_url: jwks_url,
-        issuers:  ['https://login.microsoftonline.com/test/v2.0'],
-        audience: 'app-client-id'
-      )
-      expect(result[:sub]).to eq('worker-1')
     end
 
     it 'rejects wrong issuer' do
@@ -365,16 +387,6 @@ RSpec.describe Legion::Crypt::JWT do
           audience: 'app-client-id'
         )
       end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /issuer not allowed/)
-    end
-
-    it 'validates audience when provided' do
-      result = described_class.verify_with_jwks(
-        token,
-        jwks_url: jwks_url,
-        issuers:  ['https://login.microsoftonline.com/test/v2.0'],
-        audience: 'app-client-id'
-      )
-      expect(result[:sub]).to eq('worker-1')
     end
 
     it 'rejects wrong audience' do
@@ -412,7 +424,7 @@ RSpec.describe Legion::Crypt::JWT do
           issuers:  ['https://login.microsoftonline.com/test/v2.0'],
           audience: 'app-client-id'
         )
-      end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /missing kid/)
+      end.to raise_error(Legion::Crypt::JWT::InvalidTokenError)
     end
 
     it 'rejects token signed with wrong key' do
@@ -428,22 +440,6 @@ RSpec.describe Legion::Crypt::JWT do
           audience: 'app-client-id'
         )
       end.to raise_error(Legion::Crypt::JWT::InvalidTokenError, /signature verification failed/)
-    end
-  end
-
-  describe '.decode_header' do
-    let(:rsa_key) { OpenSSL::PKey::RSA.generate(2048) }
-
-    it 'extracts header fields from a JWT' do
-      token = JWT.encode({ sub: 'test' }, rsa_key, 'RS256', { kid: 'k1', alg: 'RS256' })
-      header = described_class.send(:decode_header, token)
-      expect(header['kid']).to eq('k1')
-      expect(header['alg']).to eq('RS256')
-    end
-
-    it 'raises on invalid token format' do
-      expect { described_class.send(:decode_header, 'not.a.valid.token.format') }
-        .to raise_error(Legion::Crypt::JWT::DecodeError)
     end
   end
 

@@ -55,7 +55,7 @@ module Legion
 
       def self.vault
         {
-          enabled:             !Gem::Specification.find_by_name('vault').nil?,
+          enabled:             true,
           protocol:            'http',
           address:             'localhost',
           port:                8200,
@@ -63,6 +63,7 @@ module Legion
           connected:           false,
           renewer_time:        5,
           renewer:             true,
+          operation_timeout:   5,
           push_cluster_secret: false,
           read_cluster_secret: false,
           kv_path:             ENV['LEGION_VAULT_KV_PATH'] || 'legion',

@@ -12,11 +12,9 @@ module Legion
           key_path = "#{tenant_prefix}/#{tenant_id}/master_key"
 
           log.info "[crypt] Erasing tenant #{tenant_id}"
-          if Legion::Crypt.respond_to?(:delete)
-            Legion::Crypt.delete(key_path)
-          elsif defined?(Legion::Crypt::Vault)
-            delete_vault_key(key_path)
-          end
+          result = Legion::Crypt.delete(key_path)
+          raise(result[:error] || 'Vault key deletion failed') unless result[:success]
+
           Legion::Events.emit('crypt.tenant_erased', { tenant_id: tenant_id, erased_at: Time.now.utc }) if defined?(Legion::Events)
           log.warn "[crypt] Tenant #{tenant_id} cryptographically erased"
 
@@ -28,7 +26,6 @@ module Legion
 
         def verify_erasure(tenant_id:)
           key_path = "#{tenant_prefix}/#{tenant_id}/master_key"
-          raise 'Legion::Crypt.read is unavailable' unless Legion::Crypt.respond_to?(:read)
 
           data = Legion::Crypt.read(key_path, nil)
           erased = data.nil?
@@ -40,10 +37,6 @@ module Legion
         end
 
         private
-
-        def delete_vault_key(path)
-          ::Vault.logical.delete(path)
-        end
 
         def tenant_prefix
           begin

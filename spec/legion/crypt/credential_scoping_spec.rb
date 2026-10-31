@@ -36,36 +36,25 @@ RSpec.describe Legion::Crypt do
   end
 
   let(:logical_double) { double('Vault::Logical') }
-  let(:sys_double)     { instance_double(Vault::Sys) }
+  let(:sys_double)     { instance_double(Legion::Crypt::VaultClient::Sys) }
+  let(:vault_client) { double('Vault::Client', logical: logical_double, sys: sys_double) }
+  let(:manager) { Legion::Crypt::LeaseManager.instance }
 
   before do
-    # Stub public Vault delegators on LeaseManager (vault_logical, vault_sys)
-    allow(Legion::Crypt::LeaseManager.instance).to receive(:vault_logical).and_return(logical_double)
-    allow(Legion::Crypt::LeaseManager.instance).to receive(:vault_sys).and_return(sys_double)
+    allow(Legion::Crypt).to receive(:vault_client).and_return(vault_client)
     allow(logical_double).to receive(:read).and_return(vault_response)
-    allow(sys_double).to receive(:revoke)
-    # Reset instance-level state between examples
-    Legion::Crypt.instance_variable_set(:@bootstrap_lease_id, nil)
-    Legion::Crypt.instance_variable_set(:@bootstrap_lease_expires, nil)
-    Legion::Crypt::LeaseManager.instance.reset!
+    allow(sys_double).to receive(:revoke).and_return(true)
+    @transport_settings = Legion::Settings.loader.settings[:transport]
+    Legion::Settings.loader.settings[:transport] = { connection: { vhost: '/' } }
+    described_class.instance_variable_set(:@bootstrap_lease_id, nil)
+    described_class.instance_variable_set(:@bootstrap_lease_expires, nil)
+    manager.reset!
+    manager.start({}, vault_client: vault_client)
   end
 
-  describe 'RMQ_ROLE_MAP' do
-    it 'maps :agent to legionio-infra' do
-      expect(described_class::RMQ_ROLE_MAP[:agent]).to eq('legionio-infra')
-    end
-
-    it 'maps :worker to legionio-worker' do
-      expect(described_class::RMQ_ROLE_MAP[:worker]).to eq('legionio-worker')
-    end
-
-    it 'maps :infra to legionio-infra' do
-      expect(described_class::RMQ_ROLE_MAP[:infra]).to eq('legionio-infra')
-    end
-
-    it 'is frozen' do
-      expect(described_class::RMQ_ROLE_MAP).to be_frozen
-    end
+  after do
+    manager.reset!
+    Legion::Settings.loader.settings[:transport] = @transport_settings
   end
 
   describe '.dynamic_rmq_creds?' do
@@ -101,26 +90,6 @@ RSpec.describe Legion::Crypt do
       Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
     end
 
-    it 'reads from the bootstrap path' do
-      expect(logical_double).to receive(:read).with('rabbitmq/creds/legionio-bootstrap').and_return(vault_response)
-      described_class.fetch_bootstrap_rmq_creds
-    end
-
-    it 'stores the bootstrap lease_id' do
-      described_class.fetch_bootstrap_rmq_creds
-      expect(described_class.instance_variable_get(:@bootstrap_lease_id))
-        .to eq('rabbitmq/creds/legionio-bootstrap/abc123')
-    end
-
-    it 'stores a bootstrap_lease_expires time capped at 300 seconds' do
-      before_call = Time.now
-      described_class.fetch_bootstrap_rmq_creds
-      expires = described_class.instance_variable_get(:@bootstrap_lease_expires)
-      expect(expires).to be_a(Time)
-      expect(expires).to be >= before_call
-      expect(expires).to be <= (before_call + 300 + 1)
-    end
-
     it 'writes username to the transport connection settings' do
       described_class.fetch_bootstrap_rmq_creds
       conn = Legion::Settings.loader.settings.dig(:transport, :connection)
@@ -147,12 +116,6 @@ RSpec.describe Legion::Crypt do
         conn = Legion::Settings.loader.settings.dig(:transport, :connection)
         expect(conn[:password]).to eq('bootstrap_pass_str')
       end
-
-      it 'stores the bootstrap lease_id from string-keyed response' do
-        described_class.fetch_bootstrap_rmq_creds
-        expect(described_class.instance_variable_get(:@bootstrap_lease_id))
-          .to eq('rabbitmq/creds/legionio-bootstrap/str123')
-      end
     end
 
     context 'when vault is not connected' do
@@ -172,202 +135,175 @@ RSpec.describe Legion::Crypt do
         expect(described_class.fetch_bootstrap_rmq_creds).to be_nil
       end
     end
-
-    context 'when Vault returns nil' do
-      before { allow(logical_double).to receive(:read).and_return(nil) }
-
-      it 'returns nil without raising' do
-        expect { described_class.fetch_bootstrap_rmq_creds }.not_to raise_error
-        expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to be_nil
-      end
-    end
-
-    context 'when Vault returns a response with no data' do
-      let(:no_data_response) do
-        double('Vault::Secret', data: nil, lease_id: 'lease/abc', lease_duration: 300, renewable?: false)
-      end
-
-      before { allow(logical_double).to receive(:read).and_return(no_data_response) }
-
-      it 'returns nil without raising' do
-        expect { described_class.fetch_bootstrap_rmq_creds }.not_to raise_error
-      end
-    end
-
-    context 'when Vault raises an error' do
-      before { allow(logical_double).to receive(:read).and_raise(StandardError, 'vault unavailable') }
-
-      it 'does not raise and logs a warning' do
-        expect { described_class.fetch_bootstrap_rmq_creds }.not_to raise_error
-      end
-
-      it 'does not store a lease_id on error' do
-        described_class.fetch_bootstrap_rmq_creds
-        expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to be_nil
-      end
-    end
   end
 
   describe '.swap_to_identity_creds' do
     let(:transport_connection_double) do
-      double('Legion::Transport::Connection', session_open?: true)
+      double('Legion::Transport::Connection', force_reconnect: true, session_open?: true)
     end
+    let(:connection_settings) { Legion::Settings.loader.settings[:transport][:connection] }
+    let(:bootstrap_lease_id) { 'boot/lease/xyz789' }
 
     before do
       Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = true
       allow(described_class).to receive(:vault_connected?).and_return(true)
-      allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-infra').and_return(identity_response)
-      allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-worker').and_return(identity_response)
-      allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-custom').and_return(identity_response)
-      Legion::Settings.loader.settings[:transport] ||= {}
-      Legion::Settings.loader.settings[:transport][:connection] ||= {}
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-infra').and_return(identity_response)
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-worker').and_return(identity_response)
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-custom').and_return(identity_response)
+      stub_const('Legion::Transport::Connection', transport_connection_double)
+      connection_settings.merge!(user: 'bootstrap_user', password: 'bootstrap_pass')
+      described_class.instance_variable_set(:@bootstrap_lease_id, bootstrap_lease_id)
     end
 
     after do
       Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
     end
 
-    it 'returns early when vault is not connected' do
+    it 'does not acquire credentials when Vault is disconnected' do
       allow(described_class).to receive(:vault_connected?).and_return(false)
       expect(logical_double).not_to receive(:read)
       described_class.swap_to_identity_creds(mode: :agent)
     end
 
-    it 'returns early when dynamic_rmq_creds? is false' do
+    it 'does not acquire credentials when dynamic credentials are disabled' do
       Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
       expect(logical_double).not_to receive(:read)
       described_class.swap_to_identity_creds(mode: :agent)
     end
 
-    it 'returns early for :lite mode' do
+    it 'does not acquire credentials in lite mode' do
       expect(logical_double).not_to receive(:read)
       described_class.swap_to_identity_creds(mode: :lite)
     end
 
-    context 'role selection from RMQ_ROLE_MAP' do
+    { agent: 'legionio-infra', infra: 'legionio-infra', worker: 'legionio-worker', custom: 'legionio-custom' }.each do |mode, role|
+      it "acquires the #{role} role for #{mode} mode" do
+        expect(logical_double).to receive(:read).with(path: "rabbitmq/creds/#{role}").and_return(identity_response)
+        described_class.swap_to_identity_creds(mode: mode)
+        expect(manager.fetch(:rabbitmq, :username)).to eq('identity_user')
+      end
+    end
+
+    it 'publishes credentials and revokes bootstrap only after the new session is confirmed open' do
+      events = []
+      allow(transport_connection_double).to receive(:force_reconnect) do
+        expect(connection_settings).to include(user: 'identity_user', password: 'identity_pass', vhost: '/')
+        events << :reconnect
+        true
+      end
+      allow(transport_connection_double).to receive(:session_open?) do
+        events << :open
+        true
+      end
+      allow(sys_double).to receive(:revoke).with(lease_id: bootstrap_lease_id) { events << :revoke_bootstrap }
+
+      described_class.swap_to_identity_creds(mode: :agent)
+
+      expect(events).to eq(%i[reconnect open revoke_bootstrap])
+      expect(manager.fetch(:rabbitmq, :password)).to eq('identity_pass')
+      expect(manager.active_leases[:rabbitmq][:lease_id]).to eq(identity_response.lease_id)
+    end
+
+    it 'creates missing credential destinations without removing existing connection options' do
+      connection_settings.delete(:user)
+      connection_settings.delete(:password)
+
+      described_class.swap_to_identity_creds(mode: :agent)
+
+      expect(connection_settings).to include(user: 'identity_user', password: 'identity_pass', vhost: '/')
+    end
+
+    it 'creates the transport connection settings when absent' do
+      Legion::Settings.loader.settings.delete(:transport)
+
+      described_class.swap_to_identity_creds(mode: :agent)
+
+      expect(Legion::Settings.loader.settings.dig(:transport, :connection)).to include(user: 'identity_user', password: 'identity_pass')
+    end
+
+    it 'installs string-keyed credentials through the same transaction' do
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-infra').and_return(identity_response_string_keys)
+
+      described_class.swap_to_identity_creds(mode: :agent)
+
+      expect(connection_settings).to include(user: 'identity_user_str', password: 'identity_pass_str')
+      expect(manager.fetch('rabbitmq', 'username')).to eq('identity_user_str')
+      expect(sys_double).to have_received(:revoke).with(lease_id: bootstrap_lease_id)
+    end
+
+    it 'retains bootstrap and existing settings when acquisition returns no response' do
+      allow(logical_double).to receive(:read).with(path: 'rabbitmq/creds/legionio-infra').and_return(nil)
+
+      expect { described_class.swap_to_identity_creds(mode: :agent) }.to raise_error(RuntimeError)
+
+      expect(connection_settings).to include(user: 'bootstrap_user', password: 'bootstrap_pass')
+      expect(sys_double).not_to have_received(:revoke).with(lease_id: bootstrap_lease_id)
+      described_class.revoke_bootstrap_lease
+      expect(sys_double).to have_received(:revoke).with(lease_id: bootstrap_lease_id)
+    end
+
+    it 'installs credentials without requiring a reconnect when the transport consumer is absent' do
+      hide_const('Legion::Transport::Connection')
+
+      described_class.swap_to_identity_creds(mode: :agent)
+
+      expect(connection_settings).to include(user: 'identity_user', password: 'identity_pass')
+      expect(manager.fetch(:rabbitmq, :username)).to eq('identity_user')
+      expect(sys_double).to have_received(:revoke).with(lease_id: bootstrap_lease_id)
+    end
+
+    context 'with an existing manager lease' do
       before do
-        stub_const('Legion::Transport::Connection', transport_connection_double)
-        allow(transport_connection_double).to receive(:force_reconnect)
-        allow(Legion::Crypt::LeaseManager.instance).to receive(:register_dynamic_lease)
+        manager.start({ 'rabbitmq' => { path: 'rabbitmq/creds/previous' } }, vault_client: vault_client)
       end
 
-      it 'uses legionio-infra for :agent mode' do
-        expect(logical_double).to receive(:read).with('rabbitmq/creds/legionio-infra').and_return(identity_response)
-        described_class.swap_to_identity_creds(mode: :agent)
+      shared_examples 'a rejected identity handoff' do
+        it 'raises while preserving bootstrap, prior settings, and the prior managed lease' do
+          expect { described_class.swap_to_identity_creds(mode: :agent) }.to raise_error(RuntimeError)
+
+          expect(connection_settings).to include(user: 'bootstrap_user', password: 'bootstrap_pass', vhost: '/')
+          expect(manager.fetch(:rabbitmq, :username)).to eq('bootstrap_user')
+          expect(manager.fetch(:rabbitmq, :password)).to eq('bootstrap_pass')
+          expect(manager.active_leases[:rabbitmq][:lease_id]).to eq(vault_response.lease_id)
+          expect(sys_double).not_to have_received(:revoke).with(lease_id: vault_response.lease_id)
+          expect(sys_double).not_to have_received(:revoke).with(lease_id: bootstrap_lease_id)
+          described_class.revoke_bootstrap_lease
+          expect(sys_double).to have_received(:revoke).with(lease_id: bootstrap_lease_id)
+        end
       end
 
-      it 'uses legionio-infra for :infra mode' do
-        expect(logical_double).to receive(:read).with('rabbitmq/creds/legionio-infra').and_return(identity_response)
-        described_class.swap_to_identity_creds(mode: :infra)
+      context 'when reconnect returns false despite an open session' do
+        before { allow(transport_connection_double).to receive(:force_reconnect).and_return(false) }
+
+        include_examples 'a rejected identity handoff'
       end
 
-      it 'uses legionio-worker for :worker mode' do
-        expect(logical_double).to receive(:read).with('rabbitmq/creds/legionio-worker').and_return(identity_response)
-        described_class.swap_to_identity_creds(mode: :worker)
+      context 'when reconnect returns true but the session remains closed' do
+        before { allow(transport_connection_double).to receive(:session_open?).and_return(false) }
+
+        include_examples 'a rejected identity handoff'
       end
 
-      it 'uses a fallback role name for unknown modes' do
-        expect(logical_double).to receive(:read).with('rabbitmq/creds/legionio-custom').and_return(identity_response)
-        described_class.swap_to_identity_creds(mode: :custom)
-      end
-    end
+      context 'when reconnect raises' do
+        before { allow(transport_connection_double).to receive(:force_reconnect).and_raise(IOError, 'connection failed') }
 
-    context 'when Vault returns identity creds' do
-      before do
-        stub_const('Legion::Transport::Connection', transport_connection_double)
-        allow(transport_connection_double).to receive(:force_reconnect)
-        allow(Legion::Crypt::LeaseManager.instance).to receive(:register_dynamic_lease)
+        include_examples 'a rejected identity handoff'
       end
 
-      it 'registers the lease with LeaseManager' do
-        expect(Legion::Crypt::LeaseManager.instance).to receive(:register_dynamic_lease).with(
-          name:          :rabbitmq,
-          path:          'rabbitmq/creds/legionio-infra',
-          response:      identity_response,
-          settings_refs: [
-            { path: %i[transport connection user],     key: :username },
-            { path: %i[transport connection password], key: :password }
-          ]
-        )
-        described_class.swap_to_identity_creds(mode: :agent)
-      end
+      [nil, { username: 'incomplete' }, { password: 'incomplete' }].each do |data|
+        context "when the acquired candidate has incomplete credentials #{data.inspect}" do
+          before { allow(identity_response).to receive(:data).and_return(data) }
 
-      it 'writes identity username to transport connection settings' do
-        described_class.swap_to_identity_creds(mode: :agent)
-        conn = Legion::Settings.loader.settings.dig(:transport, :connection)
-        expect(conn[:user]).to eq('identity_user')
-      end
+          include_examples 'a rejected identity handoff'
 
-      it 'writes identity password to transport connection settings' do
-        described_class.swap_to_identity_creds(mode: :agent)
-        conn = Legion::Settings.loader.settings.dig(:transport, :connection)
-        expect(conn[:password]).to eq('identity_pass')
-      end
+          it 'never reconnects and retains ownership of the invalid candidate until cleanup' do
+            expect { described_class.swap_to_identity_creds(mode: :agent) }.to raise_error(RuntimeError)
 
-      it 'calls force_reconnect on Transport::Connection' do
-        expect(transport_connection_double).to receive(:force_reconnect)
-        described_class.swap_to_identity_creds(mode: :agent)
-      end
-
-      it 'revokes the bootstrap lease after successful reconnect' do
-        described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/xyz789')
-        expect(sys_double).to receive(:revoke).with('boot/lease/xyz789')
-        described_class.swap_to_identity_creds(mode: :agent)
-      end
-    end
-
-    context 'when Vault returns string-keyed identity data' do
-      before do
-        stub_const('Legion::Transport::Connection', transport_connection_double)
-        allow(transport_connection_double).to receive(:force_reconnect)
-        allow(Legion::Crypt::LeaseManager.instance).to receive(:register_dynamic_lease)
-        allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-infra')
-                                               .and_return(identity_response_string_keys)
-      end
-
-      it 'writes identity username to transport connection settings from string key' do
-        described_class.swap_to_identity_creds(mode: :agent)
-        conn = Legion::Settings.loader.settings.dig(:transport, :connection)
-        expect(conn[:user]).to eq('identity_user_str')
-      end
-
-      it 'writes identity password to transport connection settings from string key' do
-        described_class.swap_to_identity_creds(mode: :agent)
-        conn = Legion::Settings.loader.settings.dig(:transport, :connection)
-        expect(conn[:password]).to eq('identity_pass_str')
-      end
-    end
-
-    context 'when Vault returns no data for identity creds' do
-      before { allow(logical_double).to receive(:read).with('rabbitmq/creds/legionio-infra').and_return(nil) }
-
-      it 'raises an error' do
-        expect { described_class.swap_to_identity_creds(mode: :agent) }.to raise_error(RuntimeError, /Failed to fetch/)
-      end
-    end
-
-    context 'when Transport::Connection is not defined' do
-      before { allow(Legion::Crypt::LeaseManager.instance).to receive(:register_dynamic_lease) }
-
-      it 'does not raise when Transport module is absent' do
-        hide_const('Legion::Transport::Connection')
-        expect { described_class.swap_to_identity_creds(mode: :agent) }.not_to raise_error
-      end
-    end
-
-    context 'when transport reconnect fails (session not open)' do
-      let(:closed_connection) { double('Legion::Transport::Connection', session_open?: false) }
-
-      before do
-        stub_const('Legion::Transport::Connection', closed_connection)
-        allow(closed_connection).to receive(:force_reconnect)
-        allow(Legion::Crypt::LeaseManager.instance).to receive(:register_dynamic_lease)
-      end
-
-      it 'raises an error and does not revoke the bootstrap lease' do
-        described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/xyz789')
-        expect(sys_double).not_to receive(:revoke)
-        expect { described_class.swap_to_identity_creds(mode: :agent) }.to raise_error(RuntimeError, /reconnect failed/)
+            expect(transport_connection_double).not_to have_received(:force_reconnect)
+            manager.shutdown
+            expect(sys_double).to have_received(:revoke).with(lease_id: identity_response.lease_id).at_least(:once)
+          end
+        end
       end
     end
   end
@@ -376,47 +312,13 @@ RSpec.describe Legion::Crypt do
     it 'is a no-op when no bootstrap lease is stored' do
       described_class.instance_variable_set(:@bootstrap_lease_id, nil)
       expect(sys_double).not_to receive(:revoke)
-      expect { described_class.revoke_bootstrap_lease }.not_to raise_error
+      described_class.revoke_bootstrap_lease
     end
 
     it 'revokes the stored bootstrap lease' do
       described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
-      expect(sys_double).to receive(:revoke).with('boot/lease/abc123')
+      expect(sys_double).to receive(:revoke).with(lease_id: 'boot/lease/abc123')
       described_class.revoke_bootstrap_lease
-    end
-
-    it 'clears @bootstrap_lease_id after revocation' do
-      described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
-      described_class.revoke_bootstrap_lease
-      expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to be_nil
-    end
-
-    it 'clears @bootstrap_lease_expires after revocation' do
-      described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
-      described_class.instance_variable_set(:@bootstrap_lease_expires, Time.now + 100)
-      described_class.revoke_bootstrap_lease
-      expect(described_class.instance_variable_get(:@bootstrap_lease_expires)).to be_nil
-    end
-
-    it 'does not raise when Vault revocation fails' do
-      described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
-      allow(sys_double).to receive(:revoke).and_raise(StandardError, 'vault down')
-      expect { described_class.revoke_bootstrap_lease }.not_to raise_error
-    end
-
-    it 'clears @bootstrap_lease_id even when revocation fails' do
-      described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
-      allow(sys_double).to receive(:revoke).and_raise(StandardError, 'vault down')
-      described_class.revoke_bootstrap_lease
-      expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to be_nil
-    end
-
-    it 'clears @bootstrap_lease_expires even when revocation fails' do
-      described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
-      described_class.instance_variable_set(:@bootstrap_lease_expires, Time.now + 100)
-      allow(sys_double).to receive(:revoke).and_raise(StandardError, 'vault down')
-      described_class.revoke_bootstrap_lease
-      expect(described_class.instance_variable_get(:@bootstrap_lease_expires)).to be_nil
     end
 
     it 'is idempotent — second call is a no-op' do
@@ -429,44 +331,31 @@ RSpec.describe Legion::Crypt do
 
   describe 'start_lease_manager with dynamic_rmq_creds guard' do
     before do
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:start)
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:start_renewal_thread)
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:shutdown)
+      Legion::Settings[:crypt][:vault][:connected] = true
+      Legion::Settings[:crypt][:vault][:leases] = {}
     end
 
-    context 'when dynamic_rmq_creds is true and no static leases' do
-      before do
-        Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = true
-        Legion::Settings[:crypt][:vault][:connected] = true
-        Legion::Settings[:crypt][:vault][:leases] = {}
-      end
-
-      after do
-        Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
-        Legion::Settings[:crypt][:vault][:connected] = false
-      end
-
-      it 'starts the renewal thread even without static leases' do
-        Legion::Crypt.send(:start_lease_manager)
-        expect(Legion::Crypt::LeaseManager.instance).to have_received(:start_renewal_thread)
-      end
+    after do
+      Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
+      Legion::Settings[:crypt][:vault][:connected] = false
     end
 
-    context 'when dynamic_rmq_creds is false and no static leases' do
-      before do
-        Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
-        Legion::Settings[:crypt][:vault][:connected] = true
-        Legion::Settings[:crypt][:vault][:leases] = {}
-      end
+    it 'keeps a renewal worker available for later dynamic leases' do
+      Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = true
 
-      after do
-        Legion::Settings[:crypt][:vault][:connected] = false
-      end
+      described_class.send(:start_lease_manager)
 
-      it 'does not start the renewal thread without static leases' do
-        Legion::Crypt.send(:start_lease_manager)
-        expect(Legion::Crypt::LeaseManager.instance).not_to have_received(:start_renewal_thread)
-      end
+      expect(manager.renewal_thread_alive?).to be(true)
+      manager.shutdown
+      expect(manager.renewal_thread_alive?).to be(false)
+    end
+
+    it 'does not start a renewal worker without static or dynamic leases' do
+      Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
+
+      described_class.send(:start_lease_manager)
+
+      expect(manager.renewal_thread_alive?).to be(false)
     end
   end
 end

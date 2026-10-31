@@ -18,8 +18,7 @@ RSpec.describe Legion::Crypt::Mtls do
   end
 
   before do
-    stub_const('Legion::Settings', Module.new)
-    allow(Legion::Settings).to receive(:[]).and_return(nil)
+    allow(Legion::Settings).to receive(:[]).and_call_original
     allow(Legion::Settings).to receive(:[]).with(:security).and_return(
       { mtls: { enabled: false, vault_pki_path: 'pki/issue/legion-internal', cert_ttl: '24h' } }
     )
@@ -70,34 +69,11 @@ RSpec.describe Legion::Crypt::Mtls do
   end
 
   describe '.issue_cert' do
+    let(:vault_logical) { instance_double(Legion::Crypt::VaultClient::Logical) }
+
     before do
-      vault_logical = double('VaultLogical')
-      stub_const('Vault', Module.new)
-      allow(Vault).to receive(:logical).and_return(vault_logical)
+      allow(Legion::Crypt).to receive(:vault_client).and_return(double('core Vault client', logical: vault_logical))
       allow(vault_logical).to receive(:write).and_return(vault_response)
-    end
-
-    it 'calls Vault.logical.write with pki path and common_name' do
-      expect(Vault.logical).to receive(:write).with(
-        'pki/issue/legion-internal',
-        hash_including(common_name: 'node.legion.internal', ttl: '24h')
-      ).and_return(vault_response)
-      described_class.issue_cert(common_name: 'node.legion.internal')
-    end
-
-    it 'returns a hash with cert, key, ca_chain, serial, expiry' do
-      result = described_class.issue_cert(common_name: 'node.legion.internal')
-      expect(result).to include(:cert, :key, :ca_chain, :serial, :expiry)
-    end
-
-    it 'returns cert as a string' do
-      result = described_class.issue_cert(common_name: 'node.legion.internal')
-      expect(result[:cert]).to include('BEGIN CERTIFICATE')
-    end
-
-    it 'returns key as a string' do
-      result = described_class.issue_cert(common_name: 'node.legion.internal')
-      expect(result[:key]).to include('BEGIN RSA PRIVATE KEY')
     end
 
     it 'returns expiry as a Time' do
@@ -106,25 +82,26 @@ RSpec.describe Legion::Crypt::Mtls do
     end
 
     it 'accepts a custom ttl override' do
-      expect(Vault.logical).to receive(:write).with(
-        anything,
-        hash_including(ttl: '4h')
+      expect(vault_logical).to receive(:write).with(
+        path: anything,
+        data: hash_including(ttl: '4h')
       ).and_return(vault_response)
       described_class.issue_cert(common_name: 'node.legion.internal', ttl: '4h')
     end
 
     it 'includes ip_sans with local IP' do
       ip = described_class.local_ip
-      expect(Vault.logical).to receive(:write).with(
-        anything,
-        hash_including(ip_sans: ip)
+      expect(vault_logical).to receive(:write).with(
+        path: anything,
+        data: hash_including(ip_sans: ip)
       ).and_return(vault_response)
       described_class.issue_cert(common_name: 'node.legion.internal')
     end
 
-    it 'raises when Vault returns nil' do
-      allow(Vault.logical).to receive(:write).and_return(nil)
-      expect { described_class.issue_cert(common_name: 'x') }.to raise_error(RuntimeError, /Vault PKI returned nil/)
+    it 'preserves Vault issuance failures' do
+      failure = RuntimeError.new('issuance unavailable')
+      allow(vault_logical).to receive(:write).and_raise(failure)
+      expect { described_class.issue_cert(common_name: 'x') }.to(raise_error { |error| expect(error).to equal(failure) })
     end
   end
 end

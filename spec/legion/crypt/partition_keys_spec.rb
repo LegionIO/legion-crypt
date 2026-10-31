@@ -38,6 +38,19 @@ RSpec.describe Legion::Crypt::PartitionKeys do
       expect(plaintext).to eq('secret data')
     end
 
+    it 'rejects truncated authentication tags even when their bytes are correct' do
+      encrypted = described_class.encrypt_for_tenant(plaintext: 'secret', tenant_id: 'tenant-1', master_key: master_key)
+
+      [1, 15].each do |length|
+        expect do
+          described_class.decrypt_for_tenant(
+            ciphertext: encrypted[:ciphertext], init_vector: encrypted[:iv],
+            auth_tag: encrypted[:auth_tag].byteslice(0, length), tenant_id: 'tenant-1', master_key: master_key
+          )
+        end.to raise_error(ArgumentError)
+      end
+    end
+
     it 'fails with wrong tenant_id' do
       encrypted = described_class.encrypt_for_tenant(plaintext: 'secret', tenant_id: 'tenant-1', master_key: master_key)
       expect do

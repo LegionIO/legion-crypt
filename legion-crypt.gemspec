@@ -27,8 +27,8 @@ Gem::Specification.new do |spec|
 
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
   spec.add_dependency 'ed25519', '~> 1.3'
+  spec.add_dependency 'faraday', '~> 2.0'
   spec.add_dependency 'jwt', '>= 2.7'
   spec.add_dependency 'legion-json', '>= 1.2.0'
   spec.add_dependency 'legion-logging', '>= 1.5.0'
-  spec.add_dependency 'vault', '>= 0.17'
 end

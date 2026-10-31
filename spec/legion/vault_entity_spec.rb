@@ -4,428 +4,142 @@ require 'spec_helper'
 require 'legion/crypt/vault_entity'
 
 RSpec.describe Legion::Crypt::VaultEntity do
-  let(:vault_logical)   { instance_double('Vault::Logical') }
-  let(:lease_manager)   { instance_double('Legion::Crypt::LeaseManager') }
-
-  let(:principal_id)    { 'user@example.com' }
-  let(:canonical_name)  { 'user-example-com' }
-  let(:entity_id)       { 'ent-abc-123' }
-  let(:mount_accessor)  { 'auth_jwt_abc123' }
-  let(:alias_name)      { 'user@example.com' }
-
-  let(:entity_response) do
-    double('Vault::Secret', data: { id: entity_id, name: "legion-#{canonical_name}" })
-  end
-
-  let(:entity_response_string_keys) do
-    double('Vault::Secret', data: { 'id' => entity_id, 'name' => "legion-#{canonical_name}" })
-  end
-
-  let(:alias_response) do
-    double('Vault::Secret', data: { id: 'alias-xyz-456' })
-  end
+  let(:stubs) { Faraday::Adapter::Test::Stubs.new }
+  let(:connection) { Faraday.new { |builder| builder.adapter :test, stubs } }
+  let(:client) { Legion::Crypt::VaultClient.new(address: 'http://vault.example:8200', token: 'owner-token', namespace: 'owner') }
+  let(:lease_manager) { instance_double(Legion::Crypt::LeaseManager, vault_logical: client.logical) }
+  let(:principal_id) { 'user@example.com' }
+  let(:canonical_name) { 'user-example-com' }
+  let(:entity_id) { 'ent-abc-123' }
+  let(:entity_body) { Legion::JSON.dump(data: { id: entity_id, name: "legion-#{canonical_name}" }) }
 
   before do
-    stub_const('Vault::HTTPClientError', Class.new(StandardError))
-
+    connection
+    allow(Faraday).to receive(:new).and_return(connection)
     allow(Legion::Crypt::LeaseManager).to receive(:instance).and_return(lease_manager)
-    allow(lease_manager).to receive(:vault_logical).and_return(vault_logical)
-
-    allow(vault_logical).to receive(:read).and_return(nil)
-    allow(vault_logical).to receive(:write).and_return(nil)
   end
 
-  # ---------------------------------------------------------------------------
+  after do
+    client.shutdown
+  end
+
   describe '.ensure_entity' do
-    context 'when no entity exists yet' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_return(nil)
-
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity', anything)
-          .and_return(entity_response)
-      end
-
-      it 'creates an entity and returns its ID' do
-        result = described_class.ensure_entity(
-          principal_id:   principal_id,
-          canonical_name: canonical_name
+    it 'creates the principal under the captured owner with authoritative Legion metadata' do
+      stubs.get("/v1/identity/entity/name/legion-#{canonical_name}") { [404, {}, '{}'] }
+      stubs.put('/v1/identity/entity') do |env|
+        expect(env.request_headers['X-Vault-Token']).to eq('owner-token')
+        expect(env.request_headers['X-Vault-Namespace']).to eq('owner')
+        expect(Legion::JSON.load(env.body)).to eq(
+          name:     "legion-#{canonical_name}",
+          metadata: { custom_key: 'custom', managed_by: 'legion', legion_principal_id: principal_id,
+                      legion_canonical_name: canonical_name }
         )
-        expect(result).to eq(entity_id)
+        [200, {}, entity_body]
       end
 
-      it 'writes to identity/entity with the legion- prefix' do
-        expect(vault_logical).to receive(:write).with(
-          'identity/entity',
-          hash_including(name: "legion-#{canonical_name}")
-        ).and_return(entity_response)
+      result = described_class.ensure_entity(principal_id: principal_id, canonical_name: canonical_name,
+                                             metadata: { custom_key: 'custom', managed_by: 'untrusted' })
 
-        described_class.ensure_entity(principal_id: principal_id, canonical_name: canonical_name)
-      end
-
-      it 'includes standard managed_by metadata' do
-        expect(vault_logical).to receive(:write).with(
-          'identity/entity',
-          hash_including(
-            metadata: hash_including(
-              managed_by:            'legion',
-              legion_principal_id:   principal_id,
-              legion_canonical_name: canonical_name
-            )
-          )
-        ).and_return(entity_response)
-
-        described_class.ensure_entity(principal_id: principal_id, canonical_name: canonical_name)
-      end
-
-      it 'merges caller-supplied metadata with standard metadata' do
-        expect(vault_logical).to receive(:write).with(
-          'identity/entity',
-          hash_including(
-            metadata: hash_including(
-              custom_key:          'custom_value',
-              legion_principal_id: principal_id,
-              managed_by:          'legion'
-            )
-          )
-        ).and_return(entity_response)
-
-        described_class.ensure_entity(
-          principal_id:   principal_id,
-          canonical_name: canonical_name,
-          metadata:       { custom_key: 'custom_value' }
-        )
-      end
+      expect(result).to eq(entity_id)
     end
 
-    context 'when entity already exists' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_return(entity_response)
-      end
+    it 'returns an existing entity without issuing a creation request' do
+      stubs.get("/v1/identity/entity/name/legion-#{canonical_name}") { [200, {}, entity_body] }
+      expect(client.logical).not_to receive(:write)
 
-      it 'returns the existing entity ID without creating a new one' do
-        expect(vault_logical).not_to receive(:write).with('identity/entity', anything)
-
-        result = described_class.ensure_entity(
-          principal_id:   principal_id,
-          canonical_name: canonical_name
-        )
-        expect(result).to eq(entity_id)
-      end
+      expect(described_class.ensure_entity(principal_id: principal_id, canonical_name: canonical_name)).to eq(entity_id)
     end
 
-    context 'when Vault raises HTTPClientError on write' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_return(nil)
+    it 'returns nil when creation is forbidden' do
+      stubs.get("/v1/identity/entity/name/legion-#{canonical_name}") { [404, {}, '{}'] }
+      stubs.put('/v1/identity/entity') { [403, {}, Legion::JSON.dump(errors: ['permission denied'])] }
 
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity', anything)
-          .and_raise(Vault::HTTPClientError, 'permission denied')
-      end
-
-      it 'returns nil instead of raising' do
-        result = described_class.ensure_entity(
-          principal_id:   principal_id,
-          canonical_name: canonical_name
-        )
-        expect(result).to be_nil
-      end
+      expect(described_class.ensure_entity(principal_id: principal_id, canonical_name: canonical_name)).to be_nil
     end
 
-    context 'when Vault raises an unexpected StandardError' do
-      before do
-        allow(vault_logical).to receive(:read).and_return(nil)
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity', anything)
-          .and_raise(StandardError, 'network timeout')
-      end
+    it 'returns nil when the server acknowledges creation without entity data' do
+      stubs.get("/v1/identity/entity/name/legion-#{canonical_name}") { [404, {}, '{}'] }
+      stubs.put('/v1/identity/entity') { [204, {}, ''] }
 
-      it 'returns nil instead of raising' do
-        result = described_class.ensure_entity(
-          principal_id:   principal_id,
-          canonical_name: canonical_name
-        )
-        expect(result).to be_nil
-      end
+      expect(described_class.ensure_entity(principal_id: principal_id, canonical_name: canonical_name)).to be_nil
     end
 
-    context 'when write response returns string-keyed data' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_return(nil)
+    it 'reports network failures without raising to callers' do
+      stubs.get("/v1/identity/entity/name/legion-#{canonical_name}") { [404, {}, '{}'] }
+      stubs.put('/v1/identity/entity') { raise Faraday::TimeoutError, 'network timeout' }
+      allow(described_class).to receive(:handle_exception)
 
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity', anything)
-          .and_return(entity_response_string_keys)
-      end
-
-      it 'returns the entity ID from string-keyed response' do
-        result = described_class.ensure_entity(
-          principal_id:   principal_id,
-          canonical_name: canonical_name
-        )
-        expect(result).to eq(entity_id)
-      end
-    end
-
-    context 'when write response has no data' do
-      before do
-        allow(vault_logical).to receive(:read).and_return(nil)
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity', anything)
-          .and_return(double('Vault::Secret', data: nil))
-      end
-
-      it 'returns nil' do
-        result = described_class.ensure_entity(
-          principal_id:   principal_id,
-          canonical_name: canonical_name
-        )
-        expect(result).to be_nil
-      end
-    end
-
-    context 'when write returns nil response' do
-      before do
-        allow(vault_logical).to receive(:read).and_return(nil)
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity', anything)
-          .and_return(nil)
-      end
-
-      it 'returns nil' do
-        result = described_class.ensure_entity(
-          principal_id:   principal_id,
-          canonical_name: canonical_name
-        )
-        expect(result).to be_nil
-      end
+      expect(described_class.ensure_entity(principal_id: principal_id, canonical_name: canonical_name)).to be_nil
+      expect(described_class).to have_received(:handle_exception).with(instance_of(Faraday::TimeoutError), anything)
     end
   end
 
-  # ---------------------------------------------------------------------------
   describe '.ensure_alias' do
-    context 'when alias does not exist' do
-      before do
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity-alias', anything)
-          .and_return(alias_response)
+    it 'links the supplied auth identity to its canonical entity under the captured owner' do
+      stubs.put('/v1/identity/entity-alias') do |env|
+        expect(env.request_headers['X-Vault-Namespace']).to eq('owner')
+        expect(Legion::JSON.load(env.body)).to eq(name: principal_id, canonical_id: entity_id, mount_accessor: 'auth_jwt_abc123')
+        [200, {}, Legion::JSON.dump(data: { id: 'alias-xyz-456' })]
       end
 
-      it 'writes to identity/entity-alias and returns the response' do
-        result = described_class.ensure_alias(
-          entity_id:      entity_id,
-          mount_accessor: mount_accessor,
-          alias_name:     alias_name
-        )
-        expect(result).to eq(alias_response)
-      end
+      response = described_class.ensure_alias(entity_id: entity_id, mount_accessor: 'auth_jwt_abc123', alias_name: principal_id)
 
-      it 'passes the correct params to Vault' do
-        expect(vault_logical).to receive(:write).with(
-          'identity/entity-alias',
-          name:           alias_name,
-          canonical_id:   entity_id,
-          mount_accessor: mount_accessor
-        ).and_return(alias_response)
-
-        described_class.ensure_alias(
-          entity_id:      entity_id,
-          mount_accessor: mount_accessor,
-          alias_name:     alias_name
-        )
-      end
+      expect(response.data[:id]).to eq('alias-xyz-456')
     end
 
-    context 'when alias already exists (idempotent)' do
-      before do
-        err = Vault::HTTPClientError.new('alias already exists for the combination of mount and alias name')
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity-alias', anything)
-          .and_raise(err)
+    it 'treats an existing alias as idempotent rather than an operational failure' do
+      stubs.put('/v1/identity/entity-alias') do
+        [400, {}, Legion::JSON.dump(errors: ['alias already exists for the combination of mount and alias name'])]
       end
+      expect(described_class).not_to receive(:handle_exception)
 
-      it 'returns nil without raising' do
-        result = described_class.ensure_alias(
-          entity_id:      entity_id,
-          mount_accessor: mount_accessor,
-          alias_name:     alias_name
-        )
-        expect(result).to be_nil
-      end
+      expect(described_class.ensure_alias(entity_id: entity_id, mount_accessor: 'auth_jwt_abc123', alias_name: principal_id)).to be_nil
     end
 
-    context 'when Vault raises a different HTTPClientError' do
-      before do
-        err = Vault::HTTPClientError.new('permission denied')
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity-alias', anything)
-          .and_raise(err)
-      end
+    it 'reports a forbidden alias write as a non-fatal failure' do
+      stubs.put('/v1/identity/entity-alias') { [403, {}, Legion::JSON.dump(errors: ['permission denied'])] }
+      allow(described_class).to receive(:handle_exception)
 
-      it 'returns nil without raising (non-fatal)' do
-        result = described_class.ensure_alias(
-          entity_id:      entity_id,
-          mount_accessor: mount_accessor,
-          alias_name:     alias_name
-        )
-        expect(result).to be_nil
-      end
+      expect(described_class.ensure_alias(entity_id: entity_id, mount_accessor: 'auth_jwt_abc123', alias_name: principal_id)).to be_nil
+      expect(described_class).to have_received(:handle_exception).with(instance_of(Legion::Crypt::Vault::HTTPClientError), anything)
     end
 
-    context 'when Vault raises an unexpected StandardError' do
-      before do
-        allow(vault_logical).to receive(:write)
-          .with('identity/entity-alias', anything)
-          .and_raise(StandardError, 'connection reset')
-      end
+    it 'reports server failures without raising to callers' do
+      stubs.put('/v1/identity/entity-alias') { [503, {}, Legion::JSON.dump(errors: ['sealed'])] }
+      allow(described_class).to receive(:handle_exception)
 
-      it 'returns nil without raising' do
-        result = described_class.ensure_alias(
-          entity_id:      entity_id,
-          mount_accessor: mount_accessor,
-          alias_name:     alias_name
-        )
-        expect(result).to be_nil
-      end
+      expect(described_class.ensure_alias(entity_id: entity_id, mount_accessor: 'auth_jwt_abc123', alias_name: principal_id)).to be_nil
+      expect(described_class).to have_received(:handle_exception).with(instance_of(Legion::Crypt::Vault::HTTPServerError), anything)
     end
   end
 
-  # ---------------------------------------------------------------------------
   describe '.find_by_name' do
-    context 'when entity exists' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_return(entity_response)
-      end
+    it 'decodes the entity ID from the HTTP response' do
+      stubs.get("/v1/identity/entity/name/legion-#{canonical_name}") { [200, {}, entity_body] }
 
-      it 'returns the entity ID' do
-        result = described_class.find_by_name(canonical_name)
-        expect(result).to eq(entity_id)
-      end
-
-      it 'reads the legion- prefixed path' do
-        expect(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_return(entity_response)
-
-        described_class.find_by_name(canonical_name)
-      end
+      expect(described_class.find_by_name(canonical_name: canonical_name)).to eq(entity_id)
     end
 
-    context 'when entity does not exist (nil response)' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_return(nil)
-      end
+    it 'returns nil for an entity that does not exist' do
+      stubs.get("/v1/identity/entity/name/legion-#{canonical_name}") { [404, {}, '{}'] }
 
-      it 'returns nil' do
-        result = described_class.find_by_name(canonical_name)
-        expect(result).to be_nil
-      end
+      expect(described_class.find_by_name(canonical_name: canonical_name)).to be_nil
     end
 
-    context 'when Vault raises HTTPClientError (404)' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_raise(Vault::HTTPClientError, 'entity not found')
-      end
+    it 'returns nil when the response has no entity ID' do
+      stubs.get("/v1/identity/entity/name/legion-#{canonical_name}") { [200, {}, Legion::JSON.dump(data: { name: 'legion-foo' })] }
 
-      it 'returns nil without raising' do
-        result = described_class.find_by_name(canonical_name)
-        expect(result).to be_nil
-      end
+      expect(described_class.find_by_name(canonical_name: canonical_name)).to be_nil
     end
 
-    context 'when Vault raises an unexpected StandardError' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_raise(StandardError, 'timeout')
+    it 'reports permission errors instead of mistaking their text for a 404' do
+      stubs.get("/v1/identity/entity/name/legion-#{canonical_name}") do
+        [403, {}, Legion::JSON.dump(errors: ['policy not found for this caller'])]
       end
+      allow(described_class).to receive(:handle_exception)
 
-      it 'returns nil without raising' do
-        result = described_class.find_by_name(canonical_name)
-        expect(result).to be_nil
-      end
-    end
-
-    context 'when response data has no id field' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_return(double('Vault::Secret', data: { name: 'legion-foo' }))
-      end
-
-      it 'returns nil' do
-        result = described_class.find_by_name(canonical_name)
-        expect(result).to be_nil
-      end
-    end
-
-    context 'when response returns string-keyed data' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_return(entity_response_string_keys)
-      end
-
-      it 'returns the entity ID from string-keyed response' do
-        result = described_class.find_by_name(canonical_name)
-        expect(result).to eq(entity_id)
-      end
-    end
-
-    context 'when Vault raises a non-404 HTTPClientError' do
-      before do
-        allow(vault_logical).to receive(:read)
-          .with("identity/entity/name/legion-#{canonical_name}")
-          .and_raise(Vault::HTTPClientError, 'permission denied')
-      end
-
-      it 'returns nil without raising' do
-        result = described_class.find_by_name(canonical_name)
-        expect(result).to be_nil
-      end
-    end
-  end
-
-  # ---------------------------------------------------------------------------
-  describe 'vault_logical resolution' do
-    context 'when LeaseManager is defined' do
-      it 'delegates to LeaseManager.instance.vault_logical' do
-        expect(lease_manager).to receive(:vault_logical).and_return(vault_logical)
-        allow(vault_logical).to receive(:read).and_return(nil)
-
-        described_class.find_by_name(canonical_name)
-      end
-    end
-
-    context 'when LeaseManager is not defined' do
-      before do
-        hide_const('Legion::Crypt::LeaseManager')
-
-        stub_const('Vault', Module.new)
-        stub_const('Vault::HTTPClientError', Class.new(StandardError))
-        allow(Vault).to receive(:logical).and_return(vault_logical)
-        allow(vault_logical).to receive(:read).and_return(nil)
-      end
-
-      it 'falls back to ::Vault.logical' do
-        expect(Vault).to receive(:logical).and_return(vault_logical)
-
-        described_class.find_by_name(canonical_name)
-      end
+      expect(described_class.find_by_name(canonical_name: canonical_name)).to be_nil
+      expect(described_class).to have_received(:handle_exception).with(instance_of(Legion::Crypt::Vault::HTTPClientError), anything)
     end
   end
 end

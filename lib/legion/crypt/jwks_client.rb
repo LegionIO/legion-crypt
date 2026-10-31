@@ -12,6 +12,7 @@ module Legion
   module Crypt
     module JwksClient
       CACHE_TTL = 3600
+      MISS_REFRESH_COOLDOWN = 30
 
       @cache = {}
       @cache_mutex = Mutex.new
@@ -22,39 +23,30 @@ module Legion
         include Legion::Logging::Helper
 
         def fetch_keys(jwks_url)
-          with_url_lock(jwks_url) do
-            log.debug "JWKS fetch: #{jwks_url}"
-            response = http_get(jwks_url)
-            jwks_data = parse_response(response)
-            keys = parse_jwks(jwks_data)
-
-            cache_write(jwks_url, keys)
-            log.info "JWKS fetched url=#{jwks_url} keys=#{keys.size}"
-            keys
-          end
-        rescue StandardError => e
-          handle_exception(e, level: :warn, operation: 'crypt.jwks.fetch_keys', jwks_url: jwks_url)
-          raise
+          with_url_lock(jwks_url) { refresh_keys(jwks_url: jwks_url) }
         end
 
         def find_key(jwks_url, kid)
           cached = cache_read(jwks_url)
+          return cached[:keys][kid] if cached && !expired?(cached[:fetched_at]) && cached[:keys][kid]
 
-          if cached && !expired?(cached[:fetched_at])
-            key = cached[:keys][kid]
-            if key
-              log.debug "JWKS cache hit: kid=#{kid}"
-              return key
+          with_url_lock(jwks_url) do
+            cached = cache_read(jwks_url)
+            fresh = cached && !expired?(cached[:fetched_at])
+            return cached[:keys][kid] if fresh && cached[:keys][kid]
+
+            if cached && cached[:refresh_after] && (fresh || cached[:error]) &&
+               ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) < cached[:refresh_after]
+              raise cached[:error] if cached[:error]
+
+              raise Legion::Crypt::JWT::InvalidTokenError, "signing key not found: #{kid}"
             end
 
-            log.debug "JWKS cache miss for kid=#{kid}; refreshing keys"
+            keys = refresh_keys(jwks_url: jwks_url, requested_kid: kid)
+            return keys[kid] if keys[kid]
+
+            raise Legion::Crypt::JWT::InvalidTokenError, "signing key not found: #{kid}"
           end
-
-          keys = fetch_keys(jwks_url)
-          key = keys[kid]
-          return key if key
-
-          raise Legion::Crypt::JWT::InvalidTokenError, "signing key not found: #{kid}"
         end
 
         def prefetch!(jwks_url)
@@ -87,24 +79,44 @@ module Legion
         def clear_cache
           stop_background_refresh!
           @cache_mutex.synchronize { @cache = {} }
-          @locks_mutex.synchronize { @locks = {} }
           log.info 'JWKS cache cleared'
         end
 
         private
 
+        def refresh_keys(jwks_url:, requested_kid: nil, **)
+          previous = cache_read(jwks_url)
+          refreshing_miss = requested_kid && previous && !expired?(previous[:fetched_at])
+          log.debug "JWKS fetch: #{jwks_url}"
+          keys = parse_jwks(parse_response(http_get(jwks_url)))
+          entry = { keys: keys, fetched_at: Time.now }
+          if requested_kid && (refreshing_miss || !keys.key?(requested_kid))
+            entry[:refresh_after] = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + MISS_REFRESH_COOLDOWN
+          end
+          cache_write(jwks_url, entry)
+          log.info "JWKS fetched url=#{jwks_url} keys=#{keys.size}"
+          keys
+        rescue StandardError => e
+          if requested_kid
+            entry = (previous || { keys: {}, fetched_at: nil }).merge(
+              error: e, refresh_after: ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + MISS_REFRESH_COOLDOWN
+            )
+            cache_write(jwks_url, entry)
+          end
+          handle_exception(e, level: :warn, operation: 'crypt.jwks.fetch_keys', jwks_url: jwks_url)
+          raise
+        end
+
         def cache_read(jwks_url)
           @cache_mutex.synchronize { @cache[jwks_url] }
         end
 
-        def cache_write(jwks_url, keys)
-          @cache_mutex.synchronize do
-            @cache[jwks_url] = { keys: keys, fetched_at: Time.now }
-          end
+        def cache_write(jwks_url, entry)
+          @cache_mutex.synchronize { @cache[jwks_url] = entry }
         end
 
         def expired?(fetched_at)
-          Time.now - fetched_at > CACHE_TTL
+          fetched_at.nil? || Time.now - fetched_at > CACHE_TTL
         end
 
         def http_get(url)

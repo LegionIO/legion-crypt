@@ -9,7 +9,9 @@ require 'legion/crypt/cipher'
 require 'legion/crypt/jwt'
 require 'legion/crypt/vault_jwt_auth'
 require 'legion/crypt/lease_manager'
+require 'legion/crypt/vault_operation'
 require 'legion/crypt/vault_cluster'
+require 'legion/crypt/vault'
 require 'legion/crypt/ldap_auth'
 require 'legion/crypt/token_renewer'
 require 'legion/crypt/helper'
@@ -32,15 +34,12 @@ module Legion
     }.freeze
 
     class << self
-      attr_reader :sessions
+      attr_reader :sessions, :stopping
 
       include Legion::Logging::Helper
       include Legion::Crypt::Cipher
 
-      unless Gem::Specification.find_by_name('vault').nil?
-        require 'legion/crypt/vault'
-        include Legion::Crypt::Vault
-      end
+      include Legion::Crypt::Vault
 
       def vault_settings
         Legion::Settings[:crypt][:vault]
@@ -66,28 +65,59 @@ module Legion
 
       def start
         lifecycle_mutex.synchronize do
-          if @started
-            log.info 'Legion::Crypt start ignored because the lifecycle is already running'
+          if @started || @stopping
+            log.info 'Legion::Crypt start ignored because the lifecycle is running or stopping'
             return
           end
 
           log.info 'Legion::Crypt startup initiated'
           log.debug 'Legion::Crypt start requested'
-          ::File.write('./legionio.key', private_key) if settings[:save_private_key]
+          if settings[:save_private_key]
+            key = private_key
+            ::File.open('./legionio.key', ::File::WRONLY | ::File::CREAT, 0o600) do |file|
+              file.chmod(0o600)
+              file.truncate(0)
+              file.write(key.to_pem)
+            end
+          end
           @token_renewers ||= []
+          start_session_tracking
 
           if vault_settings[:clusters]&.any?
             log.info "Legion::Crypt connecting #{vault_settings[:clusters].size} Vault cluster(s)"
             connect_all_clusters
-            start_token_renewers
           else
             log.info 'Legion::Crypt connecting primary Vault client' unless settings[:vault][:token].nil?
             connect_vault unless settings[:vault][:token].nil?
           end
+          start_token_renewers
           start_lease_manager
           start_svid_rotation
           @started = true
           log.info 'Legion::Crypt startup completed'
+        end
+      end
+
+      def vault_auth_generation
+        lifecycle_mutex.synchronize do
+          raise 'Crypt is shutting down; login must be retried' if @stopping
+
+          @token_generation || 0
+        end
+      end
+
+      def install_vault_grant(client:, config:, grant:, auth_method:, generation:, **)
+        issued_at = Time.now
+        lifecycle_mutex.synchronize do
+          raise 'Crypt stopped during login; login must be retried' if @stopping || generation != (@token_generation || 0)
+
+          cluster_name = clusters.find { |_name, candidate| candidate.equal?(config) }&.first
+          previous = (@token_renewers || []).find { |worker| worker.cluster_name == cluster_name }
+          previous&.stop
+          raise 'Previous token worker has not stopped; login must be retried' if previous&.running?
+
+          publish_vault_grant(client: client, config: config, grant: grant, auth_method: auth_method, issued_at: issued_at)
+          start_token_renewer(cluster_name: cluster_name, config: config, vault_client: client)
         end
       end
 
@@ -112,7 +142,7 @@ module Legion
 
         Legion::Settings.merge_settings('transport', Legion::Transport::Settings.default) if defined?(Legion::Transport::Settings)
 
-        response = LeaseManager.instance.vault_logical.read('rabbitmq/creds/legionio-bootstrap')
+        response = LeaseManager.instance.vault_logical.read(path: 'rabbitmq/creds/legionio-bootstrap')
         return unless response&.data
 
         bootstrap_lease_ttl = Legion::Settings.dig(:crypt, :vault, :bootstrap_lease_ttl).to_i
@@ -147,10 +177,18 @@ module Legion
         return if mode == :lite
 
         role = RMQ_ROLE_MAP.fetch(mode, "legionio-#{mode}")
-        response = LeaseManager.instance.vault_logical.read("rabbitmq/creds/#{role}")
-        raise "Failed to fetch identity-scoped RMQ creds for role #{role}" unless response&.data
+        manager = LeaseManager.instance
+        response = Legion::Crypt::VaultOperation.with_timeout { manager.vault_logical.read(path: "rabbitmq/creds/#{role}") }
+        raise "Failed to fetch identity-scoped RMQ creds for role #{role}" unless response
 
-        LeaseManager.instance.register_dynamic_lease(
+        settings = Legion::Settings.loader.settings
+        settings[:transport] ||= {}
+        settings[:transport][:connection] ||= {}
+        conn = settings[:transport][:connection]
+        conn[:user] = nil unless conn.key?(:user)
+        conn[:password] = nil unless conn.key?(:password)
+
+        installed = manager.register_dynamic_lease(
           name:          :rabbitmq,
           path:          "rabbitmq/creds/#{role}",
           response:      response,
@@ -159,32 +197,15 @@ module Legion
             { path: %i[transport connection password], key: :password }
           ]
         )
+        raise 'Identity credential handoff failed — bootstrap lease NOT revoked' unless installed
 
-        settings = Legion::Settings.loader.settings
-        settings[:transport] ||= {}
-        settings[:transport][:connection] ||= {}
-        conn = settings[:transport][:connection]
-        username = response.data[:username] || response.data['username']
-        password = response.data[:password] || response.data['password']
-        raise "Identity-scoped RMQ creds for role #{role} missing username or password" unless username && password
-
-        conn[:user]     = username
-        conn[:password] = password
-
-        if defined?(Legion::Transport::Connection)
-          Legion::Transport::Connection.force_reconnect
-          raise 'Transport reconnect failed after credential swap — bootstrap lease NOT revoked' unless Legion::Transport::Connection.session_open?
-
-          log.info "Transport reconnected with identity-scoped creds (role: #{role})"
-        end
-
-        revoke_bootstrap_lease
+        Legion::Crypt::VaultOperation.with_timeout { revoke_bootstrap_lease }
       end
 
       def revoke_bootstrap_lease
         return unless @bootstrap_lease_id
 
-        LeaseManager.instance.vault_sys.revoke(@bootstrap_lease_id)
+        LeaseManager.instance.vault_sys.revoke(lease_id: @bootstrap_lease_id)
         log.info "Bootstrap RMQ lease revoked (#{@bootstrap_lease_id[0..7]}...)"
         @bootstrap_lease_id      = nil
         @bootstrap_lease_expires = nil
@@ -196,6 +217,8 @@ module Legion
       end
 
       def vault_connected?
+        return connected_clusters.any? if settings.dig(:vault, :clusters)&.any?
+
         return true if settings.dig(:vault, :connected) == true
         return true if respond_to?(:connected_clusters) && connected_clusters.any?
 
@@ -233,20 +256,43 @@ module Legion
       end
 
       def shutdown
-        lifecycle_mutex.synchronize do
-          unless @started
-            log.info 'Legion::Crypt shutdown ignored because the lifecycle is not running'
-            return
-          end
+        shutdown_started = lifecycle_mutex.synchronize do
+          return if @stopping
+          return unless @started || @vault_clients || @retired_vault_clients&.size&.positive?
 
-          log.info 'Legion::Crypt shutdown initiated'
-          Legion::Crypt::LeaseManager.instance.shutdown
-          stop_token_renewers
-          shutdown_renewer
-          close_sessions
-          stop_svid_rotation
+          @stopping = true
+          @token_generation = (@token_generation || 0) + 1
           @started = false
-          log.info 'Legion::Crypt shutdown completed'
+          true
+        end
+        deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
+        manager = Legion::Crypt::LeaseManager.instance
+        [manager, *(@token_renewers || [])].each do |worker|
+          worker.request_stop
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.shutdown.request_stop')
+        end
+
+        components = [
+          [self, :stop_svid_rotation, { deadline: deadline }],
+          [self, :shutdown_renewer, {}],
+          [manager, :shutdown, { deadline: deadline }],
+          [self, :stop_token_renewers, { deadline: deadline }],
+          [self, :close_sessions, { deadline: deadline }],
+          [self, :clear_vault_clients, { deadline: deadline }]
+        ]
+        components.each do |owner, operation, options|
+          owner.send(operation, **options)
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: "crypt.shutdown.#{operation}")
+        end
+        log.info 'Legion::Crypt shutdown completed'
+      ensure
+        if shutdown_started
+          lifecycle_mutex.synchronize do
+            @started = false
+            @stopping = false
+          end
         end
       end
 
@@ -287,27 +333,34 @@ module Legion
 
       def start_token_renewers
         started = 0
-        clusters.each do |name, config|
-          next unless config[:auth_method]&.to_s == 'kerberos' && config[:connected]
+        configurations = clusters.empty? ? { nil => vault_settings } : clusters
+        configurations.each do |name, config|
+          next unless %w[kerberos ldap jwt].include?(config[:auth_method].to_s) && config[:connected]
 
-          renewer = Legion::Crypt::TokenRenewer.new(
-            cluster_name: name,
-            config:       config,
-            vault_client: vault_client(name)
-          )
-          renewer.start
-          @token_renewers << renewer
+          start_token_renewer(cluster_name: name, config: config, vault_client: vault_client(name))
           started += 1
         end
         log.info "Legion::Crypt started #{started} token renewer(s)" if started.positive?
       end
 
-      def stop_token_renewers
-        return unless @token_renewers
+      def start_token_renewer(cluster_name:, config:, vault_client:, **)
+        @token_renewers ||= []
+        return if @token_renewers.any? { |worker| worker.cluster_name == cluster_name && worker.running? }
 
-        @token_renewers.each(&:stop)
-        log.info "Legion::Crypt stopped #{@token_renewers.size} token renewer(s)" if @token_renewers.any?
-        @token_renewers.clear
+        @token_renewers.reject! { |worker| worker.cluster_name == cluster_name }
+        renewer = Legion::Crypt::TokenRenewer.new(cluster_name: cluster_name, config: config, vault_client: vault_client)
+        @token_renewers << renewer
+        renewer.start
+      end
+
+      def stop_token_renewers(deadline: nil)
+        renewers = @token_renewers || []
+        @token_renewers = []
+        renewers.each do |renewer|
+          renewer.stop(deadline: deadline)
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.stop_token_renewers')
+        end
       end
 
       def start_svid_rotation
@@ -320,11 +373,11 @@ module Legion
         handle_exception(e, level: :warn, operation: 'crypt.start_svid_rotation')
       end
 
-      def stop_svid_rotation
+      def stop_svid_rotation(deadline: nil)
         return unless @svid_rotation
 
-        log.info 'Legion::Crypt stopping SPIFFE SVID rotation'
-        @svid_rotation.stop
+        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { @svid_rotation.stop }
+      ensure
         @svid_rotation = nil
       end
 
