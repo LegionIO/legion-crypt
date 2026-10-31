@@ -185,6 +185,12 @@ Lease names are stable across environments. The actual Vault paths are deploymen
 
 `LeaseManager#register_ref(name, key, path)` accepts typed destination paths: Symbols for existing Hash keys and nonnegative Integers for existing Array indexes. A lease-data key can target multiple destinations; duplicate registrations are ignored. `push_to_settings` updates valid destinations, including nested arrays, and returns the number of successful writes. Invalid, missing, frozen, or out-of-bounds destinations are not modified. Transactional credential handoff requires every referenced destination to be writable before changing any of them.
 
+Starting with Crypt **1.5.38**, Settings **1.4.4** uses `LeaseManager#update_settings_refs(settings:, publish: nil)` to replace destination bindings and publish resolved settings atomically. Preparation runs under the lease-state mutex with a memory-only `reader.call(name:, key:)`; external secret reads must finish beforehand. The proposal contains typed `paths` to replace, `assignments` (`container`, `key`, `value`), and selected `references` (`name`, `key`, `path`, mutable `binding` containing `value`). Other destinations remain registered, and ambiguous writers are rejected.
+
+`publish.call(proposal)` is restricted to in-memory pointer/metadata publication, not consumer callbacks or manager calls. Failed preparation, validation, or publication preserves prior assignments and bindings. Publication waits for an in-flight credential handoff to commit or roll back; successful rotations update each binding's tracked value, and failed handoffs restore both the target and its separately tracked previous value. Shutdown and reset clear bindings with the registry.
+
+Release Crypt before Settings. Older `register_ref` callers remain supported, but source priority and reload provenance are handled by Settings, not by Crypt.
+
 ## Multi-Cluster Vault
 
 `VaultCluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `Legion::Crypt::VaultClient` instance.

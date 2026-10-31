@@ -21,6 +21,8 @@ module Legion
         @owned_leases = {}
         @pending = {}
         @refs = {}
+        @ref_bindings = {}
+        @installations = {}.compare_by_identity
         @lease_locks = {}
         @state_mutex = Mutex.new
         @wake = ConditionVariable.new
@@ -76,10 +78,40 @@ module Legion
       def register_ref(name, key, path, generation: @generation)
         return false unless path.is_a?(Array) && !path.empty?
 
+        name = name.to_sym
+        key = key.to_sym
         with_current_state(generation: generation) do
-          @refs[name.to_sym] ||= {}
-          destinations = (@refs[name.to_sym][key.to_sym] ||= [])
+          @refs.delete_if do |registered_name, keys|
+            keys.delete_if do |registered_key, destinations|
+              @ref_bindings.delete(path) if !(registered_name == name && registered_key == key) && destinations.delete(path)
+              destinations.empty?
+            end
+            keys.empty?
+          end
+          @refs[name] ||= {}
+          destinations = (@refs[name][key] ||= [])
           destinations << path.dup.freeze unless destinations.include?(path)
+        end
+      end
+
+      # Preparation and publication must only perform in-memory work, without calling manager methods.
+      def update_settings_refs(settings:, publish: nil)
+        raise ArgumentError, 'Settings reference preparation requires a block' unless block_given?
+
+        @state_mutex.synchronize do
+          raise 'Cannot publish settings from an in-flight lease reconnect' if @installations.value?(Thread.current)
+
+          generation = @generation
+          @wake.wait(@state_mutex) while !@installations.empty? && lifecycle_current?(generation: generation)
+          raise 'Cannot update settings references in an inactive lifecycle' unless lifecycle_current?(generation: generation)
+
+          reader = lambda do |name:, key:|
+            data = cached_lease_data(name: name.to_sym)
+            data && (data.key?(key.to_sym) ? data[key.to_sym] : data[key.to_s])
+          end
+          proposal = yield reader
+          apply_settings_proposal(settings: settings, proposal: proposal, publish: publish)
+          proposal
         end
       end
 
@@ -192,6 +224,7 @@ module Legion
           @active_leases.clear
           @lease_cache.clear
           @refs.clear
+          @ref_bindings.clear
           @pending.clear
           @vault_client = nil
           @owned_leases.each_value { |entry| entry[:retired] = true }
@@ -209,12 +242,120 @@ module Legion
           @owned_leases.clear
           @pending.clear
           @refs.clear
+          @ref_bindings.clear
           @vault_client = nil
           @stopped = false
         end
       end
 
       private
+
+      def apply_settings_proposal(settings:, proposal:, publish:)
+        validate_settings_proposal!(settings: settings, proposal: proposal)
+        references, bindings = settings_reference_registry(settings: settings, proposal: proposal)
+        assignments = proposal[:assignments].map do |assignment|
+          [assignment[:container], assignment[:key], assignment[:container][assignment[:key]], assignment[:value]]
+        end
+        binding_values = proposal[:references].map { |reference| [reference[:binding], reference[:binding][:value]] }
+        previous_refs = @refs
+        previous_bindings = @ref_bindings
+        begin
+          assignments.each { |container, key, _previous, value| container[key] = value }
+          @refs = references
+          @ref_bindings = bindings
+          publish_settings_proposal(settings: settings, proposal: proposal, publish: publish)
+        rescue StandardError
+          @refs = previous_refs
+          @ref_bindings = previous_bindings
+          assignments.reverse_each { |container, key, previous, _value| container[key] = previous }
+          binding_values.each { |binding, previous| binding[:value] = previous }
+          raise
+        end
+      end
+
+      def settings_reference_registry(settings:, proposal:)
+        paths = proposal[:paths]
+        references = @refs.each_with_object({}) do |(name, keys), result|
+          remaining = keys.transform_values { |destinations| destinations.reject { |path| paths.include?(path) } }
+          remaining.reject! { |_key, destinations| destinations.empty? }
+          result[name] = remaining unless remaining.empty?
+        end
+        bindings = @ref_bindings.except(*paths)
+        proposal[:references].each do |reference|
+          name = reference[:name].to_sym
+          key = reference[:key].to_sym
+          path = reference[:path].dup.freeze
+          references[name] ||= {}
+          (references[name][key] ||= []) << path
+          bindings[path] = { settings: settings, binding: reference[:binding] }
+        end
+        [references, bindings]
+      end
+
+      def publish_settings_proposal(settings:, proposal:, publish:)
+        proposal[:references].each do |reference|
+          target, key = setting_target(path: reference[:path], settings: settings)
+          raise ArgumentError, 'Settings assignment removed a reference destination' unless target
+
+          reference[:binding][:value] = target[key]
+        end
+        publish&.call(proposal)
+        return unless defined?(Legion::Settings) && Legion::Settings.respond_to?(:loader) && Legion::Settings.loader&.settings.equal?(settings)
+
+        proposal[:references].each { |reference| @ref_bindings[reference[:path]][:settings] = nil }
+      end
+
+      def validate_settings_proposal!(settings:, proposal:)
+        raise ArgumentError, 'Settings root must be a Hash or Array' unless settings.is_a?(Hash) || settings.is_a?(Array)
+        unless proposal.is_a?(Hash) && %i[paths assignments references].all? { |key| proposal[key].is_a?(Array) }
+          raise ArgumentError, 'Invalid settings reference proposal'
+        end
+
+        proposal[:paths].each do |path|
+          unless path.is_a?(Array) && !path.empty? && path.all? { |part| part.is_a?(Symbol) || (part.is_a?(Integer) && part >= 0) }
+            raise ArgumentError, 'Invalid typed settings path'
+          end
+        end
+        validate_settings_assignments!(assignments: proposal[:assignments])
+        validate_settings_references!(settings: settings, paths: proposal[:paths], references: proposal[:references])
+      end
+
+      def validate_settings_assignments!(assignments:)
+        destinations = {}
+        assignments.each do |assignment|
+          raise ArgumentError, 'Invalid settings assignment' unless assignment.is_a?(Hash) && assignment.key?(:value)
+
+          container = assignment[:container]
+          key = assignment[:key]
+          raise ArgumentError, 'Unwritable settings assignment' unless valid_setting_key?(container: container, key: key) && !container.frozen?
+          raise ArgumentError, 'Duplicate settings assignment' if destinations[[container.object_id, key]]
+
+          destinations[[container.object_id, key]] = true
+        end
+      end
+
+      def validate_settings_references!(settings:, paths:, references:)
+        destinations = {}
+        binding_ids = {}.compare_by_identity
+        references.each do |reference|
+          unless reference.is_a?(Hash) && paths.include?(reference[:path]) &&
+                 [reference[:name], reference[:key]].all? { |value| value.is_a?(String) || value.is_a?(Symbol) }
+            raise ArgumentError, 'Invalid settings reference'
+          end
+
+          target, key = setting_target(path: reference[:path], settings: settings)
+          raise ArgumentError, 'Unwritable settings reference destination' unless target
+          raise ArgumentError, 'Ambiguous settings reference destination' if destinations[[target.object_id, key]]
+
+          binding = reference[:binding]
+          unless binding.is_a?(Hash) && !binding.frozen? && binding.key?(:value) && !binding_ids[binding]
+            raise ArgumentError, 'Settings references require distinct mutable binding records'
+          end
+
+          destinations[[target.object_id, key]] = true
+          binding_ids[binding] = true
+        end
+      end
 
       def register_at_exit_hook
         return if @at_exit_registered
@@ -310,7 +451,14 @@ module Legion
         end
         committed
       ensure
-        abort_install(handoff: handoff) if handoff && !committed
+        begin
+          abort_install(handoff: handoff) if handoff && !committed
+        ensure
+          @state_mutex.synchronize do
+            @installations.delete(candidate)
+            @wake.broadcast
+          end
+        end
         retire_unused_leases(name: name, deadline: context[:deadline])
       end
 
@@ -330,10 +478,15 @@ module Legion
           snapshots = setting_snapshots(name: name, data: data)
           transaction = { previous: previous, data: @lease_cache[name], settings: snapshots, candidate: handoff[:candidate] }
           handoff[:transaction] = transaction
-          snapshots.each { |target, key, _old, value| target[key] = value }
+          @installations[handoff[:candidate]] = Thread.current
+          snapshots.each do |target, key, old, value, binding|
+            target[key] = value unless old == value
+            binding[:value] = value if binding
+          end
           @lease_cache[name] = data
           @active_leases[name] = handoff[:candidate]
-          handoff[:reconnect] = context[:reconnect] || (previous && transaction[:data] != data) || !snapshots.empty?
+          handoff[:reconnect] = context[:reconnect] || (previous && transaction[:data] != data) ||
+                                snapshots.any? { |_target, _key, old, value| old != value }
           true
         end
       end
@@ -376,11 +529,15 @@ module Legion
 
           value = data.key?(key) ? data[key] : data[key.to_s]
           paths.filter_map do |path|
-            target, segment = setting_target(path: path)
+            record = @ref_bindings[path]
+            target, segment = setting_target(path: path, settings: record&.dig(:settings))
             raise "Lease #{name} has an unwritable settings destination #{path.inspect}" unless target
-            next if target[segment] == value
 
-            [target, segment, target[segment], value]
+            binding = record&.dig(:binding)
+            raise "Lease #{name} has an immutable settings binding" if binding&.frozen?
+            next if target[segment] == value && (!binding || binding[:value] == value)
+
+            [target, segment, target[segment], value, binding, binding&.dig(:value)]
           end
         end
       end
@@ -392,8 +549,10 @@ module Legion
           current = @active_leases[name]
           next false unless current.equal?(transaction[:candidate]) || current.equal?(transaction[:previous])
 
-          transaction[:settings].each do |target, key, previous, candidate|
+          transaction[:settings].each do |snapshot|
+            target, key, previous, candidate, binding, previous_binding = snapshot
             target[key] = previous if target[key] == candidate
+            binding[:value] = previous_binding if binding && binding[:value] == candidate
           end
           if transaction[:previous]
             @active_leases[name] = transaction[:previous]
@@ -585,28 +744,34 @@ module Legion
         lease[:expires_at] - Time.now - (ttl * 0.5)
       end
 
-      def setting_target(path:, **)
+      def setting_target(path:, settings: nil, **)
         return unless path.is_a?(Array) && !path.empty?
 
-        target = Legion::Settings.get.settings
+        target = settings
+        target ||= Legion::Settings.loader&.settings if defined?(Legion::Settings) && Legion::Settings.respond_to?(:loader)
         path.each_with_index do |segment, index|
-          valid =
-            case target
-            when Hash then segment.is_a?(Symbol) && target.key?(segment)
-            when Array then segment.is_a?(Integer) && segment >= 0 && segment < target.length
-            end
-          return nil unless valid
+          return nil unless valid_setting_key?(container: target, key: segment)
           return target.frozen? ? nil : [target, segment] if index == path.length - 1
 
           target = target[segment]
         end
       end
 
+      def valid_setting_key?(container:, key:)
+        case container
+        when Hash then key.is_a?(Symbol) && container.key?(key)
+        when Array then key.is_a?(Integer) && key >= 0 && key < container.length
+        end
+      end
+
       def write_setting(path, value)
-        target, key = setting_target(path: path)
-        return false unless target
+        record = @ref_bindings[path]
+        target, key = setting_target(path: path, settings: record&.dig(:settings))
+        binding = record&.dig(:binding)
+        return false unless target && !binding&.frozen?
 
         target[key] = value
+        binding[:value] = value if binding
         true
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.write_setting', path: path.inspect)

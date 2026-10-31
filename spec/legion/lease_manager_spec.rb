@@ -264,6 +264,347 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
   end
 
+  describe '#update_settings_refs' do
+    let(:settings) { { connections: [{ password: 'literal' }, { password: 'other' }] } }
+    let(:password_path) { [:connections, 0, :password] }
+    let(:binding) { { value: nil, source: 'opaque declaration' } }
+
+    def install_settings_lease(name:, value:)
+      manager.register_dynamic_lease(name: name, path: "credentials/#{name}",
+                                     response: lease_response(id: nil, username: value, renewable: false), settings_refs: [])
+    end
+
+    def bind_setting(root:, name:, path:, record:, publish: nil)
+      manager.update_settings_refs(settings: root, publish: publish) do |reader|
+        target = path[0...-1].reduce(root) { |container, key| container[key] }
+        { paths:       [path],
+          assignments: [{ container: target, key: path.last, value: reader.call(name: name, key: :password) }],
+          references:  [{ name: name, key: :password, path: path, binding: record }] }
+      end
+    end
+
+    before do
+      manager.start({}, vault_client: default_vault_client)
+      install_settings_lease(name: :a, value: 'a')
+      install_settings_lease(name: :b, value: 'b')
+    end
+
+    it 'replaces one destination without losing the old lease other destinations' do
+      other_binding = { value: nil }
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      bind_setting(root: settings, name: :a, path: [:connections, 1, :password], record: other_binding)
+      replacement_binding = { value: nil }
+      bind_setting(root: settings, name: :b, path: password_path, record: replacement_binding)
+
+      install_settings_lease(name: :a, value: 'rotated_a')
+      expect(settings[:connections]).to eq([{ password: 'b_pass' }, { password: 'rotated_a_pass' }])
+      expect(binding[:value]).to eq('a_pass')
+      expect(other_binding[:value]).to eq('rotated_a_pass')
+      install_settings_lease(name: :b, value: 'rotated_b')
+      expect(settings[:connections][0][:password]).to eq('rotated_b_pass')
+      expect(replacement_binding[:value]).to eq('rotated_b_pass')
+    end
+
+    it 'retires a binding without replacing it with another lease' do
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      manager.update_settings_refs(settings: settings) do
+        { paths:       [password_path],
+          assignments: [{ container: settings[:connections][0], key: :password, value: false }],
+          references:  [] }
+      end
+
+      install_settings_lease(name: :a, value: 'rotated')
+      expect(settings[:connections][0][:password]).to be(false)
+      expect(binding[:value]).to eq('a_pass')
+      expect(manager.push_to_settings(:a)).to eq(0)
+    end
+
+    it 'retains the original declaration and tracks values through repeated resolution and rotation' do
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      install_settings_lease(name: :a, value: 'rotated')
+      expect(binding).to eq(value: 'rotated_pass', source: 'opaque declaration')
+
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      expect(manager.push_to_settings(:a)).to eq(1)
+      install_settings_lease(name: :a, value: 'final')
+      expect(settings[:connections][0][:password]).to eq('final_pass')
+      expect(binding[:value]).to eq('final_pass')
+    end
+
+    it 'tracks successful push values even after a caller overwrites the destination' do
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      settings[:connections][0][:password] = 'explicit edit'
+      binding[:value] = 'previous observation'
+      expect(manager.push_to_settings(:a)).to eq(1)
+      expect(settings[:connections][0][:password]).to eq('a_pass')
+      expect(binding[:value]).to eq('a_pass')
+    end
+
+    it 'keeps standalone destinations separate from the active loader' do
+      active_settings = { connections: [{ password: 'active literal' }] }
+      allow(Legion::Settings.loader).to receive(:settings).and_return(active_settings)
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      install_settings_lease(name: :a, value: 'rotated')
+
+      expect(settings[:connections][0][:password]).to eq('rotated_pass')
+      expect(active_settings[:connections][0][:password]).to eq('active literal')
+    end
+
+    it 'follows a published loader when its settings root is rebuilt' do
+      active_settings = { connections: [{ password: 'old loader' }] }
+      allow(Legion::Settings.loader).to receive(:settings) { active_settings }
+      publication = ->(_proposal) { active_settings = settings }
+      bind_setting(root: settings, name: :a, path: password_path, record: binding, publish: publication)
+      active_settings = { connections: [{ password: 'rebuilt' }] }
+
+      install_settings_lease(name: :a, value: 'rotated')
+      expect(active_settings[:connections][0][:password]).to eq('rotated_pass')
+      expect(settings[:connections][0][:password]).to eq('a_pass')
+      expect(binding[:value]).to eq('rotated_pass')
+    end
+
+    it 'rejects ambiguous writers before applying any assignments' do
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      expect do
+        manager.update_settings_refs(settings: settings) do
+          { paths:       [password_path],
+            assignments: [{ container: settings[:connections][0], key: :password, value: 'invalid' }],
+            references:  [
+              { name: :a, key: :password, path: password_path, binding: { value: nil } },
+              { name: :b, key: :password, path: password_path, binding: { value: nil } }
+            ] }
+        end
+      end.to raise_error(ArgumentError)
+
+      expect(settings[:connections][0][:password]).to eq('a_pass')
+      install_settings_lease(name: :a, value: 'rotated')
+      expect(settings[:connections][0][:password]).to eq('rotated_pass')
+    end
+
+    it 'validates every assignment before changing values or registrations' do
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      settings[:connections][1].freeze
+      expect do
+        manager.update_settings_refs(settings: settings) do
+          { paths: [password_path], references: [],
+            assignments: [
+              { container: settings[:connections][0], key: :password, value: 'invalid' },
+              { container: settings[:connections][1], key: :password, value: 'unwritable' }
+            ] }
+        end
+      end.to raise_error(ArgumentError)
+
+      expect(settings[:connections][0][:password]).to eq('a_pass')
+      install_settings_lease(name: :a, value: 'rotated')
+      expect(settings[:connections][0][:password]).to eq('rotated_pass')
+    end
+
+    it 'preserves assignments and bindings when preparation fails' do
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      expect do
+        manager.update_settings_refs(settings: settings) { raise IOError, 'preparation failed' }
+      end.to raise_error(IOError)
+
+      expect(settings[:connections][0][:password]).to eq('a_pass')
+      install_settings_lease(name: :a, value: 'rotated')
+      expect(settings[:connections][0][:password]).to eq('rotated_pass')
+      expect(binding[:value]).to eq('rotated_pass')
+    end
+
+    it 'restores assignments, registrations, and tracked values when publication fails' do
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      settings[:connections][0][:password] = 'explicit edit'
+      replacement_binding = { value: 'previous observation' }
+      publication = lambda do |_proposal|
+        expect(settings[:connections][0][:password]).to eq('b_pass')
+        expect(replacement_binding[:value]).to eq('b_pass')
+        raise IOError, 'publication failed'
+      end
+      expect do
+        bind_setting(root: settings, name: :b, path: password_path, record: replacement_binding, publish: publication)
+      end.to raise_error(IOError)
+
+      expect(settings[:connections][0][:password]).to eq('explicit edit')
+      expect(binding[:value]).to eq('a_pass')
+      expect(replacement_binding[:value]).to eq('previous observation')
+      install_settings_lease(name: :b, value: 'unused')
+      expect(settings[:connections][0][:password]).to eq('explicit edit')
+      install_settings_lease(name: :a, value: 'retained')
+      expect(settings[:connections][0][:password]).to eq('retained_pass')
+      expect(binding[:value]).to eq('retained_pass')
+    end
+
+    it 'restores the prior binding value separately from an explicitly changed destination on failed handoff' do
+      install_settings_lease(name: :rabbitmq, value: 'original')
+      bind_setting(root: settings, name: :rabbitmq, path: password_path, record: binding)
+      settings[:connections][0][:password] = 'explicit edit'
+      transport = double('RabbitMQ connection', force_reconnect: false, session_open?: false)
+      stub_const('Legion::Transport::Connection', transport)
+
+      expect(install_settings_lease(name: :rabbitmq, value: 'candidate')).to be(false)
+      expect(settings[:connections][0][:password]).to eq('explicit edit')
+      expect(binding[:value]).to eq('original_pass')
+      expect(manager.fetch(:rabbitmq, :password)).to eq('original_pass')
+    end
+
+    it 'tracks and rolls back a candidate even when its value already matches the destination' do
+      install_settings_lease(name: :rabbitmq, value: 'original')
+      bind_setting(root: settings, name: :rabbitmq, path: password_path, record: binding)
+      settings[:connections][0][:password] = 'candidate_pass'
+      observed = []
+      transport = double('RabbitMQ connection', session_open?: false)
+      allow(transport).to receive(:force_reconnect) do
+        observed << binding[:value]
+        false
+      end
+      stub_const('Legion::Transport::Connection', transport)
+
+      expect(install_settings_lease(name: :rabbitmq, value: 'candidate')).to be(false)
+      expect(observed).to eq(%w[candidate_pass original_pass])
+      expect(settings[:connections][0][:password]).to eq('candidate_pass')
+      expect(binding[:value]).to eq('original_pass')
+    end
+
+    it 'rejects settings publication from a reconnect callback without deadlocking or retaining candidate values' do
+      install_settings_lease(name: :rabbitmq, value: 'original')
+      bind_setting(root: settings, name: :rabbitmq, path: password_path, record: binding)
+      transport = double('RabbitMQ connection', session_open?: true)
+      allow(transport).to receive(:force_reconnect) do
+        bind_setting(root: settings, name: :rabbitmq, path: password_path, record: binding)
+        true
+      end
+      stub_const('Legion::Transport::Connection', transport)
+
+      result = Timeout.timeout(2) { install_settings_lease(name: :rabbitmq, value: 'candidate') }
+      expect(result).to be(false)
+      expect(settings[:connections][0][:password]).to eq('original_pass')
+      expect(binding[:value]).to eq('original_pass')
+    end
+
+    it 'waits for an in-flight failed handoff before reading or publishing credentials' do
+      install_settings_lease(name: :rabbitmq, value: 'original')
+      bind_setting(root: settings, name: :rabbitmq, path: password_path, record: binding)
+      reconnect_entered = Queue.new
+      release_reconnect = Queue.new
+      attempts = 0
+      transport = double('RabbitMQ connection', session_open?: true)
+      allow(transport).to receive(:force_reconnect) do
+        attempts += 1
+        if attempts == 1
+          reconnect_entered << true
+          release_reconnect.pop
+          false
+        else
+          true
+        end
+      end
+      stub_const('Legion::Transport::Connection', transport)
+      installer = Thread.new { install_settings_lease(name: :rabbitmq, value: 'candidate') }
+      updater = nil
+      Timeout.timeout(2) do
+        reconnect_entered.pop
+        updater = Thread.new { bind_setting(root: settings, name: :rabbitmq, path: password_path, record: binding) }
+        Thread.pass until updater.status == 'sleep'
+        release_reconnect << true
+        expect(installer.value).to be(false)
+        updater.value
+      end
+
+      expect(settings[:connections][0][:password]).to eq('original_pass')
+      expect(binding[:value]).to eq('original_pass')
+    ensure
+      release_reconnect << true if release_reconnect
+      installer&.join(2)
+      updater&.join(2)
+    end
+
+    it 'publishes all resolved destinations before a waiting rotation can observe the new bindings' do
+      entered = Queue.new
+      release = Queue.new
+      published = nil
+      updater = Thread.new do
+        manager.update_settings_refs(settings: settings, publish: ->(_proposal) { published = settings[:connections].map(&:dup) }) do |reader|
+          entered << true
+          release.pop
+          value = reader.call(name: :a, key: :password)
+          { paths:       [password_path, [:connections, 1, :password]],
+            assignments: settings[:connections].map { |target| { container: target, key: :password, value: value } },
+            references:  [
+              { name: :a, key: :password, path: password_path, binding: binding },
+              { name: :a, key: :password, path: [:connections, 1, :password], binding: { value: nil } }
+            ] }
+        end
+      end
+      rotator = nil
+      Timeout.timeout(2) do
+        entered.pop
+        rotator = Thread.new { install_settings_lease(name: :a, value: 'rotated') }
+        Thread.pass until rotator.status == 'sleep'
+        expect(settings[:connections]).to eq([{ password: 'literal' }, { password: 'other' }])
+        release << true
+        updater.value
+        expect(rotator.value).to be(true)
+      end
+
+      expect(published).to eq([{ password: 'a_pass' }, { password: 'a_pass' }])
+      expect(settings[:connections]).to eq([{ password: 'rotated_pass' }, { password: 'rotated_pass' }])
+      expect(binding[:value]).to eq('rotated_pass')
+    ensure
+      release << true if release
+      updater&.join(2)
+      rotator&.join(2)
+    end
+
+    it 'wakes a waiting settings update when shutdown invalidates the lifecycle' do
+      install_settings_lease(name: :rabbitmq, value: 'original')
+      entered = Queue.new
+      release = Queue.new
+      transport = double('RabbitMQ connection', session_open?: true)
+      allow(transport).to receive(:force_reconnect) do
+        entered << true
+        release.pop
+        true
+      end
+      stub_const('Legion::Transport::Connection', transport)
+      installer = Thread.new { install_settings_lease(name: :rabbitmq, value: 'candidate') }
+      updater = nil
+      Timeout.timeout(2) do
+        entered.pop
+        updater = Thread.new do
+          bind_setting(root: settings, name: :rabbitmq, path: password_path, record: binding)
+        rescue RuntimeError => e
+          e
+        end
+        Thread.pass until updater.status == 'sleep'
+        manager.request_stop
+        expect(updater.value).to be_a(RuntimeError)
+        release << true
+        expect(installer.value).to be(false)
+      end
+
+      expect(settings[:connections][0][:password]).to eq('literal')
+      expect(binding[:value]).to be_nil
+    ensure
+      release << true if release
+      installer&.join(2)
+      updater&.join(2)
+    end
+
+    it 'rejects publication after shutdown and clears previous binding records' do
+      bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      manager.shutdown
+      expect do
+        bind_setting(root: settings, name: :a, path: password_path, record: binding)
+      end.to raise_error(RuntimeError)
+
+      manager.start({}, vault_client: default_vault_client)
+      install_settings_lease(name: :a, value: 'restarted')
+      expect(manager.push_to_settings(:a)).to eq(0)
+      expect(settings[:connections][0][:password]).to eq('a_pass')
+      expect(binding[:value]).to eq('a_pass')
+    end
+  end
+
   describe 'expiry-aware renewal worker' do
     it 'renews a short lease before expiry rather than waiting five seconds' do
       response = lease_response(id: 'short-id', ttl: 1)

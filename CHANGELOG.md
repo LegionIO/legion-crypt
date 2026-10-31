@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.38] - 2026-10-31
+
+### Fixed
+- Replace lease-backed settings bindings per destination and publish resolved values atomically, preserving other destinations and restoring assignments and binding metadata on failed publication or credential handoff (LegionIO/legion-settings#21).
+- Track each binding's last published value through rotation, retain standalone settings roots, and follow the active loader when its settings root is rebuilt.
+
 ## [1.5.37] - 2026-10-30
 
 ### Changed
