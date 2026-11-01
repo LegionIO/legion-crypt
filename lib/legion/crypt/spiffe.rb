@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/crypt/settings'
 require 'uri'
 require 'openssl'
 
@@ -10,7 +11,7 @@ module Legion
       SPIFFE_SCHEME = 'spiffe'
       DEFAULT_SOCKET_PATH = '/tmp/spire-agent/public/api.sock'
       DEFAULT_TRUST_DOMAIN = 'legion.internal'
-      SVID_RENEWAL_RATIO   = 0.5
+      SVID_RENEWAL_RATIO = 0.5
 
       class Error < StandardError; end
       class InvalidSpiffeIdError < Error; end
@@ -85,45 +86,25 @@ module Legion
         end
 
         def enabled?
-          security = safe_security_settings
-          return false if security.nil?
-
-          spiffe = security[:spiffe] || security['spiffe']
-          return false if spiffe.nil?
-
-          spiffe[:enabled] || spiffe['enabled'] || false
+          Legion::Settings.dig(:security, :spiffe, :enabled) == true
         end
 
         def socket_path
-          security = safe_security_settings
-          return DEFAULT_SOCKET_PATH if security.nil?
-
-          spiffe = security[:spiffe] || security['spiffe'] || {}
-          spiffe[:socket_path] || spiffe['socket_path'] || DEFAULT_SOCKET_PATH
+          path = Legion::Settings.dig(:security, :spiffe, :socket_path)
+          path.nil? ? DEFAULT_SOCKET_PATH : path
         end
 
         def trust_domain
-          security = safe_security_settings
-          return DEFAULT_TRUST_DOMAIN if security.nil?
-
-          spiffe = security[:spiffe] || security['spiffe'] || {}
-          spiffe[:trust_domain] || spiffe['trust_domain'] || DEFAULT_TRUST_DOMAIN
+          domain = Legion::Settings.dig(:security, :spiffe, :trust_domain)
+          domain.nil? ? DEFAULT_TRUST_DOMAIN : domain
         end
 
         def workload_id
-          security = safe_security_settings
-          return nil if security.nil?
-
-          spiffe = security[:spiffe] || security['spiffe'] || {}
-          spiffe[:workload_id] || spiffe['workload_id']
+          Legion::Settings.dig(:security, :spiffe, :workload_id)
         end
 
         def allow_x509_fallback?
-          security = safe_security_settings
-          return false if security.nil?
-
-          spiffe = security[:spiffe] || security['spiffe'] || {}
-          spiffe[:allow_x509_fallback] || spiffe['allow_x509_fallback'] || false
+          Legion::Settings.dig(:security, :spiffe, :allow_x509_fallback) == true
         end
 
         private
@@ -137,15 +118,6 @@ module Legion
           return unless uri.userinfo || uri.port || (uri.query && !uri.query.empty?) || (uri.fragment && !uri.fragment.empty?)
 
           raise InvalidSpiffeIdError, "SPIFFE ID must not contain userinfo, port, query, or fragment in '#{raw}'"
-        end
-
-        def safe_security_settings
-          return nil unless defined?(Legion::Settings)
-
-          Legion::Settings[:security]
-        rescue StandardError => e
-          handle_exception(e, level: :debug, operation: 'crypt.spiffe.safe_security_settings')
-          nil
         end
       end
     end

@@ -14,7 +14,6 @@ RSpec.describe Legion::Crypt::Vault do
   before do
     @vault = Class.new
     @vault.extend Legion::Crypt::VaultCluster
-    @vault.define_singleton_method(:vault_settings) { Legion::Settings[:crypt][:vault] }
     @vault.extend Legion::Crypt::Vault
     @vault.sessions = []
     allow(@vault).to receive(:vault_client).and_return(default_client)
@@ -267,7 +266,6 @@ RSpec.describe Legion::Crypt::Vault do
       obj = Object.new
       obj.extend(Legion::Crypt::VaultCluster)
       obj.extend(Legion::Crypt::Vault)
-      obj.define_singleton_method(:vault_settings) { { clusters: {} } }
       obj.sessions = []
       obj
     end
@@ -416,12 +414,20 @@ RSpec.describe Legion::Crypt::Vault do
 end
 
 RSpec.describe Legion::Crypt, 'configured KV mounts' do
+  around do |example|
+    original = Legion::Settings[:crypt]
+    Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default)
+    example.run
+  ensure
+    Legion::Settings.set_prop(:crypt, original)
+  end
+
   [false, true].each do |clustered|
     it "round trips secrets on the configured mount with clustered=#{clustered}" do
-      configuration = { vault: { kv_path: 'private', default: :primary } }
-      allow(Legion::Settings).to receive(:[]).and_call_original
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
-      allow(described_class).to receive(:connected_clusters).and_return(clustered ? { primary: { connected: true } } : {})
+      Legion::Settings[:crypt][:vault].merge!(
+        kv_path: 'private', default: clustered ? :primary : nil,
+        clusters: clustered ? { primary: { connected: true, token: 'fixture-token' } } : {}
+      )
       endpoint = instance_double(Legion::Crypt::VaultClient)
       allow(described_class).to receive(:vault_client).and_return(endpoint)
       mounts = { 'private' => {}, nil => {} }

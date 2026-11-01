@@ -11,15 +11,10 @@ module Legion
 
       attr_accessor :sessions
 
-      def settings
-        Legion::Settings[:crypt][:vault]
-      end
-
       def connect_vault
         return unless start_session_tracking
 
         configuration = Legion::Settings[:crypt][:vault]
-        configuration[:token] = ENV['VAULT_DEV_ROOT_TOKEN_ID'] if ENV.key? 'VAULT_DEV_ROOT_TOKEN_ID'
         return nil if configuration[:token].nil?
 
         client = vault_client

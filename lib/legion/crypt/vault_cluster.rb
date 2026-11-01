@@ -20,7 +20,7 @@ module Legion
 
             @vault_clients ||= {}
             entry = @vault_clients[name]
-            signature = vault_client_signature(config: name.nil? ? vault_settings : clusters[name])
+            signature = vault_client_signature(config: name.nil? ? Legion::Settings[:crypt][:vault] : clusters[name])
             cached = cached_vault_client(entry: entry, signature: signature)
             return cached if cached
 
@@ -50,7 +50,7 @@ module Legion
 
           if pair
             name, entry = pair
-            current_config = name.nil? ? vault_settings : clusters[name]
+            current_config = name.nil? ? Legion::Settings[:crypt][:vault] : clusters[name]
             unless config.equal?(current_config) && current_vault_client?(entry: entry, signature: vault_client_signature(config: current_config))
               raise IOError, 'Vault client configuration changed during authentication'
             end
@@ -82,12 +82,12 @@ module Legion
       end
 
       def default_cluster_name
-        name = vault_settings[:default]
+        name = Legion::Settings[:crypt][:vault][:default]
         name ? name.to_sym : clusters.keys.first
       end
 
       def clusters
-        vault_settings[:clusters] || {}
+        Legion::Settings[:crypt][:vault][:clusters]
       end
 
       def connected_clusters
@@ -144,8 +144,6 @@ module Legion
       end
 
       def sync_vault_connected(connected)
-        return unless defined?(Legion::Settings)
-
         Legion::Settings[:crypt][:vault][:connected] = connected
       end
 
@@ -160,7 +158,7 @@ module Legion
           return cluster_name
         end
 
-        default_name = vault_settings[:default]&.to_sym
+        default_name = Legion::Settings[:crypt][:vault][:default]&.to_sym
         return default_name if default_name && active_clusters.key?(default_name)
 
         active_clusters.keys.first
@@ -196,7 +194,7 @@ module Legion
           raise IOError, 'Crypt stopped during client construction' if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
 
           entry = @vault_clients[name]
-          current_signature = vault_client_signature(config: name.nil? ? vault_settings : clusters[name])
+          current_signature = vault_client_signature(config: name.nil? ? Legion::Settings[:crypt][:vault] : clusters[name])
           cached = cached_vault_client(entry: entry, signature: current_signature)
           return cached if cached
           return unless signature == current_signature
@@ -231,14 +229,13 @@ module Legion
         namespace =
           if config.key?(:namespace)
             config[:namespace]
-          elsif defined?(Legion::Settings)
-            crypt_settings = Legion::Settings[:crypt]
-            crypt_settings.respond_to?(:dig) ? crypt_settings.dig(:vault, :vault_namespace) : nil
+          else
+            Legion::Settings[:crypt][:vault][:vault_namespace]
           end
         {
           address: resolve_vault_address(vault_settings: config), namespace: namespace, token: config[:token],
           verify: verify, ca: tls[:ca], cert: tls[:cert], key: tls[:key],
-          timeout: vault_settings[:operation_timeout] || Legion::Crypt::VaultOperation::DEFAULT_TIMEOUT
+          timeout: Legion::Settings[:crypt][:vault][:operation_timeout]
         }
       end
 

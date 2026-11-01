@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/crypt/settings'
 
 module Legion
   module Crypt
@@ -9,7 +10,7 @@ module Legion
 
       class << self
         def erase_tenant(tenant_id:)
-          key_path = "#{tenant_prefix}/#{tenant_id}/master_key"
+          key_path = "#{Legion::Settings[:crypt][:partition_keys][:vault_tenant_prefix]}/#{tenant_id}/master_key"
 
           log.info "[crypt] Erasing tenant #{tenant_id}"
           result = Legion::Crypt.delete(key_path)
@@ -25,7 +26,7 @@ module Legion
         end
 
         def verify_erasure(tenant_id:)
-          key_path = "#{tenant_prefix}/#{tenant_id}/master_key"
+          key_path = "#{Legion::Settings[:crypt][:partition_keys][:vault_tenant_prefix]}/#{tenant_id}/master_key"
 
           data = Legion::Crypt.read(key_path, nil)
           erased = data.nil?
@@ -34,17 +35,6 @@ module Legion
         rescue StandardError => e
           handle_exception(e, level: :warn, operation: 'crypt.erasure.verify_erasure', tenant_id: tenant_id)
           { erased: false, tenant_id: tenant_id, error: e.message }
-        end
-
-        private
-
-        def tenant_prefix
-          begin
-            Legion::Settings[:crypt][:partition_keys][:vault_tenant_prefix]
-          rescue StandardError => e
-            handle_exception(e, level: :debug, operation: 'crypt.erasure.tenant_prefix')
-            nil
-          end || 'secret/data/legion/tenants'
         end
       end
     end

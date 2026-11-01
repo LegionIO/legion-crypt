@@ -9,8 +9,10 @@ RSpec.describe Legion::Crypt::VaultJwtAuth do
   let(:stubs) { Faraday::Adapter::Test::Stubs.new }
   let(:connection) { Faraday.new { |builder| builder.adapter :test, stubs } }
   let(:config) do
-    { protocol: 'http', address: 'vault.example', port: 8200, token: 'old-token',
-      vault_namespace: 'team', connected: true, clusters: {} }
+    Legion::Crypt::Settings.vault.merge(
+      protocol: 'http', address: 'vault.example', port: 8200, token: 'old-token',
+      vault_namespace: 'team', connected: true, clusters: {}
+    )
   end
   let(:auth_body) do
     Legion::JSON.dump(auth: { client_token: vault_token, lease_duration: 3600, renewable: true,

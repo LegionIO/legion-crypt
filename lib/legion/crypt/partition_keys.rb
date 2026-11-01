@@ -2,6 +2,7 @@
 
 require 'openssl'
 require 'legion/logging/helper'
+require 'legion/crypt/settings'
 
 module Legion
   module Crypt
@@ -10,12 +11,7 @@ module Legion
 
       class << self
         def derive_key(master_key:, tenant_id:, context: nil)
-          context ||= begin
-            Legion::Settings[:crypt][:partition_keys][:derivation_context]
-          rescue StandardError => e
-            handle_exception(e, level: :debug, operation: 'crypt.partition_keys.derivation_context', tenant_id: tenant_id)
-            nil
-          end || 'legion-partition'
+          context = Legion::Settings[:crypt][:partition_keys][:derivation_context] if context.nil?
           log.debug "PartitionKeys deriving key for tenant #{tenant_id}"
           salt = OpenSSL::Digest::SHA256.digest(tenant_id.to_s)
           OpenSSL::KDF.hkdf(master_key, salt: salt, info: context, length: 32, hash: 'SHA256')

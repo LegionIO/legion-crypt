@@ -72,6 +72,12 @@ Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh
 
 ## Configuration
 
+Crypt requires `legion-settings` >= 1.4.2. Requiring `legion/crypt` registers its defaults once; runtime reads use the live `Legion::Settings[:crypt]` tree, including replacement trees and request overlays. The configuration below is the `crypt` section. Configure it through `Legion::Settings`, not the removed `Legion::Crypt.settings`, `.vault_settings`, or `.jwt_settings` accessors. `VAULT_DEV_ROOT_TOKEN_ID` and `VAULT_TOKEN_ID` provide boot defaults; they do not overwrite an explicit live Vault token.
+
+`security.mtls` and `security.spiffe` remain Core-owned configuration. Standalone crypto callers may omit those optional sections; mTLS and SPIFFE stay disabled, with their existing absent-field defaults. Explicit false policy is never replaced by a truthy fallback. Renewal windows must be finite numbers from zero (inclusive) to one (exclusive). Crypt does not register or copy Core's security defaults.
+
+After an explicit full `Legion::Settings.reset!`, standalone callers and tests must bootstrap again with `Legion::Settings.register_library(:crypt, Legion::Crypt::Settings.default)` before using configured crypto APIs. Runtime reads do not repair missing registration. Lease binding transactions and credential publication continue to mutate their intended raw settings roots, not request-overlay copies.
+
 ```json
 {
   "vault": {

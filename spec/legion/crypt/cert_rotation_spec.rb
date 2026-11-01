@@ -11,10 +11,18 @@ RSpec.describe Legion::Crypt::CertRotation do
   let(:security) { { mtls: { enabled: true, renewal_window: 0.5 } } }
   let(:events) { Queue.new }
 
+  around do |example|
+    original_security = Legion::Settings[:security]
+    original_client = Legion::Settings[:client]
+    Legion::Settings.set_prop(:security, security)
+    Legion::Settings.set_prop(:client, { name: 'test-node' })
+    example.run
+  ensure
+    Legion::Settings.set_prop(:security, original_security)
+    Legion::Settings.set_prop(:client, original_client)
+  end
+
   before do
-    allow(Legion::Settings).to receive(:[]).and_call_original
-    allow(Legion::Settings).to receive(:[]).with(:security).and_return(security)
-    allow(Legion::Settings).to receive(:[]).with(:client).and_return(name: 'test-node')
     allow(Legion::Crypt::Mtls).to receive(:issue_cert).and_return(cert_data)
     stub_const('Legion::Events', double('Events'))
     allow(Legion::Events).to receive(:emit) { |name, **payload| events << [name, payload] }
@@ -91,6 +99,12 @@ RSpec.describe Legion::Crypt::CertRotation do
     expect(rotation.needs_renewal?).to be(false)
     allow(Time).to receive(:now).and_return(issued + 75)
     expect(rotation.needs_renewal?).to be(true)
+  end
+
+  it 'rejects false renewal policy instead of silently using a default' do
+    rotation.rotate!
+    Legion::Settings.set_prop(:security, { mtls: { enabled: true, renewal_window: false } })
+    expect { rotation.needs_renewal? }.to raise_error(ArgumentError)
   end
 
   it 'backs off failed issuance without spinning and caps successive retry delays' do

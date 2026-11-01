@@ -41,10 +41,6 @@ module Legion
 
       include Legion::Crypt::Vault
 
-      def vault_settings
-        Legion::Settings[:crypt][:vault]
-      end
-
       def kerberos_principal
         KerberosAuth.kerberos_principal
       end
@@ -72,7 +68,7 @@ module Legion
 
           log.info 'Legion::Crypt startup initiated'
           log.debug 'Legion::Crypt start requested'
-          if settings[:save_private_key]
+          if Legion::Settings[:crypt][:save_private_key]
             key = private_key
             ::File.open('./legionio.key', ::File::WRONLY | ::File::CREAT, 0o600) do |file|
               file.chmod(0o600)
@@ -83,12 +79,12 @@ module Legion
           @token_renewers ||= []
           start_session_tracking
 
-          if vault_settings[:clusters]&.any?
-            log.info "Legion::Crypt connecting #{vault_settings[:clusters].size} Vault cluster(s)"
+          if Legion::Settings[:crypt][:vault][:clusters].any?
+            log.info "Legion::Crypt connecting #{Legion::Settings[:crypt][:vault][:clusters].size} Vault cluster(s)"
             connect_all_clusters
           else
-            log.info 'Legion::Crypt connecting primary Vault client' unless settings[:vault][:token].nil?
-            connect_vault unless settings[:vault][:token].nil?
+            log.info 'Legion::Crypt connecting primary Vault client' unless Legion::Settings[:crypt][:vault][:token].nil?
+            connect_vault unless Legion::Settings[:crypt][:vault][:token].nil?
           end
           start_token_renewers
           start_lease_manager
@@ -121,18 +117,6 @@ module Legion
         end
       end
 
-      def settings
-        if Legion.const_defined?('Settings')
-          Legion::Settings[:crypt]
-        else
-          Legion::Crypt::Settings.default
-        end
-      end
-
-      def jwt_settings
-        settings[:jwt] || Legion::Crypt::Settings.jwt
-      end
-
       def dynamic_rmq_creds?
         Legion::Settings.dig(:crypt, :vault, :dynamic_rmq_creds) == true
       end
@@ -140,13 +124,13 @@ module Legion
       def fetch_bootstrap_rmq_creds
         return unless vault_connected? && dynamic_rmq_creds?
 
-        Legion::Settings.merge_settings('transport', Legion::Transport::Settings.default) if defined?(Legion::Transport::Settings)
+        bootstrap_lease_ttl = Legion::Settings[:crypt][:vault][:bootstrap_lease_ttl]
+        unless bootstrap_lease_ttl.is_a?(Numeric) && bootstrap_lease_ttl.finite? && bootstrap_lease_ttl.positive?
+          raise ArgumentError, 'Vault bootstrap_lease_ttl must be a finite positive number'
+        end
 
         response = LeaseManager.instance.vault_logical.read(path: 'rabbitmq/creds/legionio-bootstrap')
         return unless response&.data
-
-        bootstrap_lease_ttl = Legion::Settings.dig(:crypt, :vault, :bootstrap_lease_ttl).to_i
-        bootstrap_lease_ttl = 300 if bootstrap_lease_ttl <= 0
 
         @bootstrap_lease_id = response.lease_id
         @bootstrap_lease_expires = Time.now + [response.lease_duration, bootstrap_lease_ttl].min
@@ -217,9 +201,9 @@ module Legion
       end
 
       def vault_connected?
-        return connected_clusters.any? if settings.dig(:vault, :clusters)&.any?
+        return connected_clusters.any? if Legion::Settings[:crypt][:vault][:clusters].any?
 
-        return true if settings.dig(:vault, :connected) == true
+        return true if Legion::Settings[:crypt][:vault][:connected] == true
         return true if respond_to?(:connected_clusters) && connected_clusters.any?
 
         false
@@ -229,21 +213,21 @@ module Legion
       end
 
       def issue_token(payload = {}, ttl: nil, algorithm: nil)
-        jwt = jwt_settings
+        jwt = Legion::Settings[:crypt][:jwt]
         algo = algorithm || jwt[:default_algorithm]
         token_ttl = ttl || jwt[:default_ttl]
 
-        signing_key = algo == 'RS256' ? private_key : settings[:cluster_secret]
+        signing_key = algo == 'RS256' ? private_key : Legion::Settings[:crypt][:cluster_secret]
 
         Legion::Crypt::JWT.issue(payload, signing_key: signing_key, algorithm: algo, ttl: token_ttl,
                                           issuer: jwt[:issuer])
       end
 
       def verify_token(token, algorithm: nil)
-        jwt = jwt_settings
+        jwt = Legion::Settings[:crypt][:jwt]
         algo = algorithm || jwt[:default_algorithm]
 
-        verification_key = algo == 'RS256' ? OpenSSL::PKey::RSA.new(public_key) : settings[:cluster_secret]
+        verification_key = algo == 'RS256' ? OpenSSL::PKey::RSA.new(public_key) : Legion::Settings[:crypt][:cluster_secret]
 
         Legion::Crypt::JWT.verify(token, verification_key: verification_key, algorithm: algo,
                                          verify_expiration: jwt[:verify_expiration],
@@ -299,8 +283,8 @@ module Legion
       private
 
       def start_lease_manager
-        leases = settings.dig(:vault, :leases) || {}
-        vault_ok = connected_clusters.any? || settings.dig(:vault, :connected)
+        leases = Legion::Settings[:crypt][:vault][:leases]
+        vault_ok = connected_clusters.any? || Legion::Settings[:crypt][:vault][:connected]
 
         return if leases.empty? && !dynamic_rmq_creds?
         return unless vault_ok
@@ -310,7 +294,7 @@ module Legion
         if connected_clusters.any?
           selected_cluster = selected_connected_cluster_name
           client = selected_cluster ? vault_client(selected_cluster) : nil
-        elsif settings.dig(:vault, :connected)
+        elsif Legion::Settings[:crypt][:vault][:connected]
           client = vault_client
         end
 
@@ -333,7 +317,7 @@ module Legion
 
       def start_token_renewers
         started = 0
-        configurations = clusters.empty? ? { nil => vault_settings } : clusters
+        configurations = clusters.empty? ? { nil => Legion::Settings[:crypt][:vault] } : clusters
         configurations.each do |name, config|
           next unless %w[kerberos ldap jwt].include?(config[:auth_method].to_s) && config[:connected]
 
