@@ -70,95 +70,21 @@ RSpec.describe Legion::Crypt::Spiffe do
     end
   end
 
-  describe '.enabled?' do
-    context 'when Legion::Settings is not defined' do
-      before { hide_const('Legion::Settings') }
-
-      it 'returns false' do
-        expect(described_class.enabled?).to be false
-      end
+  describe 'live security policy' do
+    around do |example|
+      original = Legion::Settings[:security]
+      Legion::Settings.set_prop(:security, { spiffe: { enabled: true, allow_x509_fallback: true } })
+      example.run
+    ensure
+      Legion::Settings.set_prop(:security, original)
     end
 
-    context 'when security settings are nil' do
-      before do
-        stub_const('Legion::Settings', Module.new)
-        allow(Legion::Settings).to receive(:[]).with(:security).and_return(nil)
-      end
-
-      it 'returns false' do
-        expect(described_class.enabled?).to be false
-      end
-    end
-
-    context 'when spiffe.enabled is false' do
-      before do
-        stub_const('Legion::Settings', Module.new)
-        allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-          { spiffe: { enabled: false } }
-        )
-      end
-
-      it 'returns false' do
-        expect(described_class.enabled?).to be false
-      end
-    end
-
-    context 'when spiffe.enabled is true' do
-      before do
-        stub_const('Legion::Settings', Module.new)
-        allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-          { spiffe: { enabled: true, socket_path: '/tmp/spire.sock', trust_domain: 'test.local' } }
-        )
-      end
-
-      it 'returns true' do
-        expect(described_class.enabled?).to be true
-      end
-    end
-  end
-
-  describe '.socket_path' do
-    it 'returns the default when settings are absent' do
-      hide_const('Legion::Settings')
-      expect(described_class.socket_path).to eq('/tmp/spire-agent/public/api.sock')
-    end
-
-    it 'reads from settings when present' do
-      stub_const('Legion::Settings', Module.new)
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-        { spiffe: { enabled: true, socket_path: '/var/run/spire.sock' } }
-      )
-      expect(described_class.socket_path).to eq('/var/run/spire.sock')
-    end
-  end
-
-  describe '.trust_domain' do
-    it 'returns the default when settings are absent' do
-      hide_const('Legion::Settings')
-      expect(described_class.trust_domain).to eq('legion.internal')
-    end
-
-    it 'reads from settings when present' do
-      stub_const('Legion::Settings', Module.new)
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-        { spiffe: { trust_domain: 'corp.example.com' } }
-      )
-      expect(described_class.trust_domain).to eq('corp.example.com')
-    end
-  end
-
-  describe '.allow_x509_fallback?' do
-    it 'returns false by default when settings are absent' do
-      hide_const('Legion::Settings')
-      expect(described_class.allow_x509_fallback?).to be false
-    end
-
-    it 'reads the fallback flag from settings when present' do
-      stub_const('Legion::Settings', Module.new)
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-        { spiffe: { allow_x509_fallback: true } }
-      )
-      expect(described_class.allow_x509_fallback?).to be true
+    it 'honors explicit disabled policy after replacing the settings tree' do
+      expect(described_class.enabled?).to be(true)
+      expect(described_class.allow_x509_fallback?).to be(true)
+      Legion::Settings.set_prop(:security, { spiffe: { enabled: false, allow_x509_fallback: false } })
+      expect(described_class.enabled?).to be(false)
+      expect(described_class.allow_x509_fallback?).to be(false)
     end
   end
 

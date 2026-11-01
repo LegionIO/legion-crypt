@@ -133,31 +133,18 @@ module Legion
       end
 
       def renewal_window
-        return 0.5 unless defined?(Legion::Settings)
-
-        security = Legion::Settings[:security]
-        return 0.5 if security.nil?
-
-        mtls = security[:mtls] || security['mtls'] || {}
-        window = mtls[:renewal_window] || mtls['renewal_window'] || 0.5
+        window = Legion::Settings.dig(:security, :mtls, :renewal_window)
+        window = 0.5 if window.nil?
         unless window.is_a?(Numeric) && window.finite? && window >= 0 && window < 1
           raise ArgumentError, 'Certificate renewal window must be finite and between zero and one (exclusive)'
         end
 
         window
-      rescue StandardError => e
-        handle_exception(e, level: :debug, operation: 'crypt.cert_rotation.renewal_window')
-        0.5
       end
 
       def node_common_name
-        return 'legion.internal' unless defined?(Legion::Settings)
-
-        name = Legion::Settings[:client]&.dig(:name) || Legion::Settings[:client]&.dig('name')
-        name || 'legion.internal'
-      rescue StandardError => e
-        handle_exception(e, level: :debug, operation: 'crypt.cert_rotation.node_common_name')
-        'legion.internal'
+        name = Legion::Settings.dig(:client, :name)
+        name.nil? ? 'legion.internal' : name
       end
 
       def emit_rotated_event(cert)

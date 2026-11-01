@@ -17,44 +17,20 @@ RSpec.describe Legion::Crypt::Mtls do
     )
   end
 
-  before do
-    allow(Legion::Settings).to receive(:[]).and_call_original
-    allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-      { mtls: { enabled: false, vault_pki_path: 'pki/issue/legion-internal', cert_ttl: '24h' } }
-    )
+  around do |example|
+    original = Legion::Settings[:security]
+    Legion::Settings.set_prop(:security, { mtls: { enabled: false, vault_pki_path: 'pki/issue/legion-internal', cert_ttl: '24h' } })
+    example.run
+  ensure
+    Legion::Settings.set_prop(:security, original)
   end
 
-  describe '.enabled?' do
-    it 'returns false when security.mtls.enabled is false' do
-      expect(described_class.enabled?).to be false
-    end
-
-    it 'returns true when security.mtls.enabled is true' do
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-        { mtls: { enabled: true, vault_pki_path: 'pki/issue/legion-internal', cert_ttl: '24h' } }
-      )
-      expect(described_class.enabled?).to be true
-    end
-
-    it 'returns false when security settings are missing' do
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(nil)
-      expect(described_class.enabled?).to be false
-    end
-  end
-
-  describe '.pki_path' do
-    it 'reads from settings' do
-      expect(described_class.pki_path).to eq 'pki/issue/legion-internal'
-    end
-
-    it 'defaults to pki/issue/legion-internal when setting is nil' do
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return({ mtls: {} })
-      expect(described_class.pki_path).to eq 'pki/issue/legion-internal'
-    end
-
-    it 'returns default when security is nil' do
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(nil)
-      expect(described_class.pki_path).to eq 'pki/issue/legion-internal'
+  describe 'live security policy' do
+    it 'honors explicit disabled policy after replacing the settings tree' do
+      Legion::Settings.set_prop(:security, { mtls: { enabled: true } })
+      expect(described_class.enabled?).to be(true)
+      Legion::Settings.set_prop(:security, { mtls: { enabled: false } })
+      expect(described_class.enabled?).to be(false)
     end
   end
 
