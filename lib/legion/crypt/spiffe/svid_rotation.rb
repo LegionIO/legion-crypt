@@ -130,16 +130,13 @@ module Legion
         end
 
         def renewal_window
-          return SVID_RENEWAL_RATIO unless defined?(Legion::Settings)
+          window = Legion::Settings.dig(:security, :spiffe, :renewal_window)
+          window = SVID_RENEWAL_RATIO if window.nil?
+          unless window.is_a?(Numeric) && window.finite? && window >= 0 && window < 1
+            raise ArgumentError, 'SVID renewal window must be finite and between zero and one (exclusive)'
+          end
 
-          security = Legion::Settings[:security]
-          return SVID_RENEWAL_RATIO if security.nil?
-
-          spiffe = security[:spiffe] || security['spiffe'] || {}
-          spiffe[:renewal_window] || spiffe['renewal_window'] || SVID_RENEWAL_RATIO
-        rescue StandardError => e
-          handle_exception(e, level: :debug, operation: 'crypt.spiffe.svid_rotation.renewal_window')
-          SVID_RENEWAL_RATIO
+          window
         end
       end
     end

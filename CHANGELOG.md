@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.39] - 2026-11-01
+
+### Fixed
+- Read crypto runtime configuration from live `Legion::Settings` instead of fallback settings wrappers; register Crypt defaults at boot and require Settings >= 1.4.2 without changing lease-reference publication.
+- Honor live JWT verification flags, key-derivation configuration, Vault operation budgets, and mTLS/SPIFFE policy; reject invalid renewal windows rather than silently substituting defaults. Vault environment tokens supply boot defaults only, never overwrite explicit runtime configuration.
+
 ## [1.5.38] - 2026-10-31
 
 ### Fixed

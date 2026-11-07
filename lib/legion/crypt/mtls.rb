@@ -1,36 +1,30 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/crypt/settings'
 require 'socket'
 
 module Legion
   module Crypt
     module Mtls
       DEFAULT_PKI_PATH = 'pki/issue/legion-internal'
-      DEFAULT_TTL      = '24h'
+      DEFAULT_TTL = '24h'
       extend Legion::Logging::Helper
 
       class << self
         def enabled?
-          security = safe_security_settings
-          return false if security.nil?
-
-          mtls = security[:mtls] || security['mtls']
-          return false if mtls.nil?
-
-          mtls[:enabled] || mtls['enabled'] || false
+          Legion::Settings.dig(:security, :mtls, :enabled) == true
         end
 
         def pki_path
-          security = safe_security_settings
-          return DEFAULT_PKI_PATH if security.nil?
-
-          mtls = security[:mtls] || security['mtls'] || {}
-          mtls[:vault_pki_path] || mtls['vault_pki_path'] || DEFAULT_PKI_PATH
+          path = Legion::Settings.dig(:security, :mtls, :vault_pki_path)
+          path.nil? ? DEFAULT_PKI_PATH : path
         end
 
         def issue_cert(common_name:, ttl: nil)
-          resolved_ttl = ttl || cert_ttl_setting || DEFAULT_TTL
+          configured_ttl = Legion::Settings.dig(:security, :mtls, :cert_ttl)
+          resolved_ttl = ttl.nil? ? configured_ttl : ttl
+          resolved_ttl = DEFAULT_TTL if resolved_ttl.nil?
           log.info "[mTLS] certificate issue requested common_name=#{common_name} ttl=#{resolved_ttl}"
 
           response = Legion::Crypt.vault_client.logical.write(
@@ -59,28 +53,6 @@ module Legion
         rescue StandardError => e
           handle_exception(e, level: :warn, operation: 'crypt.mtls.local_ip')
           '127.0.0.1'
-        end
-
-        private
-
-        def safe_security_settings
-          return nil unless defined?(Legion::Settings)
-
-          Legion::Settings[:security]
-        rescue StandardError => e
-          handle_exception(e, level: :debug, operation: 'crypt.mtls.safe_security_settings')
-          nil
-        end
-
-        def cert_ttl_setting
-          security = safe_security_settings
-          return nil if security.nil?
-
-          mtls = security[:mtls] || security['mtls'] || {}
-          mtls[:cert_ttl] || mtls['cert_ttl']
-        rescue StandardError => e
-          handle_exception(e, level: :debug, operation: 'crypt.mtls.cert_ttl_setting')
-          nil
         end
       end
     end

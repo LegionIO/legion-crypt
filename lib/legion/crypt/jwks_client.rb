@@ -6,6 +6,7 @@ require 'json'
 require 'openssl'
 require 'jwt'
 require 'legion/logging/helper'
+require 'legion/crypt/settings'
 require 'concurrent'
 
 module Legion
@@ -172,12 +173,11 @@ module Legion
         end
 
         def jwks_ssl_verify_mode
-          return OpenSSL::SSL::VERIFY_PEER unless defined?(Legion::Settings)
-
           verify = Legion::Settings[:crypt][:jwt][:jwks_tls_verify]&.to_s
           verify == 'none' ? OpenSSL::SSL::VERIFY_NONE : OpenSSL::SSL::VERIFY_PEER
-        rescue StandardError
-          OpenSSL::SSL::VERIFY_PEER
+        rescue StandardError => e
+          handle_exception(e, level: :warn, operation: 'crypt.jwks.ssl_verify_mode')
+          raise
         end
 
         def with_url_lock(jwks_url, &)

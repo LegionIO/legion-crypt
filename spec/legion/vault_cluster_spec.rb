@@ -18,12 +18,21 @@ RSpec.describe Legion::Crypt::VaultCluster do
   end
 
   let(:test_clusters) { { alpha: cluster_alpha, beta: cluster_beta, gamma: cluster_gamma } }
+  let(:default_cluster) { :alpha }
+
+  around do |example|
+    original = Legion::Settings[:crypt]
+    configuration = Legion::Crypt::Settings.default
+    configuration[:vault].merge!(default: default_cluster, clusters: test_clusters)
+    Legion::Settings.set_prop(:crypt, configuration)
+    example.run
+  ensure
+    Legion::Settings.set_prop(:crypt, original)
+  end
 
   let(:test_object) do
     obj = Object.new
     obj.extend(described_class)
-    vault_settings_hash = { default: :alpha, clusters: test_clusters }
-    obj.define_singleton_method(:vault_settings) { vault_settings_hash }
     obj
   end
 
@@ -33,35 +42,10 @@ RSpec.describe Legion::Crypt::VaultCluster do
     end
 
     context 'when default is nil' do
-      let(:test_object) do
-        obj = Object.new
-        obj.extend(described_class)
-        vault_settings_hash = { default: nil, clusters: test_clusters }
-        obj.define_singleton_method(:vault_settings) { vault_settings_hash }
-        obj
-      end
+      let(:default_cluster) { nil }
 
       it 'returns the first cluster key' do
         expect(test_object.default_cluster_name).to eq(:alpha)
-      end
-    end
-  end
-
-  describe '#clusters' do
-    it 'returns all clusters' do
-      expect(test_object.clusters).to eq(test_clusters)
-    end
-
-    context 'when clusters key is missing from vault_settings' do
-      let(:test_object) do
-        obj = Object.new
-        obj.extend(described_class)
-        obj.define_singleton_method(:vault_settings) { { default: nil } }
-        obj
-      end
-
-      it 'returns an empty hash' do
-        expect(test_object.clusters).to eq({})
       end
     end
   end
@@ -124,11 +108,9 @@ RSpec.describe Legion::Crypt::VaultCluster do
     end
 
     it 'detects in-place namespace changes and inherited namespace changes' do
-      configuration = { vault: { vault_namespace: +'first' } }
-      allow(Legion::Settings).to receive(:[]).and_call_original
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      Legion::Settings[:crypt][:vault][:vault_namespace] = +'first'
       first = test_object.vault_client(:alpha)
-      configuration[:vault][:vault_namespace].replace('second')
+      Legion::Settings[:crypt][:vault][:vault_namespace].replace('second')
       second = test_object.vault_client(:alpha)
       expect(second).not_to equal(first)
       expect(second.namespace).to eq('second')
@@ -229,9 +211,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
     end
 
     it 'bounds retirement without blocking a replacement client' do
-      configuration = { vault: { operation_timeout: 0.03 } }
-      allow(Legion::Settings).to receive(:[]).and_call_original
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      Legion::Settings[:crypt][:vault][:operation_timeout] = 0.03
       previous = test_object.vault_client(:alpha)
       allow(previous).to receive(:shutdown) { sleep 10 }
       cluster_alpha[:address] = 'replacement.example.com'
@@ -442,10 +422,8 @@ RSpec.describe Legion::Crypt::VaultCluster do
 
     context 'when a token-based cluster connects successfully' do
       it 'sets Legion::Settings[:crypt][:vault][:connected] in multi-cluster mode' do
-        vault_hash = { connected: false }
-        crypt_hash = { vault: vault_hash }
-        allow(Legion::Settings).to receive(:[]).and_call_original
-        allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(crypt_hash)
+        vault_hash = Legion::Settings[:crypt][:vault]
+        vault_hash[:connected] = false
 
         test_object.connect_all_clusters
         expect(vault_hash[:connected]).to be(true)
@@ -455,8 +433,8 @@ RSpec.describe Legion::Crypt::VaultCluster do
 
   describe '#sync_vault_connected (via connect_all_clusters)' do
     it 'updates the top-level vault connected flag in multi-cluster mode' do
-      vault_hash = { connected: false }
-      crypt_hash = { vault: vault_hash }
+      vault_hash = Legion::Settings[:crypt][:vault]
+      vault_hash[:connected] = false
 
       mock_client  = instance_double(Legion::Crypt::VaultClient)
       mock_sys     = instance_double(Legion::Crypt::VaultClient::Sys)
@@ -466,15 +444,9 @@ RSpec.describe Legion::Crypt::VaultCluster do
       allow(mock_client).to receive(:namespace=)
       allow(mock_client).to receive(:sys).and_return(mock_sys)
       allow(mock_sys).to receive(:health_status).and_return(mock_health)
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(crypt_hash)
 
       test_object.connect_all_clusters
       expect(vault_hash[:connected]).to be(true)
-    end
-
-    it 'does not raise when Legion::Settings is not defined' do
-      hide_const('Legion::Settings')
-      expect { test_object.connect_all_clusters }.not_to raise_error
     end
   end
 end

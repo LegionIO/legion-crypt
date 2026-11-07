@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/settings'
 
 module Legion
   module Crypt
@@ -30,14 +31,18 @@ module Legion
 
       def self.default
         {
-          vault:            vault,
-          jwt:              jwt,
-          tls:              tls,
-          cs_encrypt_ready: false,
-          dynamic_keys:     true,
-          cluster_secret:   nil,
-          save_private_key: true,
-          read_private_key: true
+          vault:                  vault,
+          jwt:                    jwt,
+          tls:                    tls,
+          cs_encrypt_ready:       false,
+          dynamic_keys:           true,
+          cluster_secret:         nil,
+          cluster_length:         32,
+          cluster_secret_timeout: 5,
+          save_private_key:       true,
+          read_private_key:       true,
+          ed25519:                { vault_key_prefix: 'keys' },
+          partition_keys:         { derivation_context: 'legion-partition', vault_tenant_prefix: 'secret/data/legion/tenants' }
         }
       end
 
@@ -87,16 +92,4 @@ module Legion
   end
 end
 
-begin
-  if Legion.const_defined?('Settings')
-    Legion::Settings.merge_settings('crypt', Legion::Crypt::Settings.default)
-    Legion::Crypt::Settings.log.info('Legion::Crypt settings defaults merged')
-  end
-rescue StandardError => e
-  if Legion::Crypt::Settings.respond_to?(:handle_exception)
-    Legion::Crypt::Settings.handle_exception(e, level: :fatal, operation: 'crypt.settings.merge_defaults')
-  else
-    puts e.message
-    puts e.backtrace
-  end
-end
+Legion::Settings.register_library(:crypt, Legion::Crypt::Settings.default)

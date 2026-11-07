@@ -12,4 +12,6 @@ group :test do
   gem 'simplecov'
 end
 gem 'legion-logging'
-gem 'legion-settings'
+companion_root = File.directory?(File.expand_path('.ci-dependencies', __dir__)) ? '.ci-dependencies' : '..'
+settings_path = File.expand_path("#{companion_root}/legion-settings", __dir__)
+gem 'legion-settings', **(File.directory?(settings_path) ? { path: settings_path } : {})

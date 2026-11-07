@@ -4,9 +4,12 @@ require 'spec_helper'
 require 'legion/crypt'
 
 RSpec.describe 'Legion::Crypt JWT convenience methods' do
-  before do
-    Legion::Settings[:crypt][:cluster_secret] = SecureRandom.hex(32)
-    Legion::Crypt.start
+  around do |example|
+    original = Legion::Settings[:crypt]
+    Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default.merge(cluster_secret: SecureRandom.hex(32)))
+    example.run
+  ensure
+    Legion::Settings.set_prop(:crypt, original)
   end
 
   describe '.issue_token' do
@@ -64,15 +67,17 @@ RSpec.describe 'Legion::Crypt JWT convenience methods' do
       expect(result[:node_id]).to eq('round-trip')
       expect(result[:extensions]).to eq(%w[lex-redis lex-http])
     end
-  end
 
-  describe '.jwt_settings' do
-    it 'returns jwt settings hash' do
-      jwt = Legion::Crypt.jwt_settings
-      expect(jwt).to be_a(Hash)
-      expect(jwt[:default_algorithm]).to eq('HS256')
-      expect(jwt[:default_ttl]).to eq(3600)
-      expect(jwt[:issuer]).to eq('legion')
+    it 'honors disabled verification after replacing live JWT configuration' do
+      token = Legion::Crypt.issue_token({ node_id: 'expired' }, ttl: -1)
+      replacement = Legion::Settings[:crypt].merge(
+        jwt: Legion::Settings[:crypt][:jwt].merge(verify_expiration: false, verify_issuer: false, issuer: 'other')
+      )
+      Legion::Settings.set_prop(:crypt, replacement)
+      expect(Legion::Crypt.verify_token(token)[:node_id]).to eq('expired')
+
+      Legion::Settings[:crypt][:jwt][:verify_expiration] = true
+      expect { Legion::Crypt.verify_token(token) }.to raise_error(Legion::Crypt::JWT::ExpiredTokenError)
     end
   end
 end

@@ -2,6 +2,7 @@
 
 require 'ed25519'
 require 'legion/logging/helper'
+require 'legion/crypt/settings'
 
 module Legion
   module Crypt
@@ -83,17 +84,8 @@ module Legion
 
         private
 
-        def key_prefix
-          begin
-            Legion::Settings[:crypt][:ed25519][:vault_key_prefix]
-          rescue StandardError => e
-            handle_exception(e, level: :debug, operation: 'crypt.ed25519.key_prefix')
-            nil
-          end || 'keys'
-        end
-
         def vault_key_path(agent_id)
-          normalize_kv_path("#{key_prefix}/#{agent_id}")
+          normalize_kv_path("#{Legion::Settings[:crypt][:ed25519][:vault_key_prefix]}/#{agent_id}")
         end
 
         def normalize_kv_path(path)

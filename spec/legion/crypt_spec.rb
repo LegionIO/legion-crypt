@@ -8,9 +8,18 @@ require 'legion/crypt'
 # Legion::Transport::Connection.setup
 
 RSpec.describe Legion::Crypt do
+  around do |example|
+    original = Legion::Settings[:crypt]
+    Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default)
+    example.run
+  ensure
+    Legion::Settings.set_prop(:crypt, original)
+  end
+
   describe 'private key persistence' do
     let(:configuration) do
-      Legion::Crypt::Settings.default.merge(save_private_key: true, vault: { token: nil, clusters: {}, leases: {}, connected: false })
+      defaults = Legion::Crypt::Settings.default
+      defaults.merge(save_private_key: true, vault: defaults[:vault].merge(token: nil))
     end
     let(:private_key) { OpenSSL::PKey::RSA.new(2048) }
 
@@ -57,20 +66,20 @@ RSpec.describe Legion::Crypt do
 
   describe '.vault_connected?' do
     it 'returns true when the top-level vault flag is set' do
-      allow(Legion::Crypt).to receive(:settings).and_return({ vault: { connected: true } })
+      Legion::Settings[:crypt][:vault][:connected] = true
 
       expect(Legion::Crypt.vault_connected?).to be(true)
     end
 
     it 'returns true when any clustered Vault client is connected' do
-      allow(Legion::Crypt).to receive(:settings).and_return({ vault: { connected: false } })
+      Legion::Settings[:crypt][:vault][:connected] = false
       allow(Legion::Crypt).to receive(:connected_clusters).and_return({ primary: { connected: true, token: 'abc' } })
 
       expect(Legion::Crypt.vault_connected?).to be(true)
     end
 
     it 'returns false when neither the top-level flag nor clusters are connected' do
-      allow(Legion::Crypt).to receive(:settings).and_return({ vault: { connected: false } })
+      Legion::Settings[:crypt][:vault][:connected] = false
       allow(Legion::Crypt).to receive(:connected_clusters).and_return({})
 
       expect(Legion::Crypt.vault_connected?).to be(false)
@@ -78,7 +87,7 @@ RSpec.describe Legion::Crypt do
   end
 
   describe '.delete' do
-    before { allow(described_class).to receive(:vault_settings).and_return(clusters: {}) }
+    before { Legion::Settings[:crypt][:vault][:clusters] = {} }
 
     context 'when Vault is available' do
       let(:logical) { double('logical') }
@@ -163,11 +172,8 @@ RSpec.describe Legion::Crypt do
     it 'prefers the connected cluster client over the top-level vault flag' do
       leases = { 'test' => { 'path' => 'secret/test' } }
       secondary_client = instance_double(Legion::Crypt::VaultClient)
-      settings_override = Legion::Settings[:crypt].merge(
-        vault: Legion::Settings[:crypt][:vault].merge(leases: leases, connected: true)
-      )
+      Legion::Settings[:crypt][:vault].merge!(leases: leases, connected: true)
       allow(Legion::Crypt::LeaseManager.instance).to receive(:fetched_count).and_return(1)
-      allow(Legion::Crypt).to receive(:settings).and_return(settings_override)
       allow(Legion::Crypt).to receive(:connected_clusters).and_return({ secondary: { token: 'tok-2', connected: true } })
       allow(Legion::Crypt).to receive(:selected_connected_cluster_name).and_return(:secondary)
       allow(Legion::Crypt).to receive(:vault_client).with(:secondary).and_return(secondary_client)
@@ -277,7 +283,8 @@ RSpec.describe Legion::Crypt do
 
   describe 'failure-isolated shutdown' do
     let(:configuration) do
-      Legion::Crypt::Settings.default.merge(save_private_key: false, vault: { token: nil, clusters: {}, leases: {}, connected: false })
+      defaults = Legion::Crypt::Settings.default
+      defaults.merge(save_private_key: false, vault: defaults[:vault].merge(token: nil))
     end
 
     before do

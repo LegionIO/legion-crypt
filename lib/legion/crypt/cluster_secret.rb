@@ -97,17 +97,6 @@ module Legion
         nil
       end
 
-      def force_cluster_secret
-        Legion::Settings[:crypt].fetch(:force_cluster_secret, false)
-      end
-
-      def settings_push_vault
-        vault_settings = Legion::Settings[:crypt][:vault]
-        return vault_settings[:push_cluster_secret] unless vault_settings[:push_cluster_secret].nil?
-
-        vault_settings.fetch(:push_cs_to_vault, false)
-      end
-
       def only_member?
         return true if defined?(Legion::Transport::TYPE) && Legion::Transport::TYPE == 'local'
 
@@ -130,7 +119,7 @@ module Legion
         Legion::Settings[:crypt][:cluster_secret] = value.dup.freeze
         @cluster_secret_cache = nil
         Legion::Settings[:crypt][:cs_encrypt_ready] = true
-        push_cs_to_vault if push_to_vault && settings_push_vault
+        push_cs_to_vault if push_to_vault && Legion::Settings[:crypt][:vault][:push_cluster_secret]
         log.info "Cluster secret loaded into settings push_to_vault=#{push_to_vault}"
       end
 
@@ -145,7 +134,7 @@ module Legion
       end
 
       def cluster_secret_timeout
-        timeout = Legion::Settings[:crypt].fetch(:cluster_secret_timeout, 5)
+        timeout = Legion::Settings[:crypt][:cluster_secret_timeout]
         unless timeout.is_a?(Numeric) && timeout.finite? && timeout.positive?
           raise InitializationError, 'cluster_secret_timeout must be a finite positive number'
         end
@@ -154,7 +143,7 @@ module Legion
       end
 
       def secret_length
-        length = Legion::Settings[:crypt][:cluster_length] || Legion::Settings[:crypt][:cluster_lenth] || 32
+        length = Legion::Settings[:crypt][:cluster_length]
         raise InitializationError, 'cluster_length must be a positive integer' unless length.is_a?(Integer) && length.positive?
 
         length

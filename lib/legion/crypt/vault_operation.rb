@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'timeout'
+require 'legion/crypt/settings'
 
 module Legion
   module Crypt
@@ -9,8 +10,7 @@ module Legion
       SHUTDOWN_TIMEOUT = 10
 
       def self.with_timeout(deadline: nil, **)
-        configuration = defined?(Legion::Settings) ? Legion::Settings[:crypt] : nil
-        timeout = configuration&.dig(:vault, :operation_timeout) || DEFAULT_TIMEOUT
+        timeout = Legion::Settings[:crypt][:vault][:operation_timeout]
         raise ArgumentError, 'Vault operation_timeout must be a finite positive number' unless timeout.is_a?(Numeric) && timeout.finite? && timeout.positive?
 
         if deadline
