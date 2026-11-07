@@ -1,216 +1,83 @@
-# legion-crypt: Encryption and Vault Integration for LegionIO
+# legion-crypt
 
-**Repository Level 3 Documentation**
-- **Parent**: `/Users/miverso2/rubymine/legion/CLAUDE.md`
-
-## Purpose
-
-Handles encryption, decryption, secrets management, JWT token management, and HashiCorp Vault connectivity for the LegionIO framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, and Vault token lifecycle management.
-
-**GitHub**: https://github.com/LegionIO/legion-crypt
-**Version**: 1.5.7
-**License**: Apache-2.0
+Core encryption, secrets management, JWT, and HashiCorp Vault integration for LegionIO. Follow [LegionIO coding standards](../docs/legionio-standards.md); this file adds Crypt-specific guidance.
 
 ## Architecture
 
 ```
-Legion::Crypt (singleton module)
-├── .start             # Initialize: generate keys, connect to Vault
-├── .encrypt(string)   # AES-256-CBC encryption
-├── .decrypt(message)  # AES-256-CBC decryption
-├── .shutdown          # Stop Vault renewer, close sessions
-│
-├── Cipher             # OpenSSL cipher operations (AES-256-CBC)
-│   ├── .encrypt       # Encrypt with cluster secret
-│   ├── .decrypt       # Decrypt with cluster secret
-│   ├── .private_key   # RSA private key (generated or loaded)
-│   └── .public_key    # RSA public key
-│
-├── Vault              # HashiCorp Vault integration
-│   ├── .connect_vault # Establish Vault session
-│   ├── .read(path)    # Read secret from Vault
-│   ├── .write(path)   # Write secret to Vault
-│   └── .renew_token   # Token renewal
-│
-├── JWT                # JSON Web Token operations
-│   ├── .issue         # Create signed JWT (HS256 or RS256)
-│   ├── .verify        # Verify and decode JWT
-│   ├── .verify_with_jwks  # Verify RS256 token via external JWKS endpoint (Entra ID, etc.)
-│   └── .decode        # Decode without verification (inspection)
-│
-├── JwksClient         # External JWKS endpoint integration (thread-safe)
-│   ├── .fetch_keys    # Fetch and parse JWKS from a URL
-│   ├── .find_key      # Lookup key by kid (cache-first, re-fetch on miss)
-│   └── .clear_cache   # Clear the key cache
-│
-├── ClusterSecret      # Cluster-wide shared secret management
-│   └── .cs            # Generate/distribute cluster secret
-│
-├── VaultJwtAuth       # Vault JWT auth backend integration
-│   ├── .login         # Authenticate to Vault using a JWT token, returns Vault token hash
-│   ├── .login!        # Authenticate and set ::Vault.token for subsequent operations
-│   └── .worker_login  # Issue a Legion JWT and authenticate to Vault in one step
-│
-├── VaultRenewer       # Background Vault token renewal thread
-├── Ed25519            # Ed25519 key generation, signing, verification, Vault storage
-├── PartitionKeys      # HKDF per-tenant key derivation, AES-256-GCM encrypt/decrypt
-├── Erasure            # Cryptographic erasure via Vault master key deletion
-├── Attestation        # Signed identity claims with Ed25519, freshness checking
-├── LeaseManager       # Dynamic Vault lease lifecycle: fetch, cache, renew, rotate, push-back
-├── KerberosAuth       # GSSAPI SPNEGO token acquisition; `disable_gssapi_finalizers` prevents GC segfault on macOS
-├── VaultKerberosAuth  # Vault Kerberos auth: SPNEGO as `Authorization` header, namespace clear/restore, TokenRenewer wiring
-├── LdapAuth           # Vault LDAP auth backend
-├── Tls                # TLS settings (cert/key/CA/verify_peer/Vault PKI)
-├── Mtls               # mTLS cert issuance (Vault PKI) + CertRotation background thread (50% TTL renewal)
-├── TokenRenewer       # Background renewal thread: 75% TTL renew, Kerberos re-auth on failure, exponential backoff
-├── Spiffe             # SPIFFE identity support: parse_id, valid_id?, X509Svid, JwtSvid structs; reads security.spiffe settings
-├── Spiffe::IdentityHelpers  # Mixin for SPIFFE identity operations
-├── Spiffe::SvidRotation     # Background SVID renewal at 50% TTL
-├── Spiffe::WorkloadApiClient # gRPC workload API client for SPIRE agent (unix socket)
-├── VaultEntity        # Vault entity/alias lifecycle (ensure_entity, ensure_alias, find_by_name); all non-fatal
-├── MockVault          # In-memory Vault mock for local development mode
-├── Settings           # Default crypt config
-└── Version
+Legion::Crypt
+├── Cipher          # AES-256-GCM encryption; legacy CBC decryption; RSA key pair
+├── Vault           # read/write/connect/session renewal through VaultClient
+├── VaultClient     # core-owned HTTP client using Faraday and Legion::JSON
+├── VaultCluster    # client selection, caching, authentication grant publication
+├── VaultOperation  # bounded operations and shared shutdown deadlines
+├── JWT             # issue/verify/decode (HS256 cluster-secret or RS256 RSA)
+├── JwksClient      # external JWKS endpoint, 1hr TTL cache, thread-safe
+├── ClusterSecret   # shared AES key distributed across nodes
+├── VaultJwtAuth    # .login / .login! / .worker_login
+├── Vault::Renewer  # legacy Every actor for session renewal
+├── LeaseManager    # dynamic Vault lease lifecycle
+├── KerberosAuth    # SPNEGO acquisition through the optional lex-kerberos helper
+├── VaultKerberosAuth # SPNEGO as Authorization header; preserves namespace
+├── LdapAuth        # cluster-scoped LDAP login and token maintenance
+├── TokenRenewer    # 75% TTL renewal; Kerberos-only re-auth; retry backoff
+├── Ed25519         # key gen, sign, verify, Vault storage
+├── PartitionKeys   # HKDF per-tenant key derivation, AES-256-GCM
+├── TLS             # TLS configuration and Vault-backed material resolution
+├── Mtls            # Vault PKI certificate issuance using crypt.mtls settings
+├── CertRotation    # background renewal using the configured renewal window
+├── Spiffe          # SPIFFE ID parse/validate, X509Svid/JwtSvid, SPIRE workload API
+├── Attestation     # signed identity claims with Ed25519
+├── Erasure         # cryptographic erasure via Vault master key deletion
+└── MockVault       # in-memory mock for local dev
 ```
 
-### Key Design Patterns
+## Key Design Decisions
 
-- **Dynamic Keys**: By default, generates new RSA key pair per process start (no persistent keys)
-- **Cluster Secret**: Shared AES key distributed across Legion nodes for inter-node encrypted communication
-- **Vault Conditional**: Vault module is only included if the `vault` gem is available
-- **Token Lifecycle**: VaultRenewer runs background thread for automatic token renewal
-- **JWT Dual Algorithm**: HS256 (symmetric, cluster secret) for intra-cluster tokens; RS256 (asymmetric, RSA keypair) for tokens verifiable without sharing the signing key
-- **JWKS External Validation**: `JwksClient` fetches public keys from external identity provider JWKS endpoints (Entra ID, Bot Framework). Keys cached for 1 hour (CACHE_TTL=3600s), thread-safe via Mutex, automatic re-fetch on cache miss handles key rotation
+- RSA keys are memoized per process. `read_private_key` loads an existing `./legionio.key`; otherwise a key is generated. `save_private_key` persists it with owner-only permissions.
+- HS256 (cluster secret) for intra-cluster tokens; RS256 (RSA keypair) for externally-verifiable tokens
+- `JwksClient` caches keys for one hour, shares concurrent refreshes, and throttles repeated unknown-key refreshes.
+- Vault connectivity uses the core client; the `vault` gem is not required. Kerberos SPNEGO acquisition requires the optional `lex-kerberos` helper, and authentication preserves the configured Vault namespace.
+- JWT/LDAP token renewal never falls back to Kerberos. Expiry or terminal rejection requires login again; Kerberos grants alone can automatically reauthenticate.
 
-## Default Settings
+## Framework Contracts
 
-```json
-{
-  "vault": { "..." : "see vault settings" },
-  "jwt": {
-    "enabled": true,
-    "default_algorithm": "HS256",
-    "default_ttl": 3600,
-    "issuer": "legion",
-    "verify_expiration": true,
-    "verify_issuer": true
-  },
-  "cs_encrypt_ready": false,
-  "dynamic_keys": true,
-  "cluster_secret": null,
-  "save_private_key": true,
-  "read_private_key": true
-}
+- Defaults live in `lib/legion/crypt/settings.rb` and are registered when `legion/crypt` is required. Core code reads `Legion::Settings[:crypt][...]` directly: no settings-only accessor wrappers, duplicated defaults, or nil guards around registered keys.
+- mTLS uses `crypt.mtls`; SPIFFE still reads the optional Core-owned `security.spiffe` section. Do not treat the two settings paths as interchangeable.
+- Include `Legion::Logging::Helper` explicitly in core modules/classes that need logging. Rescues must re-raise or call `handle_exception` at `:warn` or higher. Programming errors must propagate; narrow recovery to known operational failures.
+- Use fully qualified Legion constants across module boundaries. New public APIs use kwargs and trailing `**`; preserve existing positional contracts unless all callers are migrated.
+- Use `Legion::JSON.load` / `dump`; loaded JSON has symbol keys. Never log tokens, passwords, private keys, or decrypted plaintext.
+- `start(mode: nil, **)` selects `postgresql/creds/infra` for an existing `postgresql` lease in infra mode without mutating configured leases. Fixed mode-to-role mappings remain frozen constants.
+- `Legion::Crypt::Mtls.issue_cert(common_name:, alt_names: '', ttl: nil, **)` preserves explicit SAN/TTL inputs; absent TTL uses the registered default. Interface-discovery programming errors must not become loopback fallback.
+- Preserve bounded shutdown, lease ownership, and generation checks: late worker results must not reinstall credentials after shutdown.
+
+## Specs and Verification
+
+- Require and use gemspec dependencies; do not mock them. In particular, never stub `Legion::Settings`, its loader, resolver, or returned settings hashes.
+- `spec/spec_helper.rb` loads the real Settings/Resolver, isolates the settings root, installs full Crypt defaults for each example, and restores the original state afterward.
+- Configure values through real bracket access or `Legion::Settings.set_prop`. Replacement Crypt configurations must retain full defaults, including nested Vault settings. Raw loader-root mutation is permitted in test setup for publication/rebuild scenarios, not as a new production access pattern.
+- Prefer real libraries and local service fixtures or supported test adapters at external I/O boundaries. Cover behavior, failure propagation, and state transitions rather than forwarding calls or implementation details.
+
+Run from this checkout:
+
+```bash
+bundle exec rubocop -A
+bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt
 ```
 
-## Dependencies
+Use the full suite. After lint autocorrections, verify the corrected code; read failure details from the JSON report if specs fail.
 
-| Gem | Purpose |
-|-----|---------|
-| `ed25519` (~> 1.3) | Ed25519 key operations (pure Ruby) |
-| `jwt` (>= 2.7) | JSON Web Token encoding/decoding |
-| `vault` (>= 0.17) | HashiCorp Vault Ruby client |
-
-Dev dependencies: `legion-logging`, `legion-settings`
-
-## File Map
-
-| Path | Purpose |
-|------|---------|
-| `lib/legion/crypt.rb` | Module entry, start/shutdown lifecycle |
-| `lib/legion/crypt/cipher.rb` | AES-256-CBC encrypt/decrypt, RSA key generation |
-| `lib/legion/crypt/jwt.rb` | JWT issue/verify/decode/verify_with_jwks operations |
-| `lib/legion/crypt/jwks_client.rb` | JWKS endpoint fetch, parse, cache (thread-safe, 1hr TTL) |
-| `lib/legion/crypt/vault.rb` | Vault read/write/connect/renew operations |
-| `lib/legion/crypt/cluster_secret.rb` | Cluster-wide shared secret management |
-| `lib/legion/crypt/vault_jwt_auth.rb` | Vault JWT auth backend: `.login`, `.login!`, `.worker_login`; raises `AuthError` on failure |
-| `lib/legion/crypt/vault_renewer.rb` | Background Vault token renewal |
-| `lib/legion/crypt/lease_manager.rb` | Dynamic Vault lease lifecycle management |
-| `lib/legion/crypt/settings.rb` | Default configuration |
-| `lib/legion/crypt/ed25519.rb` | Ed25519 key generation, signing, verification, Vault storage |
-| `lib/legion/crypt/partition_keys.rb` | HKDF per-tenant key derivation with AES-256-GCM |
-| `lib/legion/crypt/erasure.rb` | Cryptographic erasure via Vault master key deletion |
-| `lib/legion/crypt/attestation.rb` | Signed identity claims with Ed25519 signatures |
-| `lib/legion/crypt/kerberos_auth.rb` | GSSAPI/Kerberos token acquisition; `obtain_spnego_token`, `disable_gssapi_finalizers` (prevents GC segfault on macOS) |
-| `lib/legion/crypt/vault_kerberos_auth.rb` | Vault Kerberos auth backend: sends SPNEGO token as `Authorization` HTTP header, clears/restores namespace, wires `TokenRenewer` |
-| `lib/legion/crypt/ldap_auth.rb` | Vault LDAP auth backend integration |
-| `lib/legion/crypt/tls.rb` | TLS settings module (cert, key, CA paths, verify_peer, Vault PKI flag) |
-| `lib/legion/crypt/mtls.rb` | mTLS certificate issuance from Vault PKI; `CertRotation` background renewal thread (50% TTL) |
-| `lib/legion/crypt/token_renewer.rb` | Plain Thread renewer: renews at 75% TTL, re-auths via Kerberos on failure, exponential backoff |
-| `lib/legion/crypt/spiffe.rb` | SPIFFE identity: parse/validate SPIFFE IDs, X509Svid/JwtSvid structs, settings helpers |
-| `lib/legion/crypt/spiffe/identity_helpers.rb` | Mixin for SPIFFE identity operations |
-| `lib/legion/crypt/spiffe/svid_rotation.rb` | Background SVID renewal thread (50% TTL) |
-| `lib/legion/crypt/spiffe/workload_api_client.rb` | gRPC workload API client for SPIRE agent |
-| `lib/legion/crypt/vault_entity.rb` | Vault entity/alias lifecycle: `ensure_entity`, `ensure_alias`, `find_by_name`; all operations non-fatal |
-| `lib/legion/crypt/version.rb` | VERSION constant |
-
-## Role in LegionIO
-
-First service-level module initialized during `Legion::Service` startup (before transport). Provides:
-1. Vault token for `legion-transport` to fetch RabbitMQ credentials
-2. Message encryption for `legion-transport` (optional `transport.messages.encrypt`)
-3. Cluster secret for inter-node encrypted communication
-4. JWT tokens for node authentication and task authorization
-5. External token verification for identity providers (Entra ID OIDC via JWKS)
-
-### Vault JWT Auth Usage
+## JWT Usage
 
 ```ruby
-# Authenticate to Vault using a JWT (Vault must have JWT auth method enabled)
-result = Legion::Crypt::VaultJwtAuth.login(jwt: token, role: 'legion-worker')
-# => { token: '...', lease_duration: 3600, renewable: true, policies: [...], metadata: {} }
-
-# Authenticate and set Vault client token in one step
-Legion::Crypt::VaultJwtAuth.login!(jwt: token)
-
-# Issue a Legion JWT and use it to authenticate to Vault (convenience for workers)
-result = Legion::Crypt::VaultJwtAuth.worker_login(worker_id: 'abc', owner_msid: 'user@example.com')
-```
-
-Vault prerequisites: `vault auth enable jwt` + configure `auth/jwt/config` with JWKS URL or bound issuer.
-
-### JWT Usage
-
-```ruby
-# Convenience methods (auto-selects keys from settings)
-token = Legion::Crypt.issue_token({ node_id: 'abc' }, ttl: 3600)
+token  = Legion::Crypt.issue_token({ node_id: 'abc' }, ttl: 3600)
 claims = Legion::Crypt.verify_token(token)
 
-# Direct module usage (explicit keys)
-token = Legion::Crypt::JWT.issue(payload, signing_key: key, algorithm: 'RS256')
-claims = Legion::Crypt::JWT.verify(token, verification_key: pub_key, algorithm: 'RS256')
-decoded = Legion::Crypt::JWT.decode(token) # no verification, inspection only
-```
-
-**Algorithms:**
-- `HS256` (default): Uses cluster secret. All cluster nodes can issue and verify.
-- `RS256`: Uses RSA keypair. Only the issuing node can sign; anyone with the public key can verify.
-
-### External Token Verification (JWKS)
-
-Verify tokens from external identity providers using their public JWKS endpoints:
-
-```ruby
-# Convenience method
-claims = Legion::Crypt.verify_external_token(
-  token,
+# External provider (Entra ID)
+claims = Legion::Crypt.verify_external_token(token,
   jwks_url: 'https://login.microsoftonline.com/TENANT/discovery/v2.0/keys',
   issuers:  ['https://login.microsoftonline.com/TENANT/v2.0'],
-  audience: 'app-client-id'
-)
-
-# Direct module usage
-claims = Legion::Crypt::JWT.verify_with_jwks(token, jwks_url: jwks_url)
+  audience: 'app-client-id')
 ```
 
-**Flow:** decode JWT header (unverified) to extract `kid` -> `JwksClient.find_key` fetches the matching public key from cache or JWKS endpoint -> verify JWT signature with the public key.
-
-**Options:** `issuers:` (array, multi-issuer support), `audience:` (string), `verify_expiration:` (bool, default true).
-
-**Error hierarchy:** `ExpiredTokenError`, `InvalidTokenError` (bad signature, wrong issuer, wrong audience), `DecodeError` (malformed token) — all inherit from `Legion::Crypt::JWT::Error`.
-
-**Used by:** `lex-identity` Entra runner for Digital Worker OIDC token validation.
-
----
-
-**Maintained By**: Matthew Iverson (@Esity)
+Error hierarchy: `ExpiredTokenError`, `InvalidTokenError`, `DecodeError` — all inherit `Legion::Crypt::JWT::Error`.
