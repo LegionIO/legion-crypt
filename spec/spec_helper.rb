@@ -3,10 +3,7 @@
 begin
   require 'simplecov'
   SimpleCov.start do
-    use_merging true
-    add_filter '/spec/'
-    formatter SimpleCov::Formatter::Codecov if ENV.key?('CODECOV_TOKEN')
-    formatter SimpleCov::Formatter::SimpleFormatter if ENV.key? 'SONAR_TOKEN'
+    merging true
   end
 rescue LoadError
   puts 'Failed to load file for coverage reports, continuing without it'
@@ -17,6 +14,7 @@ lib_path = File.expand_path('../lib', __dir__)
 $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
 require 'legion/logging'
 require 'legion/settings'
+require 'legion/settings/resolver'
 
 Legion::Logging.setup(level: 'fatal')
 Legion::Settings.load
@@ -27,6 +25,16 @@ require 'legion/crypt'
 RSpec.configure do |config|
   config.example_status_persistence_file_path = '.rspec_status'
   config.disable_monkey_patching!
+  config.around do |example|
+    settings = Legion::Settings.loader.settings
+    original = settings.dup
+    settings.replace(Marshal.load(Marshal.dump(original)))
+    Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default)
+    example.run
+  ensure
+    Legion::Settings.loader.settings.replace(original)
+  end
+
   config.expect_with :rspec do |c|
     c.syntax = :expect
   end

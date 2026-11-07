@@ -8,18 +8,9 @@ require 'legion/crypt'
 # Legion::Transport::Connection.setup
 
 RSpec.describe Legion::Crypt do
-  around do |example|
-    original = Legion::Settings[:crypt]
-    Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default)
-    example.run
-  ensure
-    Legion::Settings.set_prop(:crypt, original)
-  end
-
   describe 'private key persistence' do
     let(:configuration) do
-      defaults = Legion::Crypt::Settings.default
-      defaults.merge(save_private_key: true, vault: defaults[:vault].merge(token: nil))
+      Legion::Crypt::Settings.default.merge(save_private_key: true, vault: Legion::Crypt::Settings.vault.merge(token: nil))
     end
     let(:private_key) { OpenSSL::PKey::RSA.new(2048) }
 
@@ -31,8 +22,7 @@ RSpec.describe Legion::Crypt do
 
     before do
       described_class.shutdown
-      allow(Legion::Settings).to receive(:[]).and_call_original
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      Legion::Settings.set_prop(:crypt, configuration)
       @original_private_key = described_class.instance_variable_get(:@private_key)
       described_class.instance_variable_set(:@private_key, nil)
     end
@@ -65,29 +55,32 @@ RSpec.describe Legion::Crypt do
   end
 
   describe '.vault_connected?' do
+    let(:configuration) { Legion::Crypt::Settings.default }
+
+    before { Legion::Settings.set_prop(:crypt, configuration) }
+
     it 'returns true when the top-level vault flag is set' do
-      Legion::Settings[:crypt][:vault][:connected] = true
+      configuration[:vault][:connected] = true
 
       expect(Legion::Crypt.vault_connected?).to be(true)
     end
 
     it 'returns true when any clustered Vault client is connected' do
-      Legion::Settings[:crypt][:vault][:connected] = false
-      allow(Legion::Crypt).to receive(:connected_clusters).and_return({ primary: { connected: true, token: 'abc' } })
+      configuration[:vault][:connected] = false
+      configuration[:vault][:clusters][:primary] = { connected: true, token: 'abc' }
 
       expect(Legion::Crypt.vault_connected?).to be(true)
     end
 
     it 'returns false when neither the top-level flag nor clusters are connected' do
-      Legion::Settings[:crypt][:vault][:connected] = false
-      allow(Legion::Crypt).to receive(:connected_clusters).and_return({})
+      configuration[:vault][:connected] = false
 
       expect(Legion::Crypt.vault_connected?).to be(false)
     end
   end
 
   describe '.delete' do
-    before { Legion::Settings[:crypt][:vault][:clusters] = {} }
+    before { Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default) }
 
     context 'when Vault is available' do
       let(:logical) { double('logical') }
@@ -182,6 +175,29 @@ RSpec.describe Legion::Crypt do
 
       expect(Legion::Crypt::LeaseManager.instance).to have_received(:start).with(leases, vault_client: secondary_client)
     end
+
+    it 'uses the infra PostgreSQL lease without mutating configured runtime leases' do
+      leases = {
+        postgresql: { path: 'postgresql/creds/node' },
+        redis:      { path: 'redis/creds/agent' }
+      }
+      client = instance_double(Legion::Crypt::VaultClient)
+      Legion::Settings[:crypt][:vault].merge!(leases: leases, connected: true)
+      allow(Legion::Crypt).to receive(:connected_clusters).and_return({})
+      allow(Legion::Crypt).to receive(:vault_client).and_return(client)
+      allow(Legion::Crypt::LeaseManager.instance).to receive(:fetched_count).and_return(2)
+
+      Legion::Crypt.send(:start_lease_manager, mode: :infra)
+
+      expect(Legion::Crypt::LeaseManager.instance).to have_received(:start).with(
+        {
+          postgresql: { path: 'postgresql/creds/infra' },
+          redis:      { path: 'redis/creds/agent' }
+        },
+        vault_client: client
+      )
+      expect(leases[:postgresql][:path]).to eq('postgresql/creds/node')
+    end
   end
 
   describe 'cluster token lifecycle' do
@@ -196,8 +212,7 @@ RSpec.describe Legion::Crypt do
     before do
       described_class.shutdown
       configuration[:vault].merge!(token: nil, connected: false, clusters: { primary: cluster_config }, leases: {}, operation_timeout: 0.05)
-      allow(Legion::Settings).to receive(:[]).and_call_original
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      Legion::Settings.set_prop(:crypt, configuration)
       allow(client).to receive(:logical).and_return(logical)
       allow(client).to receive(:auth_token).and_return(auth_token)
     end
@@ -283,15 +298,13 @@ RSpec.describe Legion::Crypt do
 
   describe 'failure-isolated shutdown' do
     let(:configuration) do
-      defaults = Legion::Crypt::Settings.default
-      defaults.merge(save_private_key: false, vault: defaults[:vault].merge(token: nil))
+      Legion::Crypt::Settings.default.merge(save_private_key: false, vault: Legion::Crypt::Settings.vault.merge(token: nil))
     end
 
     before do
       described_class.shutdown
       Legion::Crypt::LeaseManager.instance.reset!
-      allow(Legion::Settings).to receive(:[]).and_call_original
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      Legion::Settings.set_prop(:crypt, configuration)
     end
 
     after { described_class.shutdown }

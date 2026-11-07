@@ -221,8 +221,6 @@ RSpec.describe Legion::Crypt::VaultCluster do
     end
 
     it 'uses a Vault-backed CA from another cached cluster to verify the TLS peer' do
-      resolver = Legion::Settings::Resolver
-      resolver_state = %i[@vault_available @vault_cache].to_h { |key| [key, resolver.instance_variable_get(key)] }
       key = OpenSSL::PKey::EC.generate('prime256v1')
       certificate = OpenSSL::X509::Certificate.new
       certificate.version = 2
@@ -260,17 +258,16 @@ RSpec.describe Legion::Crypt::VaultCluster do
       end
       allow(primary).to receive(:build_connection).and_return(connection)
       allow(Legion::Crypt).to receive(:read) { |path| test_object.vault_client(:alpha).logical.read(path: path).data }
-      allow(resolver).to receive(:vault_connected?).and_return(true)
-      resolver.resolve_secrets!({})
       cluster_beta.merge!(address: '127.0.0.1', port: listener.addr[1], tls: { ca: 'vault://secret/audit-ca#pem' })
 
       secondary = test_object.vault_client(:beta)
       expect(secondary.sys.health_status.initialized?).to be(true)
+      expect(secondary.ssl_verify).to be(true)
+      expect(secondary.ca).to eq(certificate.to_pem)
     ensure
       listener&.close
       responder&.kill
       responder&.join
-      resolver_state&.each { |key, value| resolver.instance_variable_set(key, value) }
     end
 
     it 'rejects a client whose TLS construction finishes after the cache is cleared' do
@@ -299,7 +296,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
 
     it 'rejects explicitly configured TLS material that cannot be resolved' do
       cluster_beta[:tls] = { ca: 'vault://secret/missing#pem' }
-      allow(Legion::Settings::Resolver).to receive(:resolve_value).with('vault://secret/missing#pem').and_return(nil)
+      allow(Legion::Crypt).to receive(:read).with('secret/missing').and_return(nil)
 
       expect { test_object.vault_client(:beta) }.to raise_error(IOError)
     end

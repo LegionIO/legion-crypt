@@ -7,35 +7,25 @@ require 'socket'
 module Legion
   module Crypt
     module Mtls
-      DEFAULT_PKI_PATH = 'pki/issue/legion-internal'
-      DEFAULT_TTL = '24h'
       extend Legion::Logging::Helper
 
       class << self
         def enabled?
-          Legion::Settings.dig(:security, :mtls, :enabled) == true
+          Legion::Settings[:crypt][:mtls][:enabled] == true
         end
 
-        def pki_path
-          path = Legion::Settings.dig(:security, :mtls, :vault_pki_path)
-          path.nil? ? DEFAULT_PKI_PATH : path
-        end
-
-        def issue_cert(common_name:, ttl: nil)
-          configured_ttl = Legion::Settings.dig(:security, :mtls, :cert_ttl)
-          resolved_ttl = ttl.nil? ? configured_ttl : ttl
-          resolved_ttl = DEFAULT_TTL if resolved_ttl.nil?
+        def issue_cert(common_name:, alt_names: '', ttl: nil, **)
+          pki_path = Legion::Settings[:crypt][:mtls][:vault_pki_path]
+          resolved_ttl = ttl.nil? ? Legion::Settings[:crypt][:mtls][:cert_ttl] : ttl
           log.info "[mTLS] certificate issue requested common_name=#{common_name} ttl=#{resolved_ttl}"
 
           response = Legion::Crypt.vault_client.logical.write(
             path: pki_path,
-            data: { common_name: common_name, ttl: resolved_ttl, ip_sans: local_ip, alt_names: '' }
+            data: { common_name: common_name, ttl: resolved_ttl, ip_sans: local_ip, alt_names: alt_names }
           )
-
           raise "Vault PKI returned nil for #{pki_path} (common_name=#{common_name})" if response.nil?
 
           data = response.data
-
           {
             cert:     data[:certificate],
             key:      data[:private_key],

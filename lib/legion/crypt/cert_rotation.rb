@@ -133,8 +133,7 @@ module Legion
       end
 
       def renewal_window
-        window = Legion::Settings.dig(:security, :mtls, :renewal_window)
-        window = 0.5 if window.nil?
+        window = Legion::Settings[:crypt][:mtls][:renewal_window]
         unless window.is_a?(Numeric) && window.finite? && window >= 0 && window < 1
           raise ArgumentError, 'Certificate renewal window must be finite and between zero and one (exclusive)'
         end

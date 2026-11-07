@@ -80,7 +80,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
       allow(vault_logical).to receive(:read).and_return(original)
       manager.start(lease_definitions)
       connection = { password: 'fallback-password' }
-      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
+      Legion::Settings.set_prop(:transport, { connection: connection })
       manager.register_ref(:rabbitmq, :password, %i[transport connection password])
       allow(Time).to receive(:now).and_return(Time.now + 2)
       allow(vault_logical).to receive(:read).and_raise(IOError, 'Vault unavailable')
@@ -109,7 +109,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
 
     it 'retries a failed initial read on a due maintenance pass and publishes registered references' do
       connection = { username: 'old' }
-      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
+      Legion::Settings.set_prop(:transport, { connection: connection })
       attempts = 0
       allow(vault_logical).to receive(:read) do
         attempts += 1
@@ -144,7 +144,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
         lease_response(id: "#{path}-id", username: 'old-role')
       end
       connection = { username: nil, password: nil }
-      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
+      Legion::Settings.set_prop(:transport, { connection: connection })
       clock[:now] += 1.01
       clock[:monotonic] += 1.01
       worker = Thread.new { manager.send(:renew_approaching_leases) }
@@ -208,7 +208,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
     before do
       allow(vault_logical).to receive(:read).and_return(vault_response)
       manager.start({ 'rabbitmq' => { 'path' => 'rabbitmq/creds/legion-role' } })
-      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: transport_settings)
+      Legion::Settings.set_prop(:transport, transport_settings)
     end
 
     it 'updates settings values at registered paths' do
@@ -265,7 +265,11 @@ RSpec.describe Legion::Crypt::LeaseManager do
   end
 
   describe '#update_settings_refs' do
-    let(:settings) { { connections: [{ password: 'literal' }, { password: 'other' }] } }
+    let(:settings) do
+      root = Marshal.load(Marshal.dump(Legion::Settings.loader.settings))
+      root[:connections] = [{ password: 'literal' }, { password: 'other' }]
+      root
+    end
     let(:password_path) { [:connections, 0, :password] }
     let(:binding) { { value: nil, source: 'opaque declaration' } }
 
@@ -341,8 +345,8 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
 
     it 'keeps standalone destinations separate from the active loader' do
-      active_settings = { connections: [{ password: 'active literal' }] }
-      allow(Legion::Settings.loader).to receive(:settings).and_return(active_settings)
+      active_settings = Legion::Settings.loader.settings
+      active_settings[:connections] = [{ password: 'active literal' }]
       bind_setting(root: settings, name: :a, path: password_path, record: binding)
       install_settings_lease(name: :a, value: 'rotated')
 
@@ -351,14 +355,21 @@ RSpec.describe Legion::Crypt::LeaseManager do
     end
 
     it 'follows a published loader when its settings root is rebuilt' do
-      active_settings = { connections: [{ password: 'old loader' }] }
-      allow(Legion::Settings.loader).to receive(:settings) { active_settings }
-      publication = ->(_proposal) { active_settings = settings }
+      loader = Legion::Settings.loader
+      original_root = loader.settings
+      original_root[:connections] = [{ password: 'old loader' }]
+      publication = ->(_proposal) { loader.instance_variable_set(:@settings, settings) }
       bind_setting(root: settings, name: :a, path: password_path, record: binding, publish: publication)
-      active_settings = { connections: [{ password: 'rebuilt' }] }
+      expect(loader.settings).to equal(settings)
+      expect(loader.settings).not_to equal(original_root)
+
+      loader.load_module_default({})
+      rebuilt_root = loader.settings
+      expect(rebuilt_root).not_to equal(settings)
+      Legion::Settings.set_prop(:connections, [{ password: 'rebuilt' }])
 
       install_settings_lease(name: :a, value: 'rotated')
-      expect(active_settings[:connections][0][:password]).to eq('rotated_pass')
+      expect(rebuilt_root[:connections][0][:password]).to eq('rotated_pass')
       expect(settings[:connections][0][:password]).to eq('a_pass')
       expect(binding[:value]).to eq('rotated_pass')
     end
@@ -667,7 +678,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
     let(:transport) { double('RabbitMQ connection', force_reconnect: true, session_open?: true) }
 
     before do
-      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
+      Legion::Settings.set_prop(:transport, { connection: connection })
       stub_const('Legion::Transport::Connection', transport)
       manager.register_dynamic_lease(name: :rabbitmq, path: 'rabbitmq/creds/role',
                                      response: original_response, settings_refs: settings_refs)
@@ -801,8 +812,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
     it 'rolls back a timed-out reconnect and retains both lease IDs for cleanup' do
       configuration = Legion::Crypt::Settings.default
       configuration[:vault][:operation_timeout] = 0.02
-      allow(Legion::Settings).to receive(:[]).and_call_original
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+      Legion::Settings.set_prop(:crypt, configuration)
       allow(transport).to receive(:force_reconnect) { sleep(10) }
       revoked = []
       allow(vault_sys).to receive(:revoke) { |lease_id:| revoked << lease_id }
@@ -881,7 +891,7 @@ RSpec.describe Legion::Crypt::LeaseManager do
     let(:refs) { [{ key: :username, path: %i[consumer username] }] }
 
     before do
-      allow(Legion::Settings.loader).to receive(:settings).and_return(consumer: connection)
+      Legion::Settings.set_prop(:consumer, connection)
       allow(vault_logical).to receive(:read).and_return(replacement)
     end
 
@@ -963,9 +973,8 @@ RSpec.describe Legion::Crypt::LeaseManager do
 
     before do
       configuration[:vault][:operation_timeout] = 0.02
-      allow(Legion::Settings).to receive(:[]).and_call_original
-      allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
-      allow(Legion::Settings.loader).to receive(:settings).and_return(transport: { connection: connection })
+      Legion::Settings.set_prop(:crypt, configuration)
+      Legion::Settings.set_prop(:transport, { connection: connection })
       allow(default_vault_client).to receive(:sys).and_return(sys)
     end
 

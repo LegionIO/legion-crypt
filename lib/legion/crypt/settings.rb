@@ -18,6 +18,15 @@ module Legion
         }
       end
 
+      def self.mtls
+        {
+          enabled:        false,
+          vault_pki_path: 'pki/issue/legion-internal',
+          cert_ttl:       '24h',
+          renewal_window: 0.5
+        }
+      end
+
       def self.spiffe
         {
           enabled:             false,
@@ -34,6 +43,7 @@ module Legion
           vault:                  vault,
           jwt:                    jwt,
           tls:                    tls,
+          mtls:                   mtls,
           cs_encrypt_ready:       false,
           dynamic_keys:           true,
           cluster_secret:         nil,

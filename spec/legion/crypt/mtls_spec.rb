@@ -18,18 +18,18 @@ RSpec.describe Legion::Crypt::Mtls do
   end
 
   around do |example|
-    original = Legion::Settings[:security]
-    Legion::Settings.set_prop(:security, { mtls: { enabled: false, vault_pki_path: 'pki/issue/legion-internal', cert_ttl: '24h' } })
+    original = Legion::Settings[:crypt]
+    Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default)
     example.run
   ensure
-    Legion::Settings.set_prop(:security, original)
+    Legion::Settings.set_prop(:crypt, original)
   end
 
   describe 'live security policy' do
     it 'honors explicit disabled policy after replacing the settings tree' do
-      Legion::Settings.set_prop(:security, { mtls: { enabled: true } })
+      Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default.merge(mtls: { enabled: true }))
       expect(described_class.enabled?).to be(true)
-      Legion::Settings.set_prop(:security, { mtls: { enabled: false } })
+      Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default.merge(mtls: { enabled: false }))
       expect(described_class.enabled?).to be(false)
     end
   end

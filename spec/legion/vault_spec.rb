@@ -21,9 +21,7 @@ RSpec.describe Legion::Crypt::Vault do
 
   describe '#connect_vault rescue logging' do
     before do
-      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).and_call_original
-      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).with(:token).and_return('test-token')
-      allow(Legion::Settings[:crypt][:vault]).to receive(:[]=)
+      Legion::Settings[:crypt][:vault][:token] = 'test-token'
       allow(vault_sys).to receive(:health_status).and_raise(StandardError, 'connection refused')
     end
 
@@ -154,8 +152,7 @@ RSpec.describe Legion::Crypt::Vault do
     it 'cancels a scheduled renewer even when Vault is disconnected' do
       timer = Concurrent::ScheduledTask.execute(3600) { @vault.renew_sessions }
       @vault.instance_variable_set(:@renewer, timer)
-      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).and_call_original
-      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).with(:connected).and_return(false)
+      Legion::Settings[:crypt][:vault][:connected] = false
 
       @vault.shutdown_renewer
       @vault.shutdown_renewer
@@ -244,11 +241,11 @@ RSpec.describe Legion::Crypt::Vault do
   # and vault_client are available, mirroring how Legion::Crypt composes them.
   describe 'multi-cluster client routing' do
     before do
-      @original_kv_path = Legion::Settings[:crypt][:vault][:kv_path]
-      Legion::Settings[:crypt][:vault][:kv_path] = kv_path
+      @original_vault_settings = Legion::Settings[:crypt][:vault]
+      Legion::Settings[:crypt][:vault] = Legion::Crypt::Settings.vault.merge(kv_path: kv_path)
     end
 
-    after { Legion::Settings[:crypt][:vault][:kv_path] = @original_kv_path }
+    after { Legion::Settings[:crypt][:vault] = @original_vault_settings }
 
     let(:kv_path) { 'legion' }
     let(:mock_kv)      { double('kv') }

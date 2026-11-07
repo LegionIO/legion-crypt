@@ -16,8 +16,7 @@ RSpec.describe Legion::Crypt::LdapAuth do
   before do
     crypt.shutdown
     configuration[:vault].merge!(token: nil, connected: false, default: :one, clusters: { one: cluster_one }, leases: {})
-    allow(Legion::Settings).to receive(:[]).and_call_original
-    allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+    Legion::Settings.set_prop(:crypt, configuration)
     allow(client).to receive(:logical).and_return(logical)
     allow(client).to receive(:auth_token).and_return(auth_token)
     allow(logical).to receive(:write).and_return(login_secret)

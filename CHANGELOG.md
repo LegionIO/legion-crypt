@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.40] - 2026-11-07
+
+### Fixed
+- Use direct core settings reads for Vault connectivity, lease startup, JWT operations, and mTLS PKI paths; remove settings-only JWT/PKI accessors and preserve complete, isolated defaults in their specs.
+- Exercise the real `legion-settings` dependency throughout specs, including resolver and loader rebuild behavior; isolate mutable settings between examples instead of mocking the dependency.
+
 ## [1.5.39] - 2026-11-01
 
 ### Fixed

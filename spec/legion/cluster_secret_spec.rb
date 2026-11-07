@@ -16,10 +16,9 @@ RSpec.describe Legion::Crypt::ClusterSecret do
     allow(Legion::Transport::Queue).to receive(:new).with('node.crypt', passive: true)
                                                     .and_return(double(consumer_count: 1))
     allow(@cs).to receive(:require).with('legion/transport/messages/request_cluster_secret').and_return(true)
-    allow(Legion::Settings).to receive(:[]).and_call_original
-    allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
-    allow(Legion::Settings).to receive(:[]).with(:transport).and_return(transport)
-    allow(Legion::Settings).to receive(:[]).with(:client).and_return(client)
+    Legion::Settings.set_prop(:crypt, configuration)
+    Legion::Settings.set_prop(:transport, transport)
+    Legion::Settings.set_prop(:client, client)
   end
 
   it 'bootstraps a validated key when transport is explicitly disabled' do

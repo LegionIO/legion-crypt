@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
-require 'legion/logging/helper'
-require 'legion/crypt/settings'
 require 'uri'
 require 'openssl'
+require 'legion/logging/helper'
+require 'legion/crypt/settings'
+require 'legion/crypt/spiffe/workload_api_client'
+require 'legion/crypt/spiffe/svid_rotation'
+require 'legion/crypt/spiffe/identity_helpers'
 
 module Legion
   module Crypt
