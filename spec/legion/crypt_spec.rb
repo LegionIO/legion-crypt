@@ -77,6 +77,12 @@ RSpec.describe Legion::Crypt do
 
       expect(Legion::Crypt.vault_connected?).to be(false)
     end
+
+    it 'propagates invalid settings structure instead of reporting a disconnected Vault' do
+      configuration[:vault][:clusters] = nil
+
+      expect { described_class.vault_connected? }.to raise_error(NoMethodError)
+    end
   end
 
   describe '.delete' do
@@ -112,6 +118,30 @@ RSpec.describe Legion::Crypt do
         result = Legion::Crypt.delete('secret/data/legion/workers/w-1/entra')
         expect(result[:success]).to be false
       end
+    end
+  end
+
+  describe 'startup failure handling' do
+    before do
+      described_class.shutdown
+      Legion::Settings[:crypt][:save_private_key] = false
+      Legion::Settings[:crypt][:vault][:token] = nil
+    end
+
+    after { described_class.shutdown }
+
+    it 'propagates invalid lease configuration instead of completing startup' do
+      Legion::Settings[:crypt][:vault][:leases] = nil
+
+      expect { described_class.start(mode: :infra) }.to raise_error(NoMethodError)
+    end
+
+    it 'propagates SPIFFE startup programming errors instead of completing startup' do
+      Legion::Settings.set_prop(:security, { spiffe: { enabled: true } })
+      failure = ArgumentError.new('invalid rotation constructor arguments')
+      allow(Legion::Crypt::Spiffe::SvidRotation).to receive(:new).and_raise(failure)
+
+      expect { described_class.start }.to(raise_error { |error| expect(error).to equal(failure) })
     end
   end
 

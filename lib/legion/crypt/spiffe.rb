@@ -84,7 +84,7 @@ module Legion
           parse_id(spiffe_id_string)
           true
         rescue InvalidSpiffeIdError => e
-          handle_exception(e, level: :debug, operation: 'crypt.spiffe.valid_id', spiffe_id: spiffe_id_string)
+          handle_exception(e, level: :warn, operation: 'crypt.spiffe.valid_id', spiffe_id: spiffe_id_string)
           false
         end
 

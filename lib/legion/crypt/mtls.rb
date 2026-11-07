@@ -38,9 +38,9 @@ module Legion
           raise
         end
 
-        def local_ip
+        def local_ip(**)
           Socket.ip_address_list.find { |a| a.ipv4? && !a.ipv4_loopback? }&.ip_address || '127.0.0.1'
-        rescue StandardError => e
+        rescue SocketError, SystemCallError, IOError => e
           handle_exception(e, level: :warn, operation: 'crypt.mtls.local_ip')
           '127.0.0.1'
         end

@@ -81,7 +81,7 @@ RSpec.describe Legion::Crypt do
   describe '.fetch_bootstrap_rmq_creds' do
     before do
       Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = true
-      allow(described_class).to receive(:vault_connected?).and_return(true)
+      Legion::Settings[:crypt][:vault][:connected] = true
       Legion::Settings.loader.settings[:transport] ||= {}
       Legion::Settings.loader.settings[:transport][:connection] ||= {}
     end
@@ -102,6 +102,29 @@ RSpec.describe Legion::Crypt do
       expect(conn[:password]).to eq('bootstrap_pass')
     end
 
+    it 'propagates programming errors without installing bootstrap credentials' do
+      failure = NoMethodError.new('invalid credential acquisition call')
+      connection = Legion::Settings[:transport][:connection].dup
+      allow(logical_double).to receive(:read).and_raise(failure)
+
+      expect { described_class.fetch_bootstrap_rmq_creds }.to(raise_error { |error| expect(error).to equal(failure) })
+      expect(Legion::Settings[:transport][:connection]).to eq(connection)
+      expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to be_nil
+    end
+
+    it 'preserves credentials after an operational failure and permits a later acquisition' do
+      connection = Legion::Settings[:transport][:connection].dup
+      allow(logical_double).to receive(:read).and_raise(IOError, 'Vault unavailable')
+
+      described_class.fetch_bootstrap_rmq_creds
+
+      expect(Legion::Settings[:transport][:connection]).to eq(connection)
+      expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to be_nil
+      allow(logical_double).to receive(:read).and_return(vault_response)
+      described_class.fetch_bootstrap_rmq_creds
+      expect(Legion::Settings[:transport][:connection]).to include(user: 'bootstrap_user', password: 'bootstrap_pass')
+    end
+
     context 'when Vault returns string-keyed data' do
       before { allow(logical_double).to receive(:read).and_return(vault_response_string_keys) }
 
@@ -119,7 +142,7 @@ RSpec.describe Legion::Crypt do
     end
 
     context 'when vault is not connected' do
-      before { allow(described_class).to receive(:vault_connected?).and_return(false) }
+      before { Legion::Settings[:crypt][:vault][:connected] = false }
 
       it 'returns nil without reading from Vault' do
         expect(logical_double).not_to receive(:read)
@@ -326,6 +349,26 @@ RSpec.describe Legion::Crypt do
       described_class.revoke_bootstrap_lease
       expect(sys_double).not_to receive(:revoke)
       described_class.revoke_bootstrap_lease
+    end
+
+    it 'propagates programming errors without discarding the lease needed for cleanup' do
+      described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
+      failure = ArgumentError.new('invalid revocation call')
+      allow(sys_double).to receive(:revoke).and_raise(failure)
+
+      expect { described_class.revoke_bootstrap_lease }.to(raise_error { |error| expect(error).to equal(failure) })
+      expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to eq('boot/lease/abc123')
+    end
+
+    it 'clears bootstrap tracking after a handled timeout so the lease can expire naturally' do
+      described_class.instance_variable_set(:@bootstrap_lease_id, 'boot/lease/abc123')
+      described_class.instance_variable_set(:@bootstrap_lease_expires, Time.now + 300)
+      allow(sys_double).to receive(:revoke).and_raise(Timeout::Error)
+
+      described_class.revoke_bootstrap_lease
+
+      expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to be_nil
+      expect(described_class.instance_variable_get(:@bootstrap_lease_expires)).to be_nil
     end
   end
 

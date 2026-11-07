@@ -1,5 +1,14 @@
 # Legion::Crypt
 
+## [1.5.41] - 2026-11-07
+
+### Fixed
+- Propagate programming errors from Vault connectivity, bootstrap credential acquisition/revocation, lease and SPIFFE startup orchestration, and mTLS interface discovery instead of concealing them as disconnected or fallback states.
+- Handle declared operational failures through structured warning-level exceptions without duplicate raw exception logs; report invalid SPIFFE IDs at warning level.
+
+### Changed
+- Accept extra keyword context on touched startup, credential, and SVID APIs and fully qualify sibling Crypt constants. Preserve mode-specific credential selection and certificate SAN/TTL behavior; fixed role mappings remain frozen constants.
+
 ## [1.5.40] - 2026-11-07
 
 ### Fixed

@@ -26,6 +26,10 @@ Legion::Crypt.decrypt(encrypted[:enciphered_message], encrypted[:iv])
 
 Authenticated ciphertext requires a full 16-byte GCM tag. Saved RSA private keys are created with `0600` permissions; existing files are restricted before writing.
 
+`Legion::Crypt.start(mode: nil, **)` accepts extra keyword context. With `mode: :infra`, an existing PostgreSQL lease uses `postgresql/creds/infra` without mutating its configured path; other modes preserve the configured path. The mode-to-role mapping is a fixed framework convention, not an operator setting.
+
+Vault connectivity inspection propagates errors rather than reporting broken configuration as disconnected. Startup orchestration and bootstrap credential handling recover only from their declared operational failures, using `handle_exception` at warning level; programming errors propagate to callers.
+
 ### Cluster secret readiness
 
 Discovery checks settings, Vault, and then peers. Random generation requires confirmed empty-cluster membership, the lite transport adapter, or standalone operation (no transport loaded or transport explicitly disabled). Disconnected or unknown cluster membership does not authorize a competing key.
@@ -278,7 +282,7 @@ Responses may split the gRPC prefix or body across HTTP/2 DATA frames and socket
 
 ## mTLS
 
-`Crypt::Mtls` issues mTLS certificates from Vault PKI. When `security.mtls.enabled` is true, `Legion::Service` owns a `Crypt::CertRotation` worker. The worker renews at expiry minus the certificate lifetime multiplied by `security.mtls.renewal_window` (default `0.5`), rather than waiting for a fixed polling interval. Initial issuance and renewal failures retry with exponential backoff from 1 to 60 seconds; a failed renewal retains the last installed certificate. Shutdown interrupts scheduled waits, bounds in-flight issuance with the Vault operation timeout, and prevents late results from replacing the certificate.
+`Legion::Crypt::Mtls` issues mTLS certificates from Vault PKI using `crypt.mtls` configuration. `issue_cert(common_name:, alt_names: '', ttl: nil, **)` preserves caller-supplied SANs and TTL overrides while accepting extra keyword context. `Legion::Crypt::CertRotation` renews at expiry minus the certificate lifetime multiplied by `crypt.mtls.renewal_window` (default `0.5`), rather than waiting for a fixed polling interval. Initial issuance and renewal failures retry with exponential backoff from 1 to 60 seconds; a failed renewal retains the last installed certificate. Shutdown interrupts scheduled waits, bounds in-flight issuance with the Vault operation timeout, and prevents late results from replacing the certificate.
 
 `Transport::Connection::Vault` independently acquires and applies tempfile-based Bunny mTLS credentials. Certificate rotation does not itself close transport connections when a certificate expires. mTLS is disabled by default.
 

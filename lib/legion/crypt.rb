@@ -44,25 +44,25 @@ module Legion
 
       include Legion::Crypt::Vault
 
-      def kerberos_principal
-        KerberosAuth.kerberos_principal
+      def kerberos_principal(**)
+        Legion::Crypt::KerberosAuth.kerberos_principal
       end
 
       def spiffe_svid
         @svid_rotation&.current_svid
       end
 
-      def fetch_svid
-        @workload_client ||= Spiffe::WorkloadApiClient.new
+      def fetch_svid(**)
+        @workload_client ||= Legion::Crypt::Spiffe::WorkloadApiClient.new
         @workload_client.fetch_x509_svid
       end
 
-      def fetch_jwt_svid(audience:)
-        @workload_client ||= Spiffe::WorkloadApiClient.new
+      def fetch_jwt_svid(audience:, **)
+        @workload_client ||= Legion::Crypt::Spiffe::WorkloadApiClient.new
         @workload_client.fetch_jwt_svid(audience: audience)
       end
 
-      def start(mode: nil)
+      def start(mode: nil, **)
         lifecycle_mutex.synchronize do
           if @started || @stopping
             log.info 'Legion::Crypt start ignored because the lifecycle is running or stopping'
@@ -124,12 +124,12 @@ module Legion
         Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] == true
       end
 
-      def fetch_bootstrap_rmq_creds
+      def fetch_bootstrap_rmq_creds(**)
         return unless vault_connected? && dynamic_rmq_creds?
 
         Legion::Settings.merge_settings('transport', Legion::Transport::Settings.default) if defined?(Legion::Transport::Settings)
 
-        response = LeaseManager.instance.vault_logical.read(path: 'rabbitmq/creds/legionio-bootstrap')
+        response = Legion::Crypt::LeaseManager.instance.vault_logical.read(path: 'rabbitmq/creds/legionio-bootstrap')
         return unless response&.data
 
         bootstrap_lease_ttl = Legion::Settings[:crypt][:vault][:bootstrap_lease_ttl].to_i
@@ -154,17 +154,16 @@ module Legion
         conn[:password] = password
 
         log.info "Bootstrap RMQ credentials acquired (lease: #{@bootstrap_lease_id[0..7]}...)"
-      rescue StandardError => e
+      rescue IOError, SystemCallError, Timeout::Error, Faraday::Error, Legion::Crypt::Vault::HTTPError => e
         handle_exception(e, level: :warn, operation: 'crypt.fetch_bootstrap_rmq_creds')
-        log.warn "Bootstrap RMQ credential fetch failed: #{e.message}"
       end
 
-      def swap_to_identity_creds(mode:)
+      def swap_to_identity_creds(mode:, **)
         return unless vault_connected? && dynamic_rmq_creds?
         return if mode == :lite
 
         role = RMQ_ROLE_MAP.fetch(mode, "legionio-#{mode}")
-        manager = LeaseManager.instance
+        manager = Legion::Crypt::LeaseManager.instance
         response = Legion::Crypt::VaultOperation.with_timeout { manager.vault_logical.read(path: "rabbitmq/creds/#{role}") }
         raise "Failed to fetch identity-scoped RMQ creds for role #{role}" unless response
 
@@ -189,30 +188,23 @@ module Legion
         Legion::Crypt::VaultOperation.with_timeout { revoke_bootstrap_lease }
       end
 
-      def revoke_bootstrap_lease
+      def revoke_bootstrap_lease(**)
         return unless @bootstrap_lease_id
 
-        LeaseManager.instance.vault_sys.revoke(lease_id: @bootstrap_lease_id)
+        Legion::Crypt::LeaseManager.instance.vault_sys.revoke(lease_id: @bootstrap_lease_id)
         log.info "Bootstrap RMQ lease revoked (#{@bootstrap_lease_id[0..7]}...)"
         @bootstrap_lease_id      = nil
         @bootstrap_lease_expires = nil
-      rescue StandardError => e
+      rescue IOError, SystemCallError, Timeout::Error, Faraday::Error, Legion::Crypt::Vault::HTTPError => e
         handle_exception(e, level: :warn, operation: 'crypt.revoke_bootstrap_lease')
-        log.warn "Bootstrap lease revocation failed: #{e.message} — lease will expire naturally"
         @bootstrap_lease_id      = nil
         @bootstrap_lease_expires = nil
       end
 
-      def vault_connected?
+      def vault_connected?(**)
         return connected_clusters.any? if Legion::Settings[:crypt][:vault][:clusters].any?
 
-        return true if Legion::Settings[:crypt][:vault][:connected] == true
-        return true if respond_to?(:connected_clusters) && connected_clusters.any?
-
-        false
-      rescue StandardError => e
-        handle_exception(e, level: :debug, operation: 'crypt.vault_connected?')
-        false
+        Legion::Settings[:crypt][:vault][:connected] == true
       end
 
       def issue_token(payload = {}, ttl: nil, algorithm: nil)
@@ -312,7 +304,7 @@ module Legion
             log.warn "LeaseManager: #{fetched}/#{defined} lease(s) initialized (#{defined - fetched} failed)"
           end
         end
-      rescue StandardError => e
+      rescue IOError, SystemCallError, Timeout::Error, Faraday::Error, Legion::Crypt::Vault::HTTPError => e
         handle_exception(e, level: :warn, operation: 'crypt.start_lease_manager')
       end
 
@@ -361,12 +353,12 @@ module Legion
       end
 
       def start_svid_rotation
-        return unless Spiffe.enabled?
+        return unless Legion::Crypt::Spiffe.enabled?
 
         log.info 'Legion::Crypt starting SPIFFE SVID rotation'
-        @svid_rotation = Spiffe::SvidRotation.new
+        @svid_rotation = Legion::Crypt::Spiffe::SvidRotation.new
         @svid_rotation.start
-      rescue StandardError => e
+      rescue IOError, SystemCallError, Timeout::Error, Legion::Crypt::Spiffe::Error => e
         handle_exception(e, level: :warn, operation: 'crypt.start_svid_rotation')
       end
 

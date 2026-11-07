@@ -35,12 +35,17 @@ RSpec.describe Legion::Crypt::Mtls do
   end
 
   describe '.local_ip' do
-    it 'returns a string' do
-      expect(described_class.local_ip).to be_a(String)
+    it 'uses loopback when interface discovery fails operationally' do
+      allow(Socket).to receive(:ip_address_list).and_raise(Errno::ENETDOWN)
+
+      expect(described_class.local_ip).to eq('127.0.0.1')
     end
 
-    it 'returns a non-empty address' do
-      expect(described_class.local_ip).not_to be_empty
+    it 'propagates programming errors instead of issuing certificates for loopback' do
+      failure = NoMethodError.new('invalid interface discovery call')
+      allow(Socket).to receive(:ip_address_list).and_raise(failure)
+
+      expect { described_class.local_ip }.to(raise_error { |error| expect(error).to equal(failure) })
     end
   end
 
