@@ -7,18 +7,19 @@ Core encryption, secrets management, JWT, and HashiCorp Vault integration for Le
 ```
 Legion::Crypt
 ├── Cipher          # AES-256-GCM encryption; legacy CBC decryption; RSA key pair
-├── Vault           # read/write/connect/session renewal through VaultClient
-├── VaultClient     # core-owned HTTP client using Faraday and Legion::JSON
-├── VaultCluster    # client selection, caching, authentication grant publication
-├── VaultOperation  # bounded operations and shared shutdown deadlines
+├── Vault           # read/write/connect/session renewal through Vault::Client
+│   ├── Client      # core-owned HTTP client using Faraday and Legion::JSON
+│   ├── Cluster     # client selection, caching, authentication grant publication
+│   ├── Operation   # bounded operations and shared shutdown deadlines
+│   ├── Entity      # entity and alias lookup
+│   ├── JwtAuth     # .login / .login! / .worker_login
+│   ├── KerberosAuth # SPNEGO as Authorization header; preserves namespace
+│   └── Renewer     # legacy Every actor for session renewal
 ├── JWT             # issue/verify/decode (HS256 cluster-secret or RS256 RSA)
 ├── JwksClient      # external JWKS endpoint, 1hr TTL cache, thread-safe
 ├── ClusterSecret   # shared AES key distributed across nodes
-├── VaultJwtAuth    # .login / .login! / .worker_login
-├── Vault::Renewer  # legacy Every actor for session renewal
 ├── LeaseManager    # dynamic Vault lease lifecycle
 ├── KerberosAuth    # SPNEGO acquisition through the optional lex-kerberos helper
-├── VaultKerberosAuth # SPNEGO as Authorization header; preserves namespace
 ├── LdapAuth        # cluster-scoped LDAP login and token maintenance
 ├── TokenRenewer    # 75% TTL renewal; Kerberos-only re-auth; retry backoff
 ├── Ed25519         # key gen, sign, verify, Vault storage
@@ -31,6 +32,8 @@ Legion::Crypt
 ├── Erasure         # cryptographic erasure via Vault master key deletion
 └── MockVault       # in-memory mock for local dev
 ```
+
+Vault components live under `lib/legion/crypt/vault/`: `client.rb`, `cluster.rb`, `operation.rb`, `entity.rb`, `jwt_auth.rb`, `kerberos_auth.rb`, and `renewer.rb`. Core `KerberosAuth` and `TokenRenewer` remain directly under `Legion::Crypt`.
 
 ## Key Design Decisions
 
@@ -53,6 +56,8 @@ Legion::Crypt
 
 ## Specs and Verification
 
+- Mirror literal library paths and filenames in specs: `lib/legion/crypt/vault/client.rb` maps to `spec/legion/crypt/vault/client.rb`, not an `_spec.rb` file. Keep examples with the implementation they exercise; root Crypt API groups share `spec/legion/crypt.rb`.
+- `.rspec` discovers `spec/legion/**/*.rb` and explicitly loads `spec/spec_helper.rb`. Preserve `lib/` precedence over `spec/` on `$LOAD_PATH` to prevent mirrored files from shadowing production requires. Keep support files outside the discovered tree.
 - Require and use gemspec dependencies; do not mock them. In particular, never stub `Legion::Settings`, its loader, resolver, or returned settings hashes.
 - `spec/spec_helper.rb` loads the real Settings/Resolver, isolates the settings root, installs full Crypt defaults for each example, and restores the original state afterward.
 - Configure values through real bracket access or `Legion::Settings.set_prop`. Replacement Crypt configurations must retain full defaults, including nested Vault settings. Raw loader-root mutation is permitted in test setup for publication/rebuild scenarios, not as a new production access pattern.

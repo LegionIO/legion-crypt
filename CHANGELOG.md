@@ -1,5 +1,12 @@
 # Legion::Crypt
 
+## [1.5.42] - 2026-11-08
+
+### Changed
+- Move Vault client, cluster routing, operation deadlines, entity management, JWT/Kerberos authentication, and the legacy renewal actor into `lib/legion/crypt/vault/` with matching `Legion::Crypt::Vault::*` namespaces.
+- Update library consumers, specs, and current documentation to the nested require paths and constants; remove the old flat paths without compatibility aliases. Core SPNEGO acquisition and `TokenRenewer` remain in their existing locations.
+- Mirror implementation paths and literal filenames under `spec/`, consolidating root Crypt API examples without dropping coverage. Configure RSpec discovery for the mirrored layout and prioritize `lib/` on the load path to prevent spec files from shadowing production requires.
+
 ## [1.5.41] - 2026-11-07
 
 ### Fixed

@@ -130,7 +130,7 @@ After an explicit full `Legion::Settings.reset!`, standalone callers and tests m
 
 ### Vault Integration
 
-When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. Vault requests use the core-owned `Legion::Crypt::VaultClient`, built on Faraday and `Legion::JSON`; neither vault-ruby nor a LEX extension is required. Responses have symbol keys, including with JSON 3.
+When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. Vault requests use the core-owned `Legion::Crypt::Vault::Client`, built on Faraday and `Legion::JSON`; neither vault-ruby nor a LEX extension is required. Responses have symbol keys, including with JSON 3.
 
 `Legion::Crypt.vault_client` returns the cached default client; pass a cluster name for an explicit client. Its logical, KV, and lease endpoints use keyword arguments and ignore extra keywords while still enforcing required arguments:
 
@@ -211,7 +211,7 @@ Release Crypt before Settings. Older `register_ref` callers remain supported, bu
 
 ## Multi-Cluster Vault
 
-`VaultCluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `Legion::Crypt::VaultClient` instance.
+`Legion::Crypt::Vault::Cluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `Legion::Crypt::Vault::Client` instance.
 
 Clients are reused only while their endpoint, namespace, TLS verification, and token match the current configuration. Connection changes replace the cached client without disabling lease or token owners retaining its predecessor. Displaced clients are weakly tracked, so the cache does not keep unused clients alive; shutdown permanently closes all surviving clients after owner cleanup. In-place authentication token refreshes preserve the current client.
 
@@ -317,6 +317,10 @@ bundle exec rspec --format json --out tmp/rspec_results.json --format progress -
 ```
 
 Run specs against the corrected code if RuboCop changes files. On failure, inspect the failing examples in `tmp/rspec_results.json`; do not substitute a narrower suite for the full check.
+
+Specs mirror implementation paths and filenames exactly: `lib/legion/crypt/vault/client.rb` is covered by `spec/legion/crypt/vault/client.rb`, without an `_spec` suffix. Keep each spec focused on its corresponding implementation; startup, JWT convenience, and credential-scoping groups belong in `spec/legion/crypt.rb`.
+
+`.rspec` explicitly loads `spec/spec_helper.rb` and discovers `spec/legion/**/*.rb`. The helper puts `lib/` ahead of `spec/` on Ruby's load path so production requires cannot resolve to mirrored spec files. Keep support files outside the discovered implementation-spec tree.
 
 Require and use real gemspec dependencies rather than mocking them. `spec/spec_helper.rb` requires `legion-settings` and its resolver, isolates the settings root, and installs complete Crypt defaults for each example. The original settings state is restored afterward, including when an example replaces the loader root.
 

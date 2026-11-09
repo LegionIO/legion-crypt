@@ -19,6 +19,7 @@ bundle exec rubocop
 - `lib/legion/crypt/jwt.rb`
 - `lib/legion/crypt/jwks_client.rb`
 - `lib/legion/crypt/vault.rb`
+- `lib/legion/crypt/vault/` — `Legion::Crypt::Vault::{Client, Cluster, Operation, Entity, JwtAuth, KerberosAuth, Renewer}`
 - `lib/legion/crypt/lease_manager.rb`
 - `lib/legion/crypt/token_renewer.rb`
 - `lib/legion/crypt/mtls.rb`
@@ -30,6 +31,7 @@ bundle exec rubocop
 - Keep Vault-dependent logic optional and safely guarded for environments without Vault.
 - Background renewal/rotation threads must stop cleanly on shutdown and handle failure with bounded retry.
 - Maintain compatibility for Kerberos, LDAP, and JWT Vault auth paths.
+- Vault components are nested under `Legion::Crypt::Vault`; core `Legion::Crypt::KerberosAuth` handles SPNEGO acquisition and `Legion::Crypt::TokenRenewer` remains outside that namespace.
 - Cryptographic defaults and key lifecycle behavior are contract-sensitive; change only with test coverage.
 
 ## Known Risks
