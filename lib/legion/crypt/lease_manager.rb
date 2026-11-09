@@ -3,7 +3,7 @@
 require 'legion/logging/helper'
 require 'singleton'
 require 'timeout'
-require 'legion/crypt/vault_operation'
+require 'legion/crypt/vault/operation'
 
 module Legion
   module Crypt
@@ -189,7 +189,7 @@ module Legion
 
       def start_renewal_thread
         previous = @state_mutex.synchronize { @renewal_thread if @renewal_generation != @generation }
-        Legion::Crypt::VaultOperation.with_timeout { previous.join } if previous&.alive?
+        Legion::Crypt::Vault::Operation.with_timeout { previous.join } if previous&.alive?
         @state_mutex.synchronize do
           return if @renewal_thread&.alive? || @stopped
           return if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
@@ -218,7 +218,7 @@ module Legion
       end
 
       def shutdown(deadline: nil)
-        deadline ||= monotonic_now + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
+        deadline ||= monotonic_now + Legion::Crypt::Vault::Operation::SHUTDOWN_TIMEOUT
         request_stop
         @state_mutex.synchronize do
           @active_leases.clear
@@ -376,7 +376,7 @@ module Legion
 
       def with_lease_operation(name:, deadline: nil, **)
         lock = @state_mutex.synchronize { @lease_locks[name] ||= Mutex.new }
-        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) do |operation_deadline|
+        Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) do |operation_deadline|
           lock.synchronize { yield operation_deadline }
         end
       end
@@ -510,7 +510,7 @@ module Legion
         safe_to_retire = !handoff[:attempted_reconnect] || !lifecycle_current?(generation: generation, active: active)
         if handoff[:attempted_reconnect] && restored
           begin
-            safe_to_retire = Legion::Crypt::VaultOperation.with_timeout(deadline: context[:deadline]) do
+            safe_to_retire = Legion::Crypt::Vault::Operation.with_timeout(deadline: context[:deadline]) do
               trigger_reconnect(name, generation: generation, active: active)
             end
           rescue StandardError => e
@@ -602,7 +602,7 @@ module Legion
         end
         return unless entry
 
-        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { entry[:client].sys.revoke(lease_id: entry[:lease_id]) }
+        Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { entry[:client].sys.revoke(lease_id: entry[:lease_id]) }
         @state_mutex.synchronize { @owned_leases.delete(key) if @owned_leases[key].equal?(entry) }
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.revoke_owned_lease', lease_name: entry&.dig(:name))
@@ -620,7 +620,7 @@ module Legion
         thread = request_stop
         return unless thread
 
-        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { thread.join }
+        Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { thread.join }
         @state_mutex.synchronize { @renewal_thread = nil if @renewal_thread.equal?(thread) }
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.lease_manager.stop_renewal_thread')

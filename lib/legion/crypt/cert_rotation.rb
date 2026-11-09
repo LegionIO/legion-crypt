@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
-require 'legion/crypt/vault_operation'
+require 'legion/crypt/vault/operation'
 
 module Legion
   module Crypt
@@ -53,8 +53,8 @@ module Legion
           @wake.broadcast
           @thread
         end
-        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
-        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { thread.join } if thread && thread != Thread.current
+        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::Vault::Operation::SHUTDOWN_TIMEOUT
+        Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { thread.join } if thread && thread != Thread.current
         @mutex.synchronize { @thread = nil if @thread.equal?(thread) && !thread&.alive? }
         log.info('[mTLS] CertRotation stopped')
       rescue StandardError => e
@@ -67,7 +67,7 @@ module Legion
 
       def rotate!(generation: nil)
         generation ||= @mutex.synchronize { @generation }
-        new_cert = Legion::Crypt::VaultOperation.with_timeout { Legion::Crypt::Mtls.issue_cert(common_name: node_common_name) }
+        new_cert = Legion::Crypt::Vault::Operation.with_timeout { Legion::Crypt::Mtls.issue_cert(common_name: node_common_name) }
         issued_at = Time.now
         raise 'Vault PKI returned an expired certificate' unless new_cert[:expiry] > issued_at
 

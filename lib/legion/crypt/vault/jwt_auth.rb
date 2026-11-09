@@ -1,0 +1,99 @@
+# frozen_string_literal: true
+
+require 'legion/logging/helper'
+require 'legion/crypt/vault/client'
+
+module Legion
+  module Crypt
+    # Vault JWT auth backend integration.
+    #
+    # Allows Legion workers to authenticate to Vault using JWT tokens
+    # via Vault's JWT/OIDC auth method. The worker presents a signed JWT
+    # and receives a Vault token with policies scoped to the worker's role.
+    #
+    # Vault config prerequisites:
+    #   vault auth enable jwt
+    #   vault write auth/jwt/config jwks_url="..." (or bound_issuer + jwt_validation_pubkeys)
+    #   vault write auth/jwt/role/legion-worker bound_audiences="legion" ...
+    module Vault
+      module JwtAuth
+        DEFAULT_AUTH_PATH = 'auth/jwt/login'
+        DEFAULT_ROLE      = 'legion-worker'
+
+        class AuthError < StandardError; end
+
+        extend Legion::Logging::Helper
+
+        # Authenticate to Vault using a JWT token.
+        # Returns a Vault token string on success.
+        #
+        # @param jwt [String] Signed JWT token (issued by Legion or Entra ID)
+        # @param role [String] Vault JWT auth role name (default: 'legion-worker')
+        # @param auth_path [String] Vault auth mount path (default: 'auth/jwt/login')
+        # @return [Hash] { token:, lease_duration:, policies:, metadata: }
+        def self.login(jwt:, role: DEFAULT_ROLE, auth_path: DEFAULT_AUTH_PATH)
+          raise AuthError, 'Vault is not connected' unless Legion::Crypt.vault_connected?
+
+          log.info "[crypt:vault_jwt] authenticating role=#{role} auth_path=#{auth_path}"
+          response = Legion::Crypt.vault_client.logical.write(path: auth_path, data: { role: role, jwt: jwt })
+
+          raise AuthError, 'Vault JWT auth returned no auth data' unless response&.auth
+
+          {
+            token:          response.auth.client_token,
+            lease_duration: response.auth.lease_duration,
+            renewable:      response.auth.renewable?,
+            policies:       response.auth.policies,
+            metadata:       response.auth.metadata
+          }
+        rescue Legion::Crypt::Vault::HTTPClientError => e
+          handle_exception(e, level: :warn, operation: 'crypt.vault_jwt_auth.login', role: role, auth_path: auth_path,
+                              category: 'client_error')
+          raise AuthError, "Vault JWT auth failed: #{e.message}"
+        rescue Legion::Crypt::Vault::HTTPServerError => e
+          handle_exception(e, level: :warn, operation: 'crypt.vault_jwt_auth.login', role: role, auth_path: auth_path,
+                              category: 'server_error')
+          raise AuthError, "Vault server error during JWT auth: #{e.message}"
+        rescue StandardError => e
+          handle_exception(e, level: :error, operation: 'crypt.vault_jwt_auth.login', role: role, auth_path: auth_path)
+          raise if e.is_a?(AuthError)
+
+          raise AuthError, "Vault JWT auth failed: #{e.message}"
+        end
+
+        # Authenticate and set the Vault client token for subsequent operations.
+        # This replaces the current Vault token with the JWT-authenticated one.
+        #
+        # @return [Hash] Same as login
+        def self.login!(jwt:, role: DEFAULT_ROLE, auth_path: DEFAULT_AUTH_PATH)
+          generation = Legion::Crypt.vault_auth_generation
+          client = Legion::Crypt.vault_client
+          config = Legion::Crypt.cluster || Legion::Settings[:crypt][:vault]
+          result = login(jwt: jwt, role: role, auth_path: auth_path)
+          Legion::Crypt.install_vault_grant(client: client, config: config, grant: result, auth_method: 'jwt', generation: generation)
+          log.info "[crypt:vault_jwt] authenticated via JWT auth, policies=#{result[:policies].join(',')}"
+          result
+        end
+
+        # Issue a Legion JWT and use it to authenticate to Vault in one step.
+        # Convenience method for workers that need Vault access.
+        #
+        # @param worker_id [String] Digital worker ID
+        # @param owner_msid [String] Worker's owner MSID
+        # @param role [String] Vault JWT auth role name
+        # @return [Hash] Same as login
+        def self.worker_login(worker_id:, owner_msid:, role: DEFAULT_ROLE)
+          log.info "[crypt:vault_jwt] worker login requested role=#{role} worker_id=#{worker_id}"
+          jwt = Legion::Crypt::JWT.issue(
+            { worker_id: worker_id, sub: owner_msid, scope: 'vault', aud: 'legion' },
+            signing_key: Legion::Crypt.cluster_secret,
+            ttl:         300,
+            issuer:      'legion'
+          )
+
+          login(jwt: jwt, role: role)
+        end
+      end
+    end
+  end
+end

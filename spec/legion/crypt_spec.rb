@@ -194,7 +194,7 @@ RSpec.describe Legion::Crypt do
 
     it 'prefers the connected cluster client over the top-level vault flag' do
       leases = { 'test' => { 'path' => 'secret/test' } }
-      secondary_client = instance_double(Legion::Crypt::VaultClient)
+      secondary_client = instance_double(Legion::Crypt::Vault::Client)
       Legion::Settings[:crypt][:vault].merge!(leases: leases, connected: true)
       allow(Legion::Crypt::LeaseManager.instance).to receive(:fetched_count).and_return(1)
       allow(Legion::Crypt).to receive(:connected_clusters).and_return({ secondary: { token: 'tok-2', connected: true } })
@@ -211,7 +211,7 @@ RSpec.describe Legion::Crypt do
         postgresql: { path: 'postgresql/creds/node' },
         redis:      { path: 'redis/creds/agent' }
       }
-      client = instance_double(Legion::Crypt::VaultClient)
+      client = instance_double(Legion::Crypt::Vault::Client)
       Legion::Settings[:crypt][:vault].merge!(leases: leases, connected: true)
       allow(Legion::Crypt).to receive(:connected_clusters).and_return({})
       allow(Legion::Crypt).to receive(:vault_client).and_return(client)
@@ -236,7 +236,7 @@ RSpec.describe Legion::Crypt do
       { protocol: 'https', address: 'vault.example.com', port: 8200, auth_method: 'ldap', connected: false }
     end
     let(:client) { described_class.vault_client(:primary) }
-    let(:logical) { instance_double(Legion::Crypt::VaultClient::Logical) }
+    let(:logical) { instance_double(Legion::Crypt::Vault::Client::Logical) }
     let(:auth_token) { double('AuthToken', revoke_self: nil) }
 
     before do

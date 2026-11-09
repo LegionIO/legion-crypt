@@ -9,10 +9,10 @@ require 'legion/crypt/version'
 require 'legion/crypt/settings'
 require 'legion/crypt/cipher'
 require 'legion/crypt/jwt'
-require 'legion/crypt/vault_jwt_auth'
+require 'legion/crypt/vault/jwt_auth'
 require 'legion/crypt/lease_manager'
-require 'legion/crypt/vault_operation'
-require 'legion/crypt/vault_cluster'
+require 'legion/crypt/vault/operation'
+require 'legion/crypt/vault/cluster'
 require 'legion/crypt/vault'
 require 'legion/crypt/ldap_auth'
 require 'legion/crypt/token_renewer'
@@ -23,7 +23,7 @@ require 'legion/crypt/spiffe'
 
 module Legion
   module Crypt
-    extend Legion::Crypt::VaultCluster
+    extend Legion::Crypt::Vault::Cluster
     extend Legion::Crypt::LdapAuth
 
     RMQ_ROLE_MAP = {
@@ -164,7 +164,7 @@ module Legion
 
         role = RMQ_ROLE_MAP.fetch(mode, "legionio-#{mode}")
         manager = Legion::Crypt::LeaseManager.instance
-        response = Legion::Crypt::VaultOperation.with_timeout { manager.vault_logical.read(path: "rabbitmq/creds/#{role}") }
+        response = Legion::Crypt::Vault::Operation.with_timeout { manager.vault_logical.read(path: "rabbitmq/creds/#{role}") }
         raise "Failed to fetch identity-scoped RMQ creds for role #{role}" unless response
 
         settings = Legion::Settings.loader.settings
@@ -185,7 +185,7 @@ module Legion
         )
         raise 'Identity credential handoff failed — bootstrap lease NOT revoked' unless installed
 
-        Legion::Crypt::VaultOperation.with_timeout { revoke_bootstrap_lease }
+        Legion::Crypt::Vault::Operation.with_timeout { revoke_bootstrap_lease }
       end
 
       def revoke_bootstrap_lease(**)
@@ -242,7 +242,7 @@ module Legion
           @started = false
           true
         end
-        deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
+        deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::Vault::Operation::SHUTDOWN_TIMEOUT
         manager = Legion::Crypt::LeaseManager.instance
         [manager, *(@token_renewers || [])].each do |worker|
           worker.request_stop
@@ -365,7 +365,7 @@ module Legion
       def stop_svid_rotation(deadline: nil)
         return unless @svid_rotation
 
-        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { @svid_rotation.stop }
+        Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { @svid_rotation.stop }
       ensure
         @svid_rotation = nil
       end

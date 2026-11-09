@@ -50,7 +50,7 @@ RSpec.describe Legion::Crypt::Mtls do
   end
 
   describe '.issue_cert' do
-    let(:vault_logical) { instance_double(Legion::Crypt::VaultClient::Logical) }
+    let(:vault_logical) { instance_double(Legion::Crypt::Vault::Client::Logical) }
 
     before do
       allow(Legion::Crypt).to receive(:vault_client).and_return(double('core Vault client', logical: vault_logical))

@@ -6,14 +6,14 @@ require 'concurrent'
 require 'legion/crypt/vault'
 
 RSpec.describe Legion::Crypt::Vault do
-  let(:vault_sys) { instance_double(Legion::Crypt::VaultClient::Sys) }
+  let(:vault_sys) { instance_double(Legion::Crypt::Vault::Client::Sys) }
   let(:default_client) do
-    instance_double(Legion::Crypt::VaultClient, sys: vault_sys, address: 'https://vault.example.com', namespace: nil, ssl_verify: true)
+    instance_double(Legion::Crypt::Vault::Client, sys: vault_sys, address: 'https://vault.example.com', namespace: nil, ssl_verify: true)
   end
 
   before do
     @vault = Class.new
-    @vault.extend Legion::Crypt::VaultCluster
+    @vault.extend Legion::Crypt::Vault::Cluster
     @vault.extend Legion::Crypt::Vault
     @vault.sessions = []
     allow(@vault).to receive(:vault_client).and_return(default_client)
@@ -98,7 +98,7 @@ RSpec.describe Legion::Crypt::Vault do
     end
 
     it 'applies a whole-close deadline even when the caller supplies none' do
-      stub_const('Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT', 0.04)
+      stub_const('Legion::Crypt::Vault::Operation::SHUTDOWN_TIMEOUT', 0.04)
       Legion::Settings[:crypt][:vault][:operation_timeout] = 1
       @vault.sessions = %w[stalled later]
       attempted = []
@@ -212,12 +212,12 @@ RSpec.describe Legion::Crypt::Vault do
     end
 
     it 'bounds each cluster token renewal while preserving routing and failure isolation' do
-      @vault.extend(Legion::Crypt::VaultCluster)
+      @vault.extend(Legion::Crypt::Vault::Cluster)
       allow(@vault).to receive(:connected_clusters).and_return(stalled: {}, failed: {}, healthy: {})
       renewed = []
       %i[stalled failed healthy].each do |name|
         token = double("token-#{name}")
-        client = instance_double(Legion::Crypt::VaultClient, auth_token: token)
+        client = instance_double(Legion::Crypt::Vault::Client, auth_token: token)
         allow(@vault).to receive(:vault_client).with(name).and_return(client)
         allow(token).to receive(:renew_self) do
           sleep 5 if name == :stalled
@@ -237,7 +237,7 @@ RSpec.describe Legion::Crypt::Vault do
 
   # Multi-cluster KV routing: kv_client / logical_client helpers
   #
-  # The test object extends both Vault and VaultCluster so that connected_clusters
+  # The test object extends both Vault and Vault::Cluster so that connected_clusters
   # and vault_client are available, mirroring how Legion::Crypt composes them.
   describe 'multi-cluster client routing' do
     before do
@@ -251,7 +251,7 @@ RSpec.describe Legion::Crypt::Vault do
     let(:mock_kv)      { double('kv') }
     let(:mock_logical) { double('logical') }
     let(:mock_cluster_client) do
-      dbl = instance_double(Legion::Crypt::VaultClient)
+      dbl = instance_double(Legion::Crypt::Vault::Client)
       allow(dbl).to receive(:kv).with(mount: kv_path).and_return(mock_kv)
       allow(dbl).to receive(:logical).and_return(mock_logical)
       dbl
@@ -261,7 +261,7 @@ RSpec.describe Legion::Crypt::Vault do
     # vault_client are available alongside the Vault KV methods.
     let(:host) do
       obj = Object.new
-      obj.extend(Legion::Crypt::VaultCluster)
+      obj.extend(Legion::Crypt::Vault::Cluster)
       obj.extend(Legion::Crypt::Vault)
       obj.sessions = []
       obj
@@ -336,7 +336,7 @@ RSpec.describe Legion::Crypt::Vault do
         let(:mock_secondary_kv) { double('kv-secondary') }
         let(:mock_secondary_logical) { double('logical-secondary') }
         let(:mock_secondary_client) do
-          dbl = instance_double(Legion::Crypt::VaultClient)
+          dbl = instance_double(Legion::Crypt::Vault::Client)
           allow(dbl).to receive(:kv).with(mount: kv_path).and_return(mock_secondary_kv)
           allow(dbl).to receive(:logical).and_return(mock_secondary_logical)
           dbl
@@ -425,7 +425,7 @@ RSpec.describe Legion::Crypt, 'configured KV mounts' do
         kv_path: 'private', default: clustered ? :primary : nil,
         clusters: clustered ? { primary: { connected: true, token: 'fixture-token' } } : {}
       )
-      endpoint = instance_double(Legion::Crypt::VaultClient)
+      endpoint = instance_double(Legion::Crypt::Vault::Client)
       allow(described_class).to receive(:vault_client).and_return(endpoint)
       mounts = { 'private' => {}, nil => {} }
       clients = mounts.transform_values do |records|

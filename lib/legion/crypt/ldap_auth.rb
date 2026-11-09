@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
-require 'legion/crypt/vault_operation'
+require 'legion/crypt/vault/operation'
 
 module Legion
   module Crypt
@@ -14,7 +14,7 @@ module Legion
         config = clusters.fetch(cluster_name)
         log.info "LDAP login requested user=#{username} cluster=#{cluster_name}"
         client = vault_client(cluster_name)
-        secret = Legion::Crypt::VaultOperation.with_timeout do
+        secret = Legion::Crypt::Vault::Operation.with_timeout do
           client.logical.write(path: "auth/ldap/login/#{username}", data: { password: password })
         end
         auth = secret.auth

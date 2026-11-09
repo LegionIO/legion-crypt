@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'legion/crypt/vault_jwt_auth'
+require 'legion/crypt/vault/jwt_auth'
 
-RSpec.describe Legion::Crypt::VaultJwtAuth do
+RSpec.describe Legion::Crypt::Vault::JwtAuth do
   let(:sample_jwt) { 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ3b3JrZXIifQ.sig' }
   let(:vault_token) { 'hvs.jwt-token' }
   let(:stubs) { Faraday::Adapter::Test::Stubs.new }

@@ -36,7 +36,7 @@ RSpec.describe Legion::Crypt do
   end
 
   let(:logical_double) { double('Vault::Logical') }
-  let(:sys_double)     { instance_double(Legion::Crypt::VaultClient::Sys) }
+  let(:sys_double)     { instance_double(Legion::Crypt::Vault::Client::Sys) }
   let(:vault_client) { double('Vault::Client', logical: logical_double, sys: sys_double) }
   let(:manager) { Legion::Crypt::LeaseManager.instance }
 

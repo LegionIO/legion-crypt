@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'legion/crypt/vault_client'
+require 'legion/crypt/vault/client'
 require 'tempfile'
 
-RSpec.describe Legion::Crypt::VaultClient do
+RSpec.describe Legion::Crypt::Vault::Client do
   let(:address) { 'https://vault.example:8200' }
   let(:client) { described_class.new(address: address, token: 'initial-token', namespace: 'tenant/team') }
   let(:stubs) { Faraday::Adapter::Test::Stubs.new }

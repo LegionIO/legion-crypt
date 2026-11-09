@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'legion/crypt/vault_kerberos_auth'
+require 'legion/crypt/vault/kerberos_auth'
 
-RSpec.describe Legion::Crypt::VaultKerberosAuth do
+RSpec.describe Legion::Crypt::Vault::KerberosAuth do
   let(:spnego_token) { 'fake-spnego-base64' }
   let(:vault_token) { 'hvs.kerberos-token' }
   let(:stubs) { Faraday::Adapter::Test::Stubs.new }

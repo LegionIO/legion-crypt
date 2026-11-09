@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'legion/crypt/vault_entity'
+require 'legion/crypt/vault/entity'
 
-RSpec.describe Legion::Crypt::VaultEntity do
+RSpec.describe Legion::Crypt::Vault::Entity do
   let(:stubs) { Faraday::Adapter::Test::Stubs.new }
   let(:connection) { Faraday.new { |builder| builder.adapter :test, stubs } }
-  let(:client) { Legion::Crypt::VaultClient.new(address: 'http://vault.example:8200', token: 'owner-token', namespace: 'owner') }
+  let(:client) { Legion::Crypt::Vault::Client.new(address: 'http://vault.example:8200', token: 'owner-token', namespace: 'owner') }
   let(:lease_manager) { instance_double(Legion::Crypt::LeaseManager, vault_logical: client.logical) }
   let(:principal_id) { 'user@example.com' }
   let(:canonical_name) { 'user-example-com' }
