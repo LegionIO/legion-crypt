@@ -4,6 +4,7 @@ source 'https://rubygems.org'
 
 gemspec
 group :test do
+  gem 'legionio', '~> 1.9.52', require: false
   gem 'rake'
   gem 'rspec'
   gem 'rspec_junit_formatter'

@@ -324,6 +324,8 @@ Specs mirror implementation paths and filenames exactly: `lib/legion/crypt/vault
 
 Require and use real gemspec dependencies rather than mocking them. `spec/spec_helper.rb` requires `legion-settings` and its resolver, isolates the settings root, and installs complete Crypt defaults for each example. The original settings state is restored afterward, including when an example replaces the loader root.
 
+The test bundle also declares `legionio` for the legacy `Vault::Renewer` specs. Isolated Ruby subprocesses exercise the real periodic actor, cancellation lifecycle, and Vault HTTP client against a local service fixture without loading optional Core/transport components into unrelated examples. This is a development/test dependency only; Crypt's runtime gemspec does not depend on Core, and no running Vault service is required.
+
 Set individual properties through `Legion::Settings[:crypt][...]`. For replacement-tree scenarios, start from `Legion::Crypt::Settings.default`, modify the needed nested properties, then install it with `Legion::Settings.set_prop(:crypt, configuration)`. Do not replace nested defaults with partial hashes, or stub Settings, its loader, resolver, or returned settings hashes. Keep settings changes within the example lifecycle.
 
 Use real libraries with local service fixtures or supported test adapters for external I/O. Preserve security-sensitive behavior: test failure propagation and lifecycle transitions, never expose secrets in test output.
