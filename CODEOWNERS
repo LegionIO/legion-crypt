@@ -11,9 +11,9 @@
 
 # Vault integration
 # lib/legion/crypt/vault.rb @Esity @future-security-team
-# lib/legion/crypt/vault_jwt_auth.rb @Esity @future-security-team
-# lib/legion/crypt/vault_renewer.rb @Esity @future-security-team
-# lib/legion/crypt/vault_cluster.rb @Esity @future-security-team
+# lib/legion/crypt/vault/jwt_auth.rb @Esity @future-security-team
+# lib/legion/crypt/vault/renewer.rb @Esity @future-security-team
+# lib/legion/crypt/vault/cluster.rb @Esity @future-security-team
 # lib/legion/crypt/lease_manager.rb @Esity @future-security-team
 
 # JWT and JWKS
@@ -22,7 +22,7 @@
 
 # Auth integrations
 # lib/legion/crypt/ldap_auth.rb @Esity @future-security-team
-# lib/legion/crypt/vault_kerberos_auth.rb @Esity @future-security-team
+# lib/legion/crypt/vault/kerberos_auth.rb @Esity @future-security-team
 
 # Cluster secret
 # lib/legion/crypt/cluster_secret.rb @Esity @future-security-team

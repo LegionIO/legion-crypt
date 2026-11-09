@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'legion/settings/resolver'
 require 'legion/crypt/tls'
 
 RSpec.describe Legion::Crypt::TLS do
@@ -127,24 +128,21 @@ RSpec.describe Legion::Crypt::TLS do
   end
 
   describe 'vault URI resolution' do
-    it 'resolves vault:// URIs when resolver is available' do
-      resolver = class_double('Legion::Settings::Resolver')
-      stub_const('Legion::Settings::Resolver', resolver)
-      allow(resolver).to receive(:resolve_value).with('vault://pki/issue/legion#certificate').and_return('/tmp/resolved.crt')
-      allow(resolver).to receive(:resolve_value).with('/tmp/ca.crt').and_return('/tmp/ca.crt')
-      allow(resolver).to receive(:resolve_value).with('/tmp/k.key').and_return('/tmp/k.key')
+    it 'resolves vault:// URIs to configured material through the Vault read API' do
+      Legion::Settings[:crypt][:vault][:connected] = true
+      allow(Legion::Crypt).to receive(:read).with('pki/issue/legion').and_return(
+        { certificate: 'resolved-certificate' }
+      )
 
       result = described_class.resolve({
-                                         ca:   '/tmp/ca.crt',
+                                         ca:   'vault://pki/issue/legion#certificate',
                                          cert: 'vault://pki/issue/legion#certificate',
-                                         key:  '/tmp/k.key'
+                                         key:  '/tmp/client.key'
                                        })
-      expect(result[:cert]).to eq '/tmp/resolved.crt'
-    end
 
-    it 'passes through when resolver is not available' do
-      result = described_class.resolve({ ca: 'vault://pki/ca' })
-      expect(result[:ca]).to eq 'vault://pki/ca'
+      expect(result[:ca]).to eq 'resolved-certificate'
+      expect(result[:cert]).to eq 'resolved-certificate'
+      expect(result[:key]).to eq '/tmp/client.key'
     end
   end
 

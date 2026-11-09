@@ -1,16 +1,18 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'legion/crypt/vault_jwt_auth'
+require 'legion/crypt/vault/jwt_auth'
 
-RSpec.describe Legion::Crypt::VaultJwtAuth do
+RSpec.describe Legion::Crypt::Vault::JwtAuth do
   let(:sample_jwt) { 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ3b3JrZXIifQ.sig' }
   let(:vault_token) { 'hvs.jwt-token' }
   let(:stubs) { Faraday::Adapter::Test::Stubs.new }
   let(:connection) { Faraday.new { |builder| builder.adapter :test, stubs } }
   let(:config) do
-    { protocol: 'http', address: 'vault.example', port: 8200, token: 'old-token',
-      vault_namespace: 'team', connected: true, clusters: {} }
+    Legion::Crypt::Settings.vault.merge(
+      protocol: 'http', address: 'vault.example', port: 8200, token: 'old-token',
+      vault_namespace: 'team', connected: true, clusters: {}
+    )
   end
   let(:auth_body) do
     Legion::JSON.dump(auth: { client_token: vault_token, lease_duration: 3600, renewable: true,

@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 require 'legion/crypt/erasure'
-require 'legion/crypt/vault_client'
+require 'legion/crypt/vault/client'
 
 RSpec.describe Legion::Crypt::Erasure do
   before do

@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
-require 'legion/crypt/vault_operation'
-require 'legion/crypt/vault_client'
+require 'legion/crypt/vault/operation'
+require 'legion/crypt/vault/client'
 
 module Legion
   module Crypt
@@ -11,15 +11,10 @@ module Legion
 
       attr_accessor :sessions
 
-      def settings
-        Legion::Settings[:crypt][:vault]
-      end
-
       def connect_vault
         return unless start_session_tracking
 
         configuration = Legion::Settings[:crypt][:vault]
-        configuration[:token] = ENV['VAULT_DEV_ROOT_TOKEN_ID'] if ENV.key? 'VAULT_DEV_ROOT_TOKEN_ID'
         return nil if configuration[:token].nil?
 
         client = vault_client
@@ -119,7 +114,7 @@ module Legion
       end
 
       def close_sessions(deadline: nil)
-        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + VaultOperation::SHUTDOWN_TIMEOUT
+        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::Vault::Operation::SHUTDOWN_TIMEOUT
         pending = session_mutex.synchronize do
           @sessions_stopped = true
           @session_generation = (@session_generation || 0) + 1
@@ -132,7 +127,7 @@ module Legion
         pending.each do |session|
           break if ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) >= deadline
 
-          VaultOperation.with_timeout(deadline: deadline) { close_session(session: session) }
+          Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { close_session(session: session) }
           closed << session
         rescue StandardError => e
           handle_exception(e, level: :error, operation: 'crypt.vault.close_session')
@@ -175,7 +170,7 @@ module Legion
         pending.each do |session|
           break unless session_maintenance_active?(generation: generation)
 
-          VaultOperation.with_timeout { renew_session(session: session) }
+          Legion::Crypt::Vault::Operation.with_timeout { renew_session(session: session) }
           renewed << session
         rescue StandardError => e
           handle_exception(e, level: :error, operation: 'crypt.vault.renew_session')
@@ -192,7 +187,7 @@ module Legion
         connected_clusters.each_key do |name|
           break unless session_maintenance_active?(generation: generation)
 
-          VaultOperation.with_timeout { vault_client(name).auth_token.renew_self }
+          Legion::Crypt::Vault::Operation.with_timeout { vault_client(name).auth_token.renew_self }
           renewed << name
           log.info "Vault token renewed for cluster #{name}"
         rescue StandardError => e

@@ -4,7 +4,7 @@ require 'spec_helper'
 require 'legion/crypt/kerberos_auth'
 
 RSpec.describe Legion::Crypt::KerberosAuth do
-  let(:vault_client) { instance_double(Legion::Crypt::VaultClient) }
+  let(:vault_client) { instance_double(Legion::Crypt::Vault::Client) }
   let(:vault_token) { 'hvs.kerberos-token' }
   let(:auth_hash) do
     {
@@ -212,7 +212,7 @@ RSpec.describe Legion::Crypt::KerberosAuth do
       expect(described_class.kerberos_principal).to be_nil
 
       active = false
-      current_client = instance_double(Legion::Crypt::VaultClient, put: { auth: auth_hash.merge(metadata: { username: 'current-user' }) })
+      current_client = instance_double(Legion::Crypt::Vault::Client, put: { auth: auth_hash.merge(metadata: { username: 'current-user' }) })
       described_class.login(vault_client: current_client, service_principal: 'HTTP/vault.example.com')
       release << true
       raise 'Kerberos login did not finish' unless worker.join(1)

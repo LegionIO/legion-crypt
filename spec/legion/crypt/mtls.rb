@@ -17,59 +17,40 @@ RSpec.describe Legion::Crypt::Mtls do
     )
   end
 
-  before do
-    allow(Legion::Settings).to receive(:[]).and_call_original
-    allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-      { mtls: { enabled: false, vault_pki_path: 'pki/issue/legion-internal', cert_ttl: '24h' } }
-    )
+  around do |example|
+    original = Legion::Settings[:crypt]
+    Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default)
+    example.run
+  ensure
+    Legion::Settings.set_prop(:crypt, original)
   end
 
-  describe '.enabled?' do
-    it 'returns false when security.mtls.enabled is false' do
-      expect(described_class.enabled?).to be false
-    end
-
-    it 'returns true when security.mtls.enabled is true' do
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-        { mtls: { enabled: true, vault_pki_path: 'pki/issue/legion-internal', cert_ttl: '24h' } }
-      )
-      expect(described_class.enabled?).to be true
-    end
-
-    it 'returns false when security settings are missing' do
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(nil)
-      expect(described_class.enabled?).to be false
-    end
-  end
-
-  describe '.pki_path' do
-    it 'reads from settings' do
-      expect(described_class.pki_path).to eq 'pki/issue/legion-internal'
-    end
-
-    it 'defaults to pki/issue/legion-internal when setting is nil' do
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return({ mtls: {} })
-      expect(described_class.pki_path).to eq 'pki/issue/legion-internal'
-    end
-
-    it 'returns default when security is nil' do
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(nil)
-      expect(described_class.pki_path).to eq 'pki/issue/legion-internal'
+  describe 'live security policy' do
+    it 'honors explicit disabled policy after replacing the settings tree' do
+      Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default.merge(mtls: { enabled: true }))
+      expect(described_class.enabled?).to be(true)
+      Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default.merge(mtls: { enabled: false }))
+      expect(described_class.enabled?).to be(false)
     end
   end
 
   describe '.local_ip' do
-    it 'returns a string' do
-      expect(described_class.local_ip).to be_a(String)
+    it 'uses loopback when interface discovery fails operationally' do
+      allow(Socket).to receive(:ip_address_list).and_raise(Errno::ENETDOWN)
+
+      expect(described_class.local_ip).to eq('127.0.0.1')
     end
 
-    it 'returns a non-empty address' do
-      expect(described_class.local_ip).not_to be_empty
+    it 'propagates programming errors instead of issuing certificates for loopback' do
+      failure = NoMethodError.new('invalid interface discovery call')
+      allow(Socket).to receive(:ip_address_list).and_raise(failure)
+
+      expect { described_class.local_ip }.to(raise_error { |error| expect(error).to equal(failure) })
     end
   end
 
   describe '.issue_cert' do
-    let(:vault_logical) { instance_double(Legion::Crypt::VaultClient::Logical) }
+    let(:vault_logical) { instance_double(Legion::Crypt::Vault::Client::Logical) }
 
     before do
       allow(Legion::Crypt).to receive(:vault_client).and_return(double('core Vault client', logical: vault_logical))

@@ -8,13 +8,21 @@ RSpec.describe Legion::Crypt::CertRotation do
   subject(:rotation) { described_class.new }
 
   let(:cert_data) { { cert: 'certificate', key: 'private-key', ca_chain: [], serial: 'original', expiry: Time.now + 86_400 } }
-  let(:security) { { mtls: { enabled: true, renewal_window: 0.5 } } }
+  let(:crypt_settings) { { mtls: { enabled: true, renewal_window: 0.5 } } }
   let(:events) { Queue.new }
 
+  around do |example|
+    original_crypt = Legion::Settings[:crypt]
+    original_client = Legion::Settings[:client]
+    Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default.merge(crypt_settings))
+    Legion::Settings.set_prop(:client, { name: 'test-node' })
+    example.run
+  ensure
+    Legion::Settings.set_prop(:crypt, original_crypt)
+    Legion::Settings.set_prop(:client, original_client)
+  end
+
   before do
-    allow(Legion::Settings).to receive(:[]).and_call_original
-    allow(Legion::Settings).to receive(:[]).with(:security).and_return(security)
-    allow(Legion::Settings).to receive(:[]).with(:client).and_return(name: 'test-node')
     allow(Legion::Crypt::Mtls).to receive(:issue_cert).and_return(cert_data)
     stub_const('Legion::Events', double('Events'))
     allow(Legion::Events).to receive(:emit) { |name, **payload| events << [name, payload] }
@@ -82,7 +90,7 @@ RSpec.describe Legion::Crypt::CertRotation do
   end
 
   it 'honors the configured fraction of remaining certificate lifetime' do
-    security[:mtls][:renewal_window] = 0.25
+    crypt_settings[:mtls][:renewal_window] = 0.25
     issued = Time.now
     allow(Time).to receive(:now).and_return(issued)
     allow(Legion::Crypt::Mtls).to receive(:issue_cert).and_return(cert_data.merge(expiry: issued + 100))
@@ -91,6 +99,12 @@ RSpec.describe Legion::Crypt::CertRotation do
     expect(rotation.needs_renewal?).to be(false)
     allow(Time).to receive(:now).and_return(issued + 75)
     expect(rotation.needs_renewal?).to be(true)
+  end
+
+  it 'rejects false renewal policy instead of silently using a default' do
+    rotation.rotate!
+    Legion::Settings.set_prop(:crypt, Legion::Crypt::Settings.default.merge(mtls: { enabled: true, renewal_window: false }))
+    expect { rotation.needs_renewal? }.to raise_error(ArgumentError)
   end
 
   it 'backs off failed issuance without spinning and caps successive retry delays' do
@@ -154,7 +168,7 @@ RSpec.describe Legion::Crypt::CertRotation do
   end
 
   it 'does not request certificates when mTLS is disabled' do
-    security[:mtls][:enabled] = false
+    crypt_settings[:mtls][:enabled] = false
     expect(Legion::Crypt::Mtls).not_to receive(:issue_cert)
     rotation.start
     expect(rotation.running?).to be(false)

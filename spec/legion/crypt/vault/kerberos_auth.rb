@@ -1,16 +1,18 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'legion/crypt/vault_kerberos_auth'
+require 'legion/crypt/vault/kerberos_auth'
 
-RSpec.describe Legion::Crypt::VaultKerberosAuth do
+RSpec.describe Legion::Crypt::Vault::KerberosAuth do
   let(:spnego_token) { 'fake-spnego-base64' }
   let(:vault_token) { 'hvs.kerberos-token' }
   let(:stubs) { Faraday::Adapter::Test::Stubs.new }
   let(:connection) { Faraday.new { |builder| builder.adapter :test, stubs } }
   let(:config) do
-    { protocol: 'http', address: 'vault.example', port: 8200, token: 'old-token',
-      vault_namespace: 'team', connected: true, clusters: {} }
+    Legion::Crypt::Settings.vault.merge(
+      protocol: 'http', address: 'vault.example', port: 8200, token: 'old-token',
+      vault_namespace: 'team', connected: true, clusters: {}
+    )
   end
   let(:auth_body) do
     Legion::JSON.dump(auth: { client_token: vault_token, lease_duration: 3600, renewable: true,

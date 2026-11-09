@@ -2,8 +2,8 @@
 
 require 'legion/logging/helper'
 require 'legion/crypt/kerberos_auth'
-require 'legion/crypt/vault_operation'
-require 'legion/crypt/vault_client'
+require 'legion/crypt/vault/operation'
+require 'legion/crypt/vault/client'
 
 module Legion
   module Crypt
@@ -57,7 +57,7 @@ module Legion
       end
 
       def stop(deadline: nil)
-        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + VaultOperation::SHUTDOWN_TIMEOUT
+        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::Vault::Operation::SHUTDOWN_TIMEOUT
         @state_mutex.synchronize do
           return if @stopping
 
@@ -86,7 +86,7 @@ module Legion
         deadline = @state_mutex.synchronize do
           ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + (@expires_at - Time.now) if @expires_at
         end
-        VaultOperation.with_timeout(deadline: deadline) do
+        Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) do
           result = @vault_client.auth_token.renew_self
           @state_mutex.synchronize do
             return false unless active_generation?(generation: generation)
@@ -133,7 +133,7 @@ module Legion
             true
           end
         end
-        VaultOperation.with_timeout do
+        Legion::Crypt::Vault::Operation.with_timeout do
           result = Legion::Crypt::KerberosAuth.login(
             vault_client:      @vault_client,
             service_principal: krb_config[:service_principal],
@@ -307,7 +307,7 @@ module Legion
         end
         return unless owned_token
 
-        VaultOperation.with_timeout(deadline: deadline) { @vault_client.auth_token.revoke_self }
+        Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { @vault_client.auth_token.revoke_self }
         log.info("TokenRenewer[#{@cluster_name}]: Vault token revoked")
       rescue StandardError => e
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.revoke_token', cluster_name: @cluster_name)

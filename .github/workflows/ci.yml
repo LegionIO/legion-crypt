@@ -6,29 +6,56 @@ on:
   schedule:
     - cron: '0 9 * * 1'
 
+permissions: {}
+
 jobs:
   ci:
-    uses: LegionIO/.github/.github/workflows/ci.yml@main
+    permissions:
+      contents: read
+    uses: LegionIO/.github/.github/workflows/ci.yml@e0fc7364b73f446d4cb9bdc162a66ed34bf0daa7
+    with:
+      companion-gems: ${{ github.event_name == 'pull_request' && '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"8e73a9ef3c13958e3e1e7fc98532e41283159706"}}' || '{}' }}
 
   lint:
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
     uses: LegionIO/.github/.github/workflows/lint-patterns.yml@main
 
   security:
-    uses: LegionIO/.github/.github/workflows/security-scan.yml@main
+    permissions:
+      contents: read
+      security-events: write
+    uses: LegionIO/.github/.github/workflows/security-scan.yml@e0fc7364b73f446d4cb9bdc162a66ed34bf0daa7
+    with:
+      companion-gems: ${{ github.event_name == 'pull_request' && '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"8e73a9ef3c13958e3e1e7fc98532e41283159706"}}' || '{}' }}
 
   version-changelog:
+    permissions:
+      contents: read
+      pull-requests: read
     uses: LegionIO/.github/.github/workflows/version-changelog.yml@main
 
   dependency-review:
+    permissions:
+      contents: read
+      pull-requests: write
     uses: LegionIO/.github/.github/workflows/dependency-review.yml@main
 
   stale:
     if: github.event_name == 'schedule'
+    permissions:
+      issues: write
+      pull-requests: write
     uses: LegionIO/.github/.github/workflows/stale.yml@main
 
   release:
     needs: [ci, lint]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: write
     uses: LegionIO/.github/.github/workflows/release.yml@main
     secrets:
       rubygems-api-key: ${{ secrets.RUBYGEMS_API_KEY }}

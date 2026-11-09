@@ -19,10 +19,7 @@ RSpec.describe Legion::Crypt::Spiffe::SvidRotation do
   let(:mock_client) { instance_double(Legion::Crypt::Spiffe::WorkloadApiClient, fetch_x509_svid: mock_svid) }
 
   before do
-    allow(Legion::Settings).to receive(:[]).and_call_original
-    allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-      { spiffe: { enabled: true, socket_path: '/tmp/fake.sock', trust_domain: 'test.local' } }
-    )
+    Legion::Settings.set_prop(:security, { spiffe: { enabled: true, socket_path: '/tmp/fake.sock', trust_domain: 'test.local' } })
   end
 
   subject(:rotation) { described_class.new(check_interval: 60, client: mock_client) }
@@ -89,9 +86,7 @@ RSpec.describe Legion::Crypt::Spiffe::SvidRotation do
 
   describe '#start and #stop' do
     it 'does not start when SPIFFE is disabled' do
-      allow(Legion::Settings).to receive(:[]).with(:security).and_return(
-        { spiffe: { enabled: false } }
-      )
+      Legion::Settings[:security][:spiffe][:enabled] = false
       rotation.start
       expect(rotation.running?).to be false
     end

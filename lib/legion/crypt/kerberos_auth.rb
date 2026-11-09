@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
-require 'legion/crypt/vault_client'
+require 'legion/crypt/vault/client'
 
 module Legion
   module Crypt
@@ -94,7 +94,7 @@ module Legion
             body:    '{}',
             headers: { 'Authorization' => "Negotiate #{spnego_token}" }
           )
-          response = Legion::Crypt::VaultClient::Secret.decode(data: json)
+          response = Legion::Crypt::Vault::Client::Secret.decode(data: json)
           raise AuthError, 'Vault Kerberos auth returned no auth data' unless response&.auth
 
           auth = response.auth

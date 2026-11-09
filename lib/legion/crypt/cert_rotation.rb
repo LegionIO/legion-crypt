@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
-require 'legion/crypt/vault_operation'
+require 'legion/crypt/vault/operation'
 
 module Legion
   module Crypt
@@ -53,8 +53,8 @@ module Legion
           @wake.broadcast
           @thread
         end
-        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::VaultOperation::SHUTDOWN_TIMEOUT
-        Legion::Crypt::VaultOperation.with_timeout(deadline: deadline) { thread.join } if thread && thread != Thread.current
+        deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::Vault::Operation::SHUTDOWN_TIMEOUT
+        Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { thread.join } if thread && thread != Thread.current
         @mutex.synchronize { @thread = nil if @thread.equal?(thread) && !thread&.alive? }
         log.info('[mTLS] CertRotation stopped')
       rescue StandardError => e
@@ -67,7 +67,7 @@ module Legion
 
       def rotate!(generation: nil)
         generation ||= @mutex.synchronize { @generation }
-        new_cert = Legion::Crypt::VaultOperation.with_timeout { Legion::Crypt::Mtls.issue_cert(common_name: node_common_name) }
+        new_cert = Legion::Crypt::Vault::Operation.with_timeout { Legion::Crypt::Mtls.issue_cert(common_name: node_common_name) }
         issued_at = Time.now
         raise 'Vault PKI returned an expired certificate' unless new_cert[:expiry] > issued_at
 
@@ -133,31 +133,17 @@ module Legion
       end
 
       def renewal_window
-        return 0.5 unless defined?(Legion::Settings)
-
-        security = Legion::Settings[:security]
-        return 0.5 if security.nil?
-
-        mtls = security[:mtls] || security['mtls'] || {}
-        window = mtls[:renewal_window] || mtls['renewal_window'] || 0.5
+        window = Legion::Settings[:crypt][:mtls][:renewal_window]
         unless window.is_a?(Numeric) && window.finite? && window >= 0 && window < 1
           raise ArgumentError, 'Certificate renewal window must be finite and between zero and one (exclusive)'
         end
 
         window
-      rescue StandardError => e
-        handle_exception(e, level: :debug, operation: 'crypt.cert_rotation.renewal_window')
-        0.5
       end
 
       def node_common_name
-        return 'legion.internal' unless defined?(Legion::Settings)
-
-        name = Legion::Settings[:client]&.dig(:name) || Legion::Settings[:client]&.dig('name')
-        name || 'legion.internal'
-      rescue StandardError => e
-        handle_exception(e, level: :debug, operation: 'crypt.cert_rotation.node_common_name')
-        'legion.internal'
+        name = Legion::Settings.dig(:client, :name)
+        name.nil? ? 'legion.internal' : name
       end
 
       def emit_rotated_event(cert)

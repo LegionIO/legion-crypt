@@ -15,8 +15,7 @@ RSpec.describe Legion::Crypt::Cipher do
   it 'uses a replacement settings secret instead of the previous derived key' do
     previous = @crypt.encrypt('before reload')
     configuration = Legion::Settings[:crypt].merge(cluster_secret: SecureRandom.hex(32), cs_encrypt_ready: false)
-    allow(Legion::Settings).to receive(:[]).and_call_original
-    allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(configuration)
+    Legion::Settings.set_prop(:crypt, configuration)
 
     current = @crypt.encrypt('after reload')
     expect(@crypt.decrypt(current[:enciphered_message], current[:iv])).to eq('after reload')

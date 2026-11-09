@@ -1,5 +1,33 @@
 # Legion::Crypt
 
+## [1.5.42] - 2026-11-08
+
+### Changed
+- Move Vault client, cluster routing, operation deadlines, entity management, JWT/Kerberos authentication, and the legacy renewal actor into `lib/legion/crypt/vault/` with matching `Legion::Crypt::Vault::*` namespaces.
+- Update library consumers, specs, and current documentation to the nested require paths and constants; remove the old flat paths without compatibility aliases. Core SPNEGO acquisition and `TokenRenewer` remain in their existing locations.
+- Mirror implementation paths and literal filenames under `spec/`, consolidating root Crypt API examples without dropping coverage. Configure RSpec discovery for the mirrored layout and prioritize `lib/` on the load path to prevent spec files from shadowing production requires.
+
+## [1.5.41] - 2026-11-07
+
+### Fixed
+- Propagate programming errors from Vault connectivity, bootstrap credential acquisition/revocation, lease and SPIFFE startup orchestration, and mTLS interface discovery instead of concealing them as disconnected or fallback states.
+- Handle declared operational failures through structured warning-level exceptions without duplicate raw exception logs; report invalid SPIFFE IDs at warning level.
+
+### Changed
+- Accept extra keyword context on touched startup, credential, and SVID APIs and fully qualify sibling Crypt constants. Preserve mode-specific credential selection and certificate SAN/TTL behavior; fixed role mappings remain frozen constants.
+
+## [1.5.40] - 2026-11-07
+
+### Fixed
+- Use direct core settings reads for Vault connectivity, lease startup, JWT operations, and mTLS PKI paths; remove settings-only JWT/PKI accessors and preserve complete, isolated defaults in their specs.
+- Exercise the real `legion-settings` dependency throughout specs, including resolver and loader rebuild behavior; isolate mutable settings between examples instead of mocking the dependency.
+
+## [1.5.39] - 2026-11-01
+
+### Fixed
+- Read crypto runtime configuration from live `Legion::Settings` instead of fallback settings wrappers; register Crypt defaults at boot and require Settings >= 1.4.2 without changing lease-reference publication.
+- Honor live JWT verification flags, key-derivation configuration, Vault operation budgets, and mTLS/SPIFFE policy; reject invalid renewal windows rather than silently substituting defaults. Vault environment tokens supply boot defaults only, never overwrite explicit runtime configuration.
+
 ## [1.5.38] - 2026-10-31
 
 ### Fixed

@@ -26,6 +26,10 @@ Legion::Crypt.decrypt(encrypted[:enciphered_message], encrypted[:iv])
 
 Authenticated ciphertext requires a full 16-byte GCM tag. Saved RSA private keys are created with `0600` permissions; existing files are restricted before writing.
 
+`Legion::Crypt.start(mode: nil, **)` accepts extra keyword context. With `mode: :infra`, an existing PostgreSQL lease uses `postgresql/creds/infra` without mutating its configured path; other modes preserve the configured path. The mode-to-role mapping is a fixed framework convention, not an operator setting.
+
+Vault connectivity inspection propagates errors rather than reporting broken configuration as disconnected. Startup orchestration and bootstrap credential handling recover only from their declared operational failures, using `handle_exception` at warning level; programming errors propagate to callers.
+
 ### Cluster secret readiness
 
 Discovery checks settings, Vault, and then peers. Random generation requires confirmed empty-cluster membership, the lite transport adapter, or standalone operation (no transport loaded or transport explicitly disabled). Disconnected or unknown cluster membership does not authorize a competing key.
@@ -72,10 +76,16 @@ Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh
 
 ## Configuration
 
+Crypt requires `legion-settings` >= 1.4.2. Requiring `legion/crypt` registers its defaults once; runtime reads use the live `Legion::Settings[:crypt]` tree, including replacement trees and request overlays. The partial configuration example below shows the `crypt` section; `lib/legion/crypt/settings.rb` is the authoritative source for all defaults. Configure it through `Legion::Settings`, not the removed `Legion::Crypt.settings`, `.vault_settings`, or `.jwt_settings` accessors. `VAULT_DEV_ROOT_TOKEN_ID` and `VAULT_TOKEN_ID` provide boot defaults; they do not overwrite an explicit live Vault token.
+
+`crypt.mtls` owns the mTLS defaults registered by this gem. Certificate issuance reads `Legion::Settings[:crypt][:mtls][:vault_pki_path]` directly; the `Legion::Crypt::Mtls.pki_path` accessor is removed. `security.spiffe` remains Core-owned optional configuration with its existing absent-field defaults. Explicit false policy is never replaced by a truthy fallback. Renewal windows must be finite numbers from zero (inclusive) to one (exclusive).
+
+After an explicit full `Legion::Settings.reset!`, standalone callers and tests must bootstrap again with `Legion::Settings.register_library(:crypt, Legion::Crypt::Settings.default)` before using configured crypto APIs. Runtime reads do not repair missing registration. Lease binding transactions and credential publication continue to mutate their intended raw settings roots, not request-overlay copies.
+
 ```json
 {
   "vault": {
-    "enabled": false,
+    "enabled": true,
     "protocol": "http",
     "address": "localhost",
     "port": 8200,
@@ -84,8 +94,8 @@ Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh
     "renewer_time": 5,
     "renewer": true,
     "operation_timeout": 5,
-    "push_cluster_secret": true,
-    "read_cluster_secret": true,
+    "push_cluster_secret": false,
+    "read_cluster_secret": false,
     "kv_path": "legion",
     "leases": {}
   },
@@ -96,6 +106,12 @@ Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh
     "issuer": "legion",
     "verify_expiration": true,
     "verify_issuer": true
+  },
+  "mtls": {
+    "enabled": false,
+    "vault_pki_path": "pki/issue/legion-internal",
+    "cert_ttl": "24h",
+    "renewal_window": 0.5
   },
   "cs_encrypt_ready": false,
   "dynamic_keys": true,
@@ -114,9 +130,9 @@ Public keys are cached for 1 hour. Concurrent misses for one URL share a refresh
 
 ### Vault Integration
 
-When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. Vault requests use the core-owned `Legion::Crypt::VaultClient`, built on Faraday and `Legion::JSON`; neither vault-ruby nor a LEX extension is required. Responses have symbol keys, including with JSON 3.
+When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. Vault requests use the core-owned `Legion::Crypt::Vault::Client`, built on Faraday and `Legion::JSON`; neither vault-ruby nor a LEX extension is required. Responses have symbol keys, including with JSON 3.
 
-`Legion::Crypt.vault_client` returns the cached default client; pass a cluster name for an explicit client. Its logical, KV, and lease endpoints use keyword arguments and ignore extra keywords while still enforcing required arguments. Existing high-level Crypt and LeaseManager call signatures are unchanged:
+`Legion::Crypt.vault_client` returns the cached default client; pass a cluster name for an explicit client. Its logical, KV, and lease endpoints use keyword arguments and ignore extra keywords while still enforcing required arguments:
 
 ```ruby
 client = Legion::Crypt.vault_client
@@ -143,14 +159,16 @@ The `LeaseManager` handles dynamic secrets from any Vault secrets engine (databa
   "crypt": {
     "vault": {
       "leases": {
-        "rabbitmq": { "path": "rabbitmq/creds/legion-role" },
-        "bedrock":  { "path": "aws/creds/bedrock-role" },
-        "postgres": { "path": "database/creds/apollo-rw" }
+        "rabbitmq":   { "path": "rabbitmq/creds/legion-role" },
+        "bedrock":    { "path": "aws/creds/bedrock-role" },
+        "postgresql": { "path": "postgresql/creds/node" }
       }
     }
   }
 }
 ```
+
+`postgresql` is the lease name recognized by `Legion::Crypt.start(mode: :infra)` for role selection. Other lease names retain their configured paths.
 
 Other settings files reference lease data using `lease://name#key`:
 
@@ -193,7 +211,7 @@ Release Crypt before Settings. Older `register_ref` callers remain supported, bu
 
 ## Multi-Cluster Vault
 
-`VaultCluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `Legion::Crypt::VaultClient` instance.
+`Legion::Crypt::Vault::Cluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `Legion::Crypt::Vault::Client` instance.
 
 Clients are reused only while their endpoint, namespace, TLS verification, and token match the current configuration. Connection changes replace the cached client without disabling lease or token owners retaining its predecessor. Displaced clients are weakly tracked, so the cache does not keep unused clients alive; shutdown permanently closes all surviving clients after owner cleanup. In-place authentication token refreshes preserve the current client.
 
@@ -245,8 +263,7 @@ JWT and Kerberos `login!` use the same grant lifecycle: token, TTL, expiry, rene
 
 When `crypt.vault.auth_method` is set to `kerberos`, `Crypt.start` performs Kerberos auto-auth to Vault using `KerberosAuth`:
 
-```ruby
-# Settings
+```json
 {
   "crypt": {
     "vault": {
@@ -262,29 +279,56 @@ When `crypt.vault.auth_method` is set to `kerberos`, `Crypt.start` performs Kerb
 
 The SPNEGO token is sent as an HTTP `Authorization` header (not JSON body). Kerberos auth uses the configured namespace, where the auth mount resides; configure the cluster with `"namespace": null` for a root-mounted auth method. The client namespace is not cleared or temporarily changed during authentication. Requires Homebrew MIT Kerberos (`brew install krb5`) on macOS — the system Heimdal library is not compatible.
 
-`TokenRenewer` keeps the Vault token alive: renews at 75% TTL, re-auths via Kerberos if renewal fails, uses exponential backoff.
+`Legion::Crypt::TokenRenewer` renews renewable tokens at 75% TTL and retries transient failures with backoff. Only Kerberos-authenticated grants can reauthenticate through Kerberos. JWT and LDAP grants require another login after expiry or terminal rejection.
 
 ## SPIFFE Workload API
 
 The local Unix-socket Workload API exchange has a shared 10-second monotonic deadline. Connection, HTTP/2 handshake, request writes, and flushes additionally share a 5-second setup budget; response reads use the remaining operation time. Availability probes are bounded to 5 seconds, and failed exchanges close acquired sockets.
 
-Responses may split the gRPC prefix or body across HTTP/2 DATA frames and socket reads. JWT-SVID audiences use protobuf varint lengths, including audiences of 128 bytes or longer. X.509 fallback remains opt-in; JWT-SVID failures raise `Spiffe::SvidError`.
+Responses may split the gRPC prefix or body across HTTP/2 DATA frames and socket reads. JWT-SVID audiences use protobuf varint lengths, including audiences of 128 bytes or longer. X.509 fallback remains opt-in; JWT-SVID failures raise `Legion::Crypt::Spiffe::SvidError`.
 
 ## mTLS
 
-`Crypt::Mtls` issues mTLS certificates from Vault PKI. When `security.mtls.enabled` is true, `Legion::Service` owns a `Crypt::CertRotation` worker. The worker renews at expiry minus the certificate lifetime multiplied by `security.mtls.renewal_window` (default `0.5`), rather than waiting for a fixed polling interval. Initial issuance and renewal failures retry with exponential backoff from 1 to 60 seconds; a failed renewal retains the last installed certificate. Shutdown interrupts scheduled waits, bounds in-flight issuance with the Vault operation timeout, and prevents late results from replacing the certificate.
+`Legion::Crypt::Mtls` issues mTLS certificates from Vault PKI using `crypt.mtls` configuration. `issue_cert(common_name:, alt_names: '', ttl: nil, **)` preserves caller-supplied SANs and TTL overrides while accepting extra keyword context. `Legion::Crypt::CertRotation` renews at expiry minus the certificate lifetime multiplied by `crypt.mtls.renewal_window` (default `0.5`), rather than waiting for a fixed polling interval. Initial issuance and renewal failures retry with exponential backoff from 1 to 60 seconds; a failed renewal retains the last installed certificate. Shutdown interrupts scheduled waits, bounds in-flight issuance with the Vault operation timeout, and prevents late results from replacing the certificate.
 
-`Transport::Connection::Vault` independently acquires and applies tempfile-based Bunny mTLS credentials. Certificate rotation does not itself close transport connections when a certificate expires. mTLS is disabled by default.
+`Legion::Transport::Connection::Vault` independently acquires and applies tempfile-based Bunny mTLS credentials. Certificate rotation does not itself close transport connections when a certificate expires. mTLS is disabled by default.
 
 ## Requirements
 
 - Ruby >= 3.4
+- `concurrent-ruby` (~> 1.3)
 - `ed25519` (~> 1.3)
 - `jwt` gem (>= 2.7)
 - `faraday` gem (~> 2.0)
 - `legion-json` gem (>= 1.2.0; JSON 3 supported)
+- `legion-logging` (>= 1.5.0)
+- `legion-settings` (>= 1.4.2)
 - HashiCorp Vault (optional, for secrets management)
-- `gssapi` gem (optional, required for Kerberos auth)
+- `lex-kerberos` (optional, supplies the SPNEGO helper for Kerberos auth)
+
+## Development
+
+Use the existing checkout and the full repository checks:
+
+```bash
+bundle install
+bundle exec rubocop -A
+bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt
+```
+
+Run specs against the corrected code if RuboCop changes files. On failure, inspect the failing examples in `tmp/rspec_results.json`; do not substitute a narrower suite for the full check.
+
+Specs mirror implementation paths and filenames exactly: `lib/legion/crypt/vault/client.rb` is covered by `spec/legion/crypt/vault/client.rb`, without an `_spec` suffix. Keep each spec focused on its corresponding implementation; startup, JWT convenience, and credential-scoping groups belong in `spec/legion/crypt.rb`.
+
+`.rspec` explicitly loads `spec/spec_helper.rb` and discovers `spec/legion/**/*.rb`. The helper puts `lib/` ahead of `spec/` on Ruby's load path so production requires cannot resolve to mirrored spec files. Keep support files outside the discovered implementation-spec tree.
+
+Require and use real gemspec dependencies rather than mocking them. `spec/spec_helper.rb` requires `legion-settings` and its resolver, isolates the settings root, and installs complete Crypt defaults for each example. The original settings state is restored afterward, including when an example replaces the loader root.
+
+The test bundle also declares `legionio` for the legacy `Vault::Renewer` specs. Isolated Ruby subprocesses exercise the real periodic actor, cancellation lifecycle, and Vault HTTP client against a local service fixture without loading optional Core/transport components into unrelated examples. This is a development/test dependency only; Crypt's runtime gemspec does not depend on Core, and no running Vault service is required.
+
+Set individual properties through `Legion::Settings[:crypt][...]`. For replacement-tree scenarios, start from `Legion::Crypt::Settings.default`, modify the needed nested properties, then install it with `Legion::Settings.set_prop(:crypt, configuration)`. Do not replace nested defaults with partial hashes, or stub Settings, its loader, resolver, or returned settings hashes. Keep settings changes within the example lifecycle.
+
+Use real libraries with local service fixtures or supported test adapters for external I/O. Preserve security-sensitive behavior: test failure propagation and lifecycle transitions, never expose secrets in test output.
 
 ## License
 
