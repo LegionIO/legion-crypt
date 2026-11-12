@@ -41,6 +41,8 @@ module Legion
           end
         end
 
+        # Returns the configuration the grant was published to. Settings rebuilds replace configuration
+        # hashes, so a cached client's grant is published to its live cluster configuration by name.
         def publish_vault_grant(client:, config:, grant:, auth_method:, issued_at: Time.now, **)
           token = grant.fetch(:token)
           ttl = grant[:lease_duration].to_f
@@ -51,8 +53,8 @@ module Legion
 
             if pair
               name, entry = pair
-              current_config = name.nil? ? Legion::Settings[:crypt][:vault] : clusters[name]
-              unless config.equal?(current_config) && current_vault_client?(entry: entry, signature: vault_client_signature(config: current_config))
+              config = name.nil? ? Legion::Settings[:crypt][:vault] : clusters[name]
+              unless current_vault_client?(entry: entry, signature: vault_client_signature(config: config))
                 raise IOError, 'Vault client configuration changed during authentication'
               end
             end
@@ -61,6 +63,7 @@ module Legion
             config.merge!(token: token, lease_duration: grant[:lease_duration], renewable: grant[:renewable],
                           expires_at: expires_at, connected: connected, relogin_required: !connected, auth_method: auth_method)
             entry[:signature][:token] = token&.dup&.freeze if entry
+            config
           end
         end
 

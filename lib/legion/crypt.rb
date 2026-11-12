@@ -110,12 +110,13 @@ module Legion
         lifecycle_mutex.synchronize do
           raise 'Crypt stopped during login; login must be retried' if @stopping || generation != (@token_generation || 0)
 
-          cluster_name = clusters.find { |_name, candidate| candidate.equal?(config) }&.first
+          # The client cache key names the cluster; Settings rebuilds replace configuration hashes.
+          cluster_name = vault_clients_mutex.synchronize { @vault_clients&.find { |_name, entry| entry[:client].equal?(client) }&.first }
           previous = (@token_renewers || []).find { |worker| worker.cluster_name == cluster_name }
           previous&.stop
           raise 'Previous token worker has not stopped; login must be retried' if previous&.running?
 
-          publish_vault_grant(client: client, config: config, grant: grant, auth_method: auth_method, issued_at: issued_at)
+          config = publish_vault_grant(client: client, config: config, grant: grant, auth_method: auth_method, issued_at: issued_at)
           start_token_renewer(cluster_name: cluster_name, config: config, vault_client: client)
         end
       end

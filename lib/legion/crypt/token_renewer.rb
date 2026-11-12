@@ -91,24 +91,25 @@ module Legion
           @state_mutex.synchronize do
             return false unless active_generation?(generation: generation)
 
-            @config[:lease_duration] = result.auth.lease_duration
-            @config[:renewable] = result.auth.renewable? if result.auth.respond_to?(:renewable?)
+            config = cluster_config
+            config[:lease_duration] = result.auth.lease_duration
+            config[:renewable] = result.auth.renewable? if result.auth.respond_to?(:renewable?)
             ttl = result.auth.lease_duration.to_f
             @expires_at = ttl.positive? ? Time.now + ttl : nil
-            @config[:expires_at] = @expires_at
-            @config[:connected] = true
-            @config[:relogin_required] = false
+            config[:expires_at] = @expires_at
+            config[:connected] = true
+            config[:relogin_required] = false
           end
           log.info("TokenRenewer[#{@cluster_name}]: token renewed, ttl=#{result.auth.lease_duration}s")
           true
         end
       rescue StandardError => e
         @state_mutex.synchronize do
-          if active_generation?(generation: generation) && @config[:auth_method].to_s != 'kerberos'
+          if active_generation?(generation: generation) && cluster_config[:auth_method].to_s != 'kerberos'
             @renewal_terminal = e.is_a?(Legion::Crypt::Vault::HTTPClientError) && ![408, 429].include?(e.code)
             if @renewal_terminal || (@expires_at && @expires_at <= Time.now)
-              @config[:connected] = false
-              @config[:relogin_required] = true
+              cluster_config[:connected] = false
+              cluster_config[:relogin_required] = true
             end
           end
         end
@@ -121,9 +122,9 @@ module Legion
         generation ||= @state_mutex.synchronize { @generation }
         krb_config = @state_mutex.synchronize do
           return false unless active_generation?(generation: generation)
-          return false unless @config[:auth_method].to_s == 'kerberos'
+          return false unless cluster_config[:auth_method].to_s == 'kerberos'
 
-          (@config[:kerberos] || {}).dup
+          (cluster_config[:kerberos] || {}).dup
         end
         active = lambda do |&mutation|
           @state_mutex.synchronize do
@@ -144,8 +145,8 @@ module Legion
           @state_mutex.synchronize do
             return false unless active_generation?(generation: generation)
 
-            Legion::Crypt.publish_vault_grant(client: @vault_client, config: @config, grant: result, auth_method: 'kerberos')
-            @expires_at = @config[:expires_at]
+            published = Legion::Crypt.publish_vault_grant(client: @vault_client, config: cluster_config, grant: result, auth_method: 'kerberos')
+            @expires_at = published[:expires_at]
           end
           log.info("TokenRenewer[#{@cluster_name}]: re-authenticated via Kerberos, ttl=#{result[:lease_duration]}s")
         end
@@ -162,8 +163,8 @@ module Legion
           return MIN_SLEEP unless @expires_at
 
           remaining = @expires_at - Time.now
-          renewable = @config[:renewable] || @config[:auth_method].to_s == 'kerberos'
-          delay = renewable ? remaining - (@config[:lease_duration].to_f * (1 - RENEWAL_RATIO)) : remaining
+          renewable = cluster_config[:renewable] || cluster_config[:auth_method].to_s == 'kerberos'
+          delay = renewable ? remaining - (cluster_config[:lease_duration].to_f * (1 - RENEWAL_RATIO)) : remaining
           [delay, MINIMUM_WAIT].max
         end
       end
@@ -187,6 +188,12 @@ module Legion
       end
 
       private
+
+      # Settings rebuilds replace configuration hashes, so the live cluster configuration is resolved on each use.
+      def cluster_config
+        live = @cluster_name.nil? ? Legion::Settings[:crypt][:vault] : Legion::Settings[:crypt][:vault][:clusters][@cluster_name]
+        live || @config
+      end
 
       def crypt_stopping?
         Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
@@ -224,15 +231,15 @@ module Legion
         @state_mutex.synchronize do
           return unless active_generation?(generation: generation)
 
-          kerberos = @config[:auth_method].to_s == 'kerberos'
+          kerberos = cluster_config[:auth_method].to_s == 'kerberos'
           if @expires_at && @expires_at <= Time.now
-            @config[:connected] = false
-            @config[:relogin_required] = true unless kerberos
+            cluster_config[:connected] = false
+            cluster_config[:relogin_required] = true unless kerberos
             return unless kerberos
           end
-          return if !kerberos && (!@config[:renewable] || @config[:relogin_required])
+          return if !kerberos && (!cluster_config[:renewable] || cluster_config[:relogin_required])
 
-          [@config[:renewable], kerberos]
+          [cluster_config[:renewable], kerberos]
         end
       end
 
@@ -249,13 +256,13 @@ module Legion
         @state_mutex.synchronize do
           return unless active_generation?(generation: generation)
 
-          kerberos = @config[:auth_method].to_s == 'kerberos'
+          kerberos = cluster_config[:auth_method].to_s == 'kerberos'
           remaining = @expires_at && (@expires_at - Time.now)
           if kerberos || @renewal_terminal || (remaining && !remaining.positive?)
-            @config[:connected] = false
-            @config[:relogin_required] = true unless kerberos
+            cluster_config[:connected] = false
+            cluster_config[:relogin_required] = true unless kerberos
           end
-          return if !kerberos && @config[:relogin_required]
+          return if !kerberos && cluster_config[:relogin_required]
 
           delay = [delay, [remaining / 2, MINIMUM_WAIT].max, remaining].min if remaining&.positive?
         end
@@ -303,7 +310,7 @@ module Legion
 
       def revoke_token(deadline: nil)
         owned_token = @state_mutex.synchronize do
-          @config[:auth_method]&.to_s == 'kerberos' && @vault_client&.token
+          cluster_config[:auth_method]&.to_s == 'kerberos' && @vault_client&.token
         end
         return unless owned_token
 

@@ -1,5 +1,11 @@
 # Legion::Crypt
 
+## [1.5.43] - 2026-11-12
+
+### Fixed
+- Publish Vault grants to the live cluster configuration by cluster name instead of requiring the authenticating caller's configuration hash to be the current Settings object. Settings rebuilds its tree (for example during secret resolution after `Crypt.start`), which caused every Kerberos reauthentication to be rejected with `Vault client configuration changed during authentication`; the original token then expired and Vault revoked the dynamic leases issued with it.
+- Resolve token renewer configuration on each use so renewed and reauthenticated lifetimes are recorded in the live cluster configuration, and identify the cluster for a new grant by its cached client rather than by configuration identity.
+
 ## [1.5.42] - 2026-11-08
 
 ### Changed
