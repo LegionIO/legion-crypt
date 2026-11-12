@@ -67,6 +67,35 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       result = renewer.reauth_kerberos
       expect(result).to be false
     end
+
+    it 'keeps a still-valid token connected after reauthentication fails' do
+      config.merge!(lease_duration: 3600, renewable: false, expires_at: Time.now + 60)
+      Legion::Settings[:crypt][:vault][:clusters] = { primary: config }
+      failed = Queue.new
+      allow(Legion::Crypt::KerberosAuth).to receive(:login) do
+        failed << Thread.current
+        raise Legion::Crypt::KerberosAuth::AuthError, 'KDC unavailable'
+      end
+      renewer.start
+      worker = await_event(queue: failed)
+      Timeout.timeout(1) { Thread.pass until worker.status == 'sleep' }
+
+      expect(config).to include(connected: true)
+      expect(config[:relogin_required]).not_to be(true)
+    end
+
+    it 'disconnects a renewable token Vault rejected when reauthentication also fails' do
+      config.merge!(lease_duration: 3600, renewable: true, expires_at: Time.now + 60)
+      Legion::Settings[:crypt][:vault][:clusters] = { primary: config }
+      rejection = Legion::Crypt::Vault::HTTPClientError.new(code: 403, errors: ['permission denied', 'invalid token'],
+                                                            address: 'https://vault.example.com')
+      allow(auth_token).to receive(:renew_self).and_raise(rejection)
+      allow(Legion::Crypt::KerberosAuth).to receive(:login).and_raise(Legion::Crypt::KerberosAuth::AuthError, 'KDC unavailable')
+      renewer.start
+      Timeout.timeout(1) { Thread.pass until config[:connected] == false }
+
+      expect(config[:relogin_required]).not_to be(true)
+    end
   end
 
   describe '#start and #stop' do
@@ -168,6 +197,7 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       { token: 'ldap-token', lease_duration: 0.12, expires_at: Time.now + 0.12,
         renewable: true, connected: true, auth_method: 'ldap' }
     end
+    let(:vault_client) { Legion::Crypt::Vault::Client.new(address: 'https://vault.example.com', token: 'ldap-token') }
 
     before { expect(Legion::Crypt::KerberosAuth).not_to receive(:login) }
 
@@ -222,6 +252,48 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       expect(attempts.size).to be_between(1, 7)
       expect(config[:connected]).to be(false)
       expect(config[:relogin_required]).to be(true)
+    end
+  end
+
+  describe 'replaced cluster configuration' do
+    let(:config) do
+      { token: 'hvs.initial-token', lease_duration: 100, renewable: true, connected: true, auth_method: 'ldap', address: 'vault.example.com' }
+    end
+    let(:replacement_expiry) { Time.now + 60 }
+    let(:replacement) { config.merge(token: 'hvs.replacement', expires_at: replacement_expiry, relogin_required: false) }
+    let(:entered) { Queue.new }
+    let(:release) { Queue.new }
+
+    before do
+      Legion::Settings[:crypt][:vault][:clusters] = { primary: config }
+      allow(auth_token).to receive(:renew_self) do
+        entered << true
+        outcome = release.pop
+        raise outcome if outcome.is_a?(Exception)
+
+        outcome
+      end
+    end
+
+    def finish_renewal_after_replacement(outcome:, **)
+      renewal = run_in_background { renewer.renew_token }
+      await_event(queue: entered)
+      Legion::Settings[:crypt][:vault][:clusters][:primary] = replacement
+      release << outcome
+      finish_thread(thread: renewal)
+    end
+
+    it 'does not record an earlier token renewal in the replacement configuration' do
+      expect(finish_renewal_after_replacement(outcome: renew_result)).to be(true)
+      expect(replacement).to include(token: 'hvs.replacement', expires_at: replacement_expiry, lease_duration: 100,
+                                     connected: true, relogin_required: false)
+    end
+
+    it 'does not disconnect the replacement configuration when an earlier token is rejected' do
+      rejection = Legion::Crypt::Vault::HTTPClientError.new(code: 403, errors: ['permission denied'], address: 'https://vault.example.com')
+
+      expect(finish_renewal_after_replacement(outcome: rejection)).to be(false)
+      expect(replacement).to include(token: 'hvs.replacement', expires_at: replacement_expiry, connected: true, relogin_required: false)
     end
   end
 

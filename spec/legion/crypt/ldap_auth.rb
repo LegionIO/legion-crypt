@@ -49,6 +49,40 @@ RSpec.describe Legion::Crypt::LdapAuth do
     expect(cluster_one.to_s).not_to include('one-use-password')
   end
 
+  it 'keeps renewal attached to the live cluster configuration after Settings rebuilds it' do
+    renewed = Queue.new
+    allow(auth_token).to receive(:renew_self) do
+      renewed << true
+      ldap_secret(token: 'ldap-token', ttl: 2, renewable: true)
+    end
+    crypt.start
+    crypt.ldap_login(cluster_name: 'one', username: 'jdoe', password: 'one-use-password')
+    original_expiry = cluster_one[:expires_at]
+    Legion::Settings.loader.to_hash
+    live = crypt.clusters[:one]
+    expect(live).not_to equal(cluster_one)
+    Timeout.timeout(1) { renewed.pop }
+    sleep([original_expiry - Time.now + 0.02, 0].max)
+
+    expect(live[:expires_at]).to be > original_expiry
+    expect(crypt.vault_connected?).to be(true)
+    expect(crypt.read('secret/application', cluster_name: :one)).to eq(owner: 'one')
+  end
+
+  it 'installs a login that completes after Settings rebuilds the cluster configuration' do
+    allow(logical).to receive(:write) do
+      Legion::Settings.loader.to_hash
+      login_secret
+    end
+    crypt.start
+    crypt.ldap_login(cluster_name: 'one', username: 'jdoe', password: 'one-use-password')
+    live = crypt.clusters[:one]
+
+    expect(live).not_to equal(cluster_one)
+    expect(live).to include(token: 'ldap-token', connected: true)
+    expect(Thread.list.map(&:name)).to include('vault-renewer-one')
+  end
+
   it 'keeps concurrent lookups attached to the authenticated client during token publication' do
     entered = Queue.new
     release = Queue.new

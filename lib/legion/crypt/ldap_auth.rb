@@ -12,6 +12,7 @@ module Legion
         cluster_name = cluster_name.to_sym
         generation = vault_auth_generation
         config = clusters.fetch(cluster_name)
+        authentication = vault_authentication_settings(config: config)
         log.info "LDAP login requested user=#{username} cluster=#{cluster_name}"
         client = vault_client(cluster_name)
         secret = Legion::Crypt::Vault::Operation.with_timeout do
@@ -20,7 +21,7 @@ module Legion
         auth = secret.auth
 
         grant = { token: auth.client_token, lease_duration: auth.lease_duration, renewable: auth.renewable?, policies: auth.policies }
-        install_vault_grant(client: client, config: config, grant: grant, auth_method: 'ldap', generation: generation)
+        install_vault_grant(client: client, config: config, grant: grant, auth_method: 'ldap', generation: generation, authentication: authentication)
 
         log.info "LDAP login success: user=#{username}, cluster=#{cluster_name}"
         grant

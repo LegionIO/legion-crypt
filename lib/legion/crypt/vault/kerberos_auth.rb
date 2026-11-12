@@ -42,8 +42,10 @@ module Legion
           generation = Legion::Crypt.vault_auth_generation
           client = Legion::Crypt.vault_client
           config = Legion::Crypt.cluster || Legion::Settings[:crypt][:vault]
+          authentication = Legion::Crypt.vault_authentication_settings(config: config)
           result = login(spnego_token: spnego_token, auth_path: auth_path)
-          Legion::Crypt.install_vault_grant(client: client, config: config, grant: result, auth_method: 'kerberos', generation: generation)
+          Legion::Crypt.install_vault_grant(client: client, config: config, grant: result, auth_method: 'kerberos', generation: generation,
+                                            authentication: authentication)
           log.info "[crypt:vault_kerberos] authenticated via Kerberos auth, policies=#{result[:policies].join(',')}"
           result
         end
