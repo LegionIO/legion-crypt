@@ -103,9 +103,12 @@ module Legion
         end
       rescue StandardError => e
         @state_mutex.synchronize do
-          if active_generation?(generation: generation) && cluster_config[:auth_method].to_s != 'kerberos'
+          if active_generation?(generation: generation)
+            # Vault rejected this token. Kerberos can still replace it, so only other methods require login here.
             @renewal_terminal = e.is_a?(Legion::Crypt::Vault::HTTPClientError) && ![408, 429].include?(e.code)
-            write_cluster_state(token: token, connected: false, relogin_required: true) if @renewal_terminal || (@expires_at && @expires_at <= Time.now)
+            if cluster_config[:auth_method].to_s != 'kerberos' && (@renewal_terminal || (@expires_at && @expires_at <= Time.now))
+              write_cluster_state(token: token, connected: false, relogin_required: true)
+            end
           end
         end
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.renew_token', cluster_name: @cluster_name)
@@ -115,14 +118,15 @@ module Legion
 
       def reauth_kerberos(generation: nil)
         generation ||= @state_mutex.synchronize { @generation }
-        login_config, krb_config = @state_mutex.synchronize do
+        login_config, authentication = @state_mutex.synchronize do
           return false unless active_generation?(generation: generation)
 
           config = cluster_config
           return false unless config[:auth_method].to_s == 'kerberos'
 
-          [config, (config[:kerberos] || {}).dup]
+          [config, Legion::Crypt.vault_authentication_settings(config: config)]
         end
+        krb_config = authentication[:kerberos] || {}
         active = lambda do |&mutation|
           @state_mutex.synchronize do
             next false unless active_generation?(generation: generation)
@@ -142,8 +146,10 @@ module Legion
           @state_mutex.synchronize do
             return false unless active_generation?(generation: generation)
 
-            published = Legion::Crypt.publish_vault_grant(client: @vault_client, config: login_config, grant: result, auth_method: 'kerberos')
+            published = Legion::Crypt.publish_vault_grant(client: @vault_client, config: login_config, grant: result, auth_method: 'kerberos',
+                                                          authentication: authentication)
             @expires_at = published[:expires_at]
+            @renewal_terminal = false
           end
           log.info("TokenRenewer[#{@cluster_name}]: re-authenticated via Kerberos, ttl=#{result[:lease_duration]}s")
         end

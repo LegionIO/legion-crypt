@@ -83,6 +83,19 @@ RSpec.describe Legion::Crypt::TokenRenewer do
       expect(config).to include(connected: true)
       expect(config[:relogin_required]).not_to be(true)
     end
+
+    it 'disconnects a renewable token Vault rejected when reauthentication also fails' do
+      config.merge!(lease_duration: 3600, renewable: true, expires_at: Time.now + 60)
+      Legion::Settings[:crypt][:vault][:clusters] = { primary: config }
+      rejection = Legion::Crypt::Vault::HTTPClientError.new(code: 403, errors: ['permission denied', 'invalid token'],
+                                                            address: 'https://vault.example.com')
+      allow(auth_token).to receive(:renew_self).and_raise(rejection)
+      allow(Legion::Crypt::KerberosAuth).to receive(:login).and_raise(Legion::Crypt::KerberosAuth::AuthError, 'KDC unavailable')
+      renewer.start
+      Timeout.timeout(1) { Thread.pass until config[:connected] == false }
+
+      expect(config[:relogin_required]).not_to be(true)
+    end
   end
 
   describe '#start and #stop' do

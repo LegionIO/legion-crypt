@@ -105,22 +105,23 @@ module Legion
         end
       end
 
-      def install_vault_grant(client:, config:, grant:, auth_method:, generation:, **)
+      def install_vault_grant(client:, config:, grant:, auth_method:, generation:, authentication: vault_authentication_settings(config: config), **)
         issued_at = Time.now
         lifecycle_mutex.synchronize do
           raise 'Crypt stopped during login; login must be retried' if @stopping || generation != (@token_generation || 0)
 
-          # The client cache key names the cluster; Settings rebuilds replace configuration hashes. A displaced
-          # client is rejected before any worker is stopped.
-          cached = vault_clients_mutex.synchronize { @vault_clients&.find { |_name, entry| entry[:client].equal?(client) } }
-          raise IOError, 'Vault client replaced during authentication' unless cached
+          # The client cache key names the cluster; Settings rebuilds replace configuration hashes. The grant is
+          # validated before any worker is stopped, and again when it is published.
+          target = vault_clients_mutex.synchronize { vault_grant_target(client: client, authentication: authentication) }
+          raise IOError, 'Vault client replaced during authentication' unless target
 
-          cluster_name = cached.first
+          cluster_name = target.first
           previous = (@token_renewers || []).find { |worker| worker.cluster_name == cluster_name }
           previous&.stop
           raise 'Previous token worker has not stopped; login must be retried' if previous&.running?
 
-          config = publish_vault_grant(client: client, config: config, grant: grant, auth_method: auth_method, issued_at: issued_at)
+          config = publish_vault_grant(client: client, config: config, grant: grant, auth_method: auth_method, issued_at: issued_at,
+                                       authentication: authentication)
           start_token_renewer(cluster_name: cluster_name, config: config, vault_client: client)
         end
       end

@@ -166,6 +166,23 @@ RSpec.describe Legion::Crypt::Vault::Cluster do
       Legion::Crypt.clear_vault_clients
     end
 
+    it 'rejects Kerberos reauthentication when its settings change in place during login' do
+      cluster_alpha.merge!(auth_method: 'kerberos', lease_duration: 3600,
+                           kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' })
+      client = Legion::Crypt.vault_client(:alpha)
+      allow(Legion::Crypt::KerberosAuth).to receive(:login) do
+        cluster_alpha[:kerberos][:auth_path] = 'auth/other-kerberos/login'
+        { token: 'renewed-token', lease_duration: 3600, renewable: false, metadata: {} }
+      end
+      renewer = Legion::Crypt::TokenRenewer.new(cluster_name: :alpha, config: cluster_alpha, vault_client: client)
+
+      expect(renewer.reauth_kerberos).to be(false)
+      expect(client.token).to eq('token-alpha')
+      expect(cluster_alpha[:token]).to eq('token-alpha')
+    ensure
+      Legion::Crypt.clear_vault_clients
+    end
+
     it 'removes a cluster from the cache but keeps its retained client usable until shutdown' do
       client = test_object.vault_client(:alpha)
       connection = Faraday.new do |builder|

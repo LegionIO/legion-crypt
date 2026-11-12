@@ -41,27 +41,17 @@ module Legion
           end
         end
 
-        # Returns the configuration the grant was published to. Settings rebuilds replace configuration
-        # hashes, so a cached client's grant is published to its live cluster configuration by name when
-        # the connection and the authentication settings used for login (config) are unchanged.
-        def publish_vault_grant(client:, config:, grant:, auth_method:, issued_at: Time.now, **)
+        # Returns the configuration the grant was published to. Settings rebuilds replace configuration hashes,
+        # so a cached client's grant is published to its live cluster configuration by name. Callers capture
+        # authentication before login so changes made during login are detected.
+        def publish_vault_grant(client:, config:, grant:, auth_method:, issued_at: Time.now,
+                                authentication: vault_authentication_settings(config: config), **)
           token = grant.fetch(:token)
           ttl = grant[:lease_duration].to_f
           expires_at = issued_at + ttl if ttl.positive?
           vault_clients_mutex.synchronize do
-            pair = @vault_clients&.find { |_name, entry| entry[:client].equal?(client) }
-            raise IOError, 'Vault client replaced during authentication' if @retired_vault_clients&.key?(client)
-
-            if pair
-              name, entry = pair
-              live = name.nil? ? Legion::Settings[:crypt][:vault] : clusters[name]
-              unless current_vault_client?(entry: entry, signature: vault_client_signature(config: live)) &&
-                     config.values_at(:auth_method, :kerberos) == live.values_at(:auth_method, :kerberos)
-                raise IOError, 'Vault client configuration changed during authentication'
-              end
-
-              config = live
-            end
+            _name, entry, live = vault_grant_target(client: client, authentication: authentication)
+            config = live if entry
             client.token = token
             connected = expires_at.nil? || expires_at > Time.now
             config.merge!(token: token, lease_duration: grant[:lease_duration], renewable: grant[:renewable],
@@ -69,6 +59,11 @@ module Legion
             entry[:signature][:token] = token&.dup&.freeze if entry
             config
           end
+        end
+
+        # Copies the settings that determine how a login authenticates, so changes made in place are detected.
+        def vault_authentication_settings(config:, **)
+          { auth_method: config[:auth_method].dup, kerberos: config[:kerberos]&.transform_values(&:dup) }
         end
 
         def clear_vault_clients(deadline: nil, **)
@@ -180,6 +175,24 @@ module Legion
 
         def vault_clients_mutex
           @vault_clients_mutex ||= Mutex.new
+        end
+
+        # Called while holding vault_clients_mutex. Returns the cluster name, cache entry and live configuration for a
+        # cached client, or nil for a client this cache never held. Raises when the client was displaced or its
+        # connection or authentication settings changed during login.
+        def vault_grant_target(client:, authentication:, **)
+          pair = @vault_clients&.find { |_name, entry| entry[:client].equal?(client) }
+          raise IOError, 'Vault client replaced during authentication' if @retired_vault_clients&.key?(client)
+          return unless pair
+
+          name, entry = pair
+          live = name.nil? ? Legion::Settings[:crypt][:vault] : clusters[name]
+          unless current_vault_client?(entry: entry, signature: vault_client_signature(config: live)) &&
+                 authentication == vault_authentication_settings(config: live)
+            raise IOError, 'Vault client configuration changed during authentication'
+          end
+
+          [name, entry, live]
         end
 
         def current_vault_client?(entry:, signature:, **)
@@ -298,13 +311,14 @@ module Legion
           log_vault_debug("connect_kerberos_cluster[#{name}]: client.namespace=#{client.respond_to?(:namespace) ? client.namespace.inspect : 'n/a'}")
           log.info "Connecting Vault cluster #{name} via Kerberos auth_path=#{auth_path}"
 
+          authentication = vault_authentication_settings(config: config)
           result = Legion::Crypt::KerberosAuth.login(
             vault_client:      client,
             service_principal: spn,
             auth_path:         auth_path
           )
 
-          publish_vault_grant(client: client, config: config, grant: result, auth_method: 'kerberos')
+          publish_vault_grant(client: client, config: config, grant: result, auth_method: 'kerberos', authentication: authentication)
           log_vault_debug("connect_kerberos_cluster[#{name}]: policies=#{result[:policies].inspect}")
           log_cluster_connected(name, config)
           true

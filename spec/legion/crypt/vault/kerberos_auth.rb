@@ -144,4 +144,35 @@ RSpec.describe Legion::Crypt::Vault::KerberosAuth do
       expect(client.token).to eq('old-token')
     end
   end
+
+  describe '.login! while a token worker is running' do
+    let(:revoked) { [] }
+
+    before do
+      config[:kerberos] = { service_principal: 'HTTP/vault.example', auth_path: 'auth/kerberos/login' }
+      stubs.put('/v1/auth/token/revoke-self') do |env|
+        revoked << env.request_headers['X-Vault-Token']
+        [204, {}, nil]
+      end
+    end
+
+    it 'rejects a login whose Kerberos settings change during authentication without stopping the worker' do
+      client = Legion::Crypt.vault_client
+      existing = Thread.list
+      Legion::Crypt.install_vault_grant(client: client, config: config, auth_method: 'kerberos',
+                                        grant: { token: 'working-token', lease_duration: 60, renewable: false },
+                                        generation: Legion::Crypt.vault_auth_generation)
+      worker = (Thread.list - existing).find { |thread| thread.name == 'vault-renewer-' }
+      stubs.put('/v1/auth/kerberos/login') do
+        config[:kerberos] = { service_principal: 'HTTP/other.example', auth_path: 'auth/kerberos/login' }
+        [200, {}, auth_body]
+      end
+
+      expect { described_class.login!(spnego_token: spnego_token) }.to raise_error(IOError, /configuration changed/)
+      expect(worker).to be_alive
+      expect(revoked).to be_empty
+      expect(client.token).to eq('working-token')
+      expect(config[:token]).to eq('working-token')
+    end
+  end
 end

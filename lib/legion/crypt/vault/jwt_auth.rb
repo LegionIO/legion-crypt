@@ -69,8 +69,10 @@ module Legion
           generation = Legion::Crypt.vault_auth_generation
           client = Legion::Crypt.vault_client
           config = Legion::Crypt.cluster || Legion::Settings[:crypt][:vault]
+          authentication = Legion::Crypt.vault_authentication_settings(config: config)
           result = login(jwt: jwt, role: role, auth_path: auth_path)
-          Legion::Crypt.install_vault_grant(client: client, config: config, grant: result, auth_method: 'jwt', generation: generation)
+          Legion::Crypt.install_vault_grant(client: client, config: config, grant: result, auth_method: 'jwt', generation: generation,
+                                            authentication: authentication)
           log.info "[crypt:vault_jwt] authenticated via JWT auth, policies=#{result[:policies].join(',')}"
           result
         end
