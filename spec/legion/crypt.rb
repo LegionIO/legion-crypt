@@ -272,6 +272,35 @@ RSpec.describe Legion::Crypt do
       expect(attempts).to eq(2)
     end
 
+    it 'rejects a login through a displaced client without stopping other token workers' do
+      Legion::Settings[:crypt][:vault][:clusters] = {}
+      root = described_class.vault_client
+      root_auth = double('RootAuthToken', revoke_self: nil)
+      allow(root).to receive(:auth_token).and_return(root_auth)
+      described_class.install_vault_grant(client: root, config: Legion::Settings[:crypt][:vault], auth_method: 'kerberos',
+                                          grant: { token: 'root-token', lease_duration: 60, renewable: false },
+                                          generation: described_class.vault_auth_generation)
+      Legion::Settings[:crypt][:vault][:clusters] = { primary: cluster_config }
+      logins = 0
+      allow(logical).to receive(:write) do
+        logins += 1
+        if logins == 2
+          cluster_config[:namespace] = 'replacement'
+          described_class.vault_client(:primary)
+        end
+        double('Secret', auth: double('Auth', client_token: "ldap-#{logins}", lease_duration: 60, renewable?: true, policies: []))
+      end
+      described_class.ldap_login(cluster_name: :primary, username: 'user', password: 'one-use')
+      workers = Thread.list.select { |thread| thread.name&.start_with?('vault-renewer-') }
+
+      expect { described_class.ldap_login(cluster_name: :primary, username: 'user', password: 'one-use') }
+        .to raise_error(IOError, /replaced during authentication/)
+      expect(workers.map(&:name)).to include('vault-renewer-', 'vault-renewer-primary')
+      expect(workers).to all(be_alive)
+      expect(root_auth).not_to have_received(:revoke_self)
+      expect(cluster_config[:token]).to eq('ldap-1')
+    end
+
     it 'replaces a pending LDAP renewal without duplicate workers and stops the replacement on shutdown' do
       entered = Queue.new
       blocked = Queue.new

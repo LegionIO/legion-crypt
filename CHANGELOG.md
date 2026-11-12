@@ -5,6 +5,8 @@
 ### Fixed
 - Publish Vault grants to the live cluster configuration by cluster name instead of requiring the authenticating caller's configuration hash to be the current Settings object. Settings rebuilds its tree (for example during secret resolution after `Crypt.start`), which caused every Kerberos reauthentication to be rejected with `Vault client configuration changed during authentication`; the original token then expired and Vault revoked the dynamic leases issued with it.
 - Resolve token renewer configuration on each use so renewed and reauthenticated lifetimes are recorded in the live cluster configuration, and identify the cluster for a new grant by its cached client rather than by configuration identity.
+- Record a renewal outcome only while the cluster configuration still holds the renewed token, so an earlier token's renewal or rejection cannot change a replacement configuration. A failed reauthentication attempt leaves a still-valid token connected; only rejection or expiry disconnects it.
+- Reject a grant when the authentication method or Kerberos settings changed during login, and reject a login through a displaced client before stopping any token worker.
 
 ## [1.5.42] - 2026-11-08
 

@@ -83,6 +83,7 @@ module Legion
         generation ||= @state_mutex.synchronize { @generation }
         return false unless @state_mutex.synchronize { active_generation?(generation: generation) }
 
+        token = @vault_client.token
         deadline = @state_mutex.synchronize do
           ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + (@expires_at - Time.now) if @expires_at
         end
@@ -91,14 +92,11 @@ module Legion
           @state_mutex.synchronize do
             return false unless active_generation?(generation: generation)
 
-            config = cluster_config
-            config[:lease_duration] = result.auth.lease_duration
-            config[:renewable] = result.auth.renewable? if result.auth.respond_to?(:renewable?)
             ttl = result.auth.lease_duration.to_f
             @expires_at = ttl.positive? ? Time.now + ttl : nil
-            config[:expires_at] = @expires_at
-            config[:connected] = true
-            config[:relogin_required] = false
+            state = { lease_duration: result.auth.lease_duration, expires_at: @expires_at, connected: true, relogin_required: false }
+            state[:renewable] = result.auth.renewable? if result.auth.respond_to?(:renewable?)
+            write_cluster_state(token: token, **state)
           end
           log.info("TokenRenewer[#{@cluster_name}]: token renewed, ttl=#{result.auth.lease_duration}s")
           true
@@ -107,10 +105,7 @@ module Legion
         @state_mutex.synchronize do
           if active_generation?(generation: generation) && cluster_config[:auth_method].to_s != 'kerberos'
             @renewal_terminal = e.is_a?(Legion::Crypt::Vault::HTTPClientError) && ![408, 429].include?(e.code)
-            if @renewal_terminal || (@expires_at && @expires_at <= Time.now)
-              cluster_config[:connected] = false
-              cluster_config[:relogin_required] = true
-            end
+            write_cluster_state(token: token, connected: false, relogin_required: true) if @renewal_terminal || (@expires_at && @expires_at <= Time.now)
           end
         end
         handle_exception(e, level: :warn, operation: 'crypt.token_renewer.renew_token', cluster_name: @cluster_name)
@@ -120,11 +115,13 @@ module Legion
 
       def reauth_kerberos(generation: nil)
         generation ||= @state_mutex.synchronize { @generation }
-        krb_config = @state_mutex.synchronize do
+        login_config, krb_config = @state_mutex.synchronize do
           return false unless active_generation?(generation: generation)
-          return false unless cluster_config[:auth_method].to_s == 'kerberos'
 
-          (cluster_config[:kerberos] || {}).dup
+          config = cluster_config
+          return false unless config[:auth_method].to_s == 'kerberos'
+
+          [config, (config[:kerberos] || {}).dup]
         end
         active = lambda do |&mutation|
           @state_mutex.synchronize do
@@ -145,7 +142,7 @@ module Legion
           @state_mutex.synchronize do
             return false unless active_generation?(generation: generation)
 
-            published = Legion::Crypt.publish_vault_grant(client: @vault_client, config: cluster_config, grant: result, auth_method: 'kerberos')
+            published = Legion::Crypt.publish_vault_grant(client: @vault_client, config: login_config, grant: result, auth_method: 'kerberos')
             @expires_at = published[:expires_at]
           end
           log.info("TokenRenewer[#{@cluster_name}]: re-authenticated via Kerberos, ttl=#{result[:lease_duration]}s")
@@ -195,6 +192,13 @@ module Legion
         live || @config
       end
 
+      # Records token state only while the cluster configuration still holds the token, so a replacement
+      # configuration is not changed by the outcome of an earlier token's renewal.
+      def write_cluster_state(token:, **state)
+        config = cluster_config
+        config.merge!(state) if config[:token] == token
+      end
+
       def crypt_stopping?
         Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
       end
@@ -233,8 +237,8 @@ module Legion
 
           kerberos = cluster_config[:auth_method].to_s == 'kerberos'
           if @expires_at && @expires_at <= Time.now
-            cluster_config[:connected] = false
-            cluster_config[:relogin_required] = true unless kerberos
+            write_cluster_state(token: @vault_client.token, connected: false)
+            write_cluster_state(token: @vault_client.token, relogin_required: true) unless kerberos
             return unless kerberos
           end
           return if !kerberos && (!cluster_config[:renewable] || cluster_config[:relogin_required])
@@ -258,9 +262,10 @@ module Legion
 
           kerberos = cluster_config[:auth_method].to_s == 'kerberos'
           remaining = @expires_at && (@expires_at - Time.now)
-          if kerberos || @renewal_terminal || (remaining && !remaining.positive?)
-            cluster_config[:connected] = false
-            cluster_config[:relogin_required] = true unless kerberos
+          # A failed attempt leaves a still-valid token usable; only rejection or expiry disconnects it.
+          if @renewal_terminal || (remaining && !remaining.positive?)
+            write_cluster_state(token: @vault_client.token, connected: false)
+            write_cluster_state(token: @vault_client.token, relogin_required: true) unless kerberos
           end
           return if !kerberos && cluster_config[:relogin_required]
 
