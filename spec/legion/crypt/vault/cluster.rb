@@ -2,7 +2,6 @@
 
 require 'spec_helper'
 require 'legion/crypt/vault/cluster'
-require 'legion/crypt/kerberos_auth'
 require 'legion/settings/resolver'
 require 'socket'
 
@@ -118,17 +117,41 @@ RSpec.describe Legion::Crypt::Vault::Cluster do
       expect(test_object.vault_client(:alpha).namespace).to be_nil
     end
 
-    it 'keeps the current client after Kerberos reauthentication updates its token' do
-      cluster_alpha[:auth_method] = 'kerberos'
-      cluster_alpha[:kerberos] = { service_principal: 'HTTP/vault.example.com' }
+    it 'keeps the current client when a grant replaces its token' do
       client = test_object.vault_client(:alpha)
-      allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(
-        { token: 'renewed-token', lease_duration: 3600, renewable: true, metadata: {} }
-      )
-      renewer = Legion::Crypt::TokenRenewer.new(cluster_name: :alpha, config: cluster_alpha, vault_client: client)
-      expect(renewer.reauth_kerberos).to be(true)
+
+      test_object.publish_vault_grant(cluster_name: :alpha, client: client, auth_method: 'kerberos',
+                                      grant: { token: 'renewed-token', lease_duration: 3600, renewable: true })
+
       expect(test_object.vault_client(:alpha)).to equal(client)
       expect(client.token).to eq('renewed-token')
+      expect(cluster_alpha).to include(token: 'renewed-token', connected: true, relogin_required: false, auth_method: 'kerberos')
+    end
+
+    it 'publishes grants into the live configuration after a settings rebuild' do
+      client = test_object.vault_client(:alpha)
+      Legion::Settings.loader.mark_dirty!
+      Legion::Settings.loader.to_hash
+      live = Legion::Settings[:crypt][:vault][:clusters][:alpha]
+      expect(live).not_to equal(cluster_alpha)
+
+      expires_at = test_object.publish_vault_grant(cluster_name: :alpha, client: client, auth_method: 'ldap',
+                                                   grant: { token: 'rotated-token', lease_duration: 60, renewable: false })
+
+      expect(live).to include(token: 'rotated-token', expires_at: expires_at, connected: true)
+      expect(cluster_alpha[:token]).to eq('token-alpha')
+      expect(test_object.vault_client(:alpha)).to equal(client)
+    end
+
+    it 'rejects a grant when the current token differs from the one it replaces' do
+      client = test_object.vault_client(:alpha)
+
+      expect do
+        test_object.publish_vault_grant(cluster_name: :alpha, client: client, auth_method: 'kerberos', current_token: 'superseded-token',
+                                        grant: { token: 'late-token', lease_duration: 60 })
+      end.to raise_error(Legion::Crypt::Vault::GrantRejectedError)
+      expect(cluster_alpha[:token]).to eq('token-alpha')
+      expect(client.token).to eq('token-alpha')
     end
 
     it 'removes a cluster from the cache but keeps its retained client usable until shutdown' do
@@ -147,7 +170,7 @@ RSpec.describe Legion::Crypt::Vault::Cluster do
       expect { client.sys.health_status }.to raise_error(IOError)
     end
 
-    it 'keeps token renewal, lease reissue and revocation available through a replaced client' do
+    it 'keeps token renewal, lease reissue and revocation available through a displaced client' do
       client = test_object.vault_client(:alpha)
       revoked = []
       reads = 0
@@ -168,14 +191,12 @@ RSpec.describe Legion::Crypt::Vault::Cluster do
         end
       end
       allow(client).to receive(:build_connection).and_return(connection)
-      manager = Legion::Crypt::LeaseManager.instance
-      manager.reset!
-      manager.start({ database: { path: 'database/creds/app' } }, vault_client: client)
-      renewer = Legion::Crypt::TokenRenewer.new(cluster_name: :alpha, config: cluster_alpha, vault_client: client)
+      manager = Legion::Crypt::Vault::Leases.new(client: client)
+      manager.start(definitions: { database: { path: 'database/creds/app' } })
       cluster_alpha[:token] = 'new-token'
-      test_object.vault_client(:alpha)
+      expect(test_object.vault_client(:alpha)).not_to equal(client)
 
-      expect(renewer.renew_token).to be(true)
+      expect(client.auth_token.renew_self.auth.lease_duration).to eq(3600)
       expect(manager.reissue_lease(:database)).to be(true)
       expect(manager.fetch(:database, :username)).to eq('user-2')
       manager.shutdown
@@ -192,8 +213,8 @@ RSpec.describe Legion::Crypt::Vault::Cluster do
       current = test_object.vault_client(:alpha)
 
       expect do
-        test_object.publish_vault_grant(client: previous, config: cluster_alpha, grant: { token: 'stale-token' }, auth_method: 'ldap')
-      end.to raise_error(IOError)
+        test_object.publish_vault_grant(cluster_name: :alpha, client: previous, grant: { token: 'stale-token' }, auth_method: 'ldap')
+      end.to raise_error(Legion::Crypt::Vault::GrantRejectedError)
       expect(test_object.vault_client(:alpha)).to equal(current)
       expect(current.token).to eq('token-alpha')
       expect(cluster_alpha[:token]).to eq('token-alpha')
@@ -299,151 +320,6 @@ RSpec.describe Legion::Crypt::Vault::Cluster do
       allow(Legion::Crypt).to receive(:read).with('secret/missing').and_return(nil)
 
       expect { test_object.vault_client(:beta) }.to raise_error(IOError)
-    end
-  end
-
-  describe '#connect_all_clusters' do
-    let(:mock_alpha_client) { instance_double(Legion::Crypt::Vault::Client) }
-    let(:mock_sys) { instance_double(Legion::Crypt::Vault::Client::Sys) }
-    let(:mock_health) { double('health', initialized?: true) }
-
-    before do
-      allow(Legion::Crypt::Vault::Client).to receive(:new).and_return(mock_alpha_client)
-      allow(mock_alpha_client).to receive(:namespace=)
-      allow(mock_alpha_client).to receive(:sys).and_return(mock_sys)
-      allow(mock_sys).to receive(:health_status).and_return(mock_health)
-    end
-
-    it 'skips clusters without a token' do
-      results = test_object.connect_all_clusters
-      expect(results).not_to have_key(:gamma)
-    end
-
-    it 'sets connected=true for successfully connected clusters' do
-      results = test_object.connect_all_clusters
-      expect(results[:alpha]).to be(true)
-    end
-
-    it 'sets connected=false on error' do
-      allow(mock_alpha_client).to receive(:sys).and_raise(StandardError, 'connection refused')
-      results = test_object.connect_all_clusters
-      expect(results[:alpha]).to be(false)
-    end
-
-    context 'with auth_method: kerberos' do
-      let(:krb_cluster) do
-        {
-          protocol: 'https', address: 'vault.example.com', port: 8200,
-          auth_method: 'kerberos', connected: false,
-          kerberos: { service_principal: 'HTTP/vault.example.com', auth_path: 'auth/kerberos/login' }
-        }
-      end
-
-      let(:test_clusters) { { krb: krb_cluster } }
-
-      it 'authenticates via KerberosAuth and sets the token' do
-        allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(
-          { token: 'hvs.krb-token', lease_duration: 3600, renewable: true, policies: [], metadata: {} }
-        )
-        allow(Legion::Crypt::Vault::Client).to receive(:new).and_return(mock_alpha_client)
-        allow(mock_alpha_client).to receive(:namespace=)
-        allow(mock_alpha_client).to receive(:token=)
-
-        results = test_object.connect_all_clusters
-        expect(results[:krb]).to be true
-        expect(krb_cluster[:token]).to eq('hvs.krb-token')
-        expect(krb_cluster[:connected]).to be true
-      end
-
-      it 'sets the token on the cached vault_client after kerberos auth' do
-        allow(Legion::Crypt::KerberosAuth).to receive(:login).and_return(
-          { token: 'hvs.krb-token', lease_duration: 3600, renewable: true, policies: [], metadata: {} }
-        )
-        allow(Legion::Crypt::Vault::Client).to receive(:new).and_return(mock_alpha_client)
-        allow(mock_alpha_client).to receive(:namespace=)
-        expect(mock_alpha_client).to receive(:token=).with('hvs.krb-token')
-
-        test_object.connect_all_clusters
-      end
-
-      it 'handles KerberosAuth failure gracefully' do
-        allow(Legion::Crypt::KerberosAuth).to receive(:login)
-          .and_raise(Legion::Crypt::KerberosAuth::AuthError, 'no TGT')
-        allow(Legion::Crypt::Vault::Client).to receive(:new).and_return(mock_alpha_client)
-        allow(mock_alpha_client).to receive(:namespace=)
-
-        results = test_object.connect_all_clusters
-        expect(results[:krb]).to be false
-        expect(krb_cluster[:connected]).to be false
-      end
-
-      it 'handles missing lex-kerberos gem gracefully' do
-        allow(Legion::Crypt::KerberosAuth).to receive(:login)
-          .and_raise(Legion::Crypt::KerberosAuth::GemMissingError, 'lex-kerberos required')
-        allow(Legion::Crypt::Vault::Client).to receive(:new).and_return(mock_alpha_client)
-        allow(mock_alpha_client).to receive(:namespace=)
-
-        results = test_object.connect_all_clusters
-        expect(results[:krb]).to be false
-      end
-
-      context 'without service_principal configured' do
-        let(:krb_cluster) do
-          {
-            protocol: 'https', address: 'vault.example.com', port: 8200,
-            auth_method: 'kerberos', connected: false,
-            kerberos: { service_principal: nil, auth_path: 'auth/kerberos/login' }
-          }
-        end
-
-        it 'skips the cluster' do
-          results = test_object.connect_all_clusters
-          expect(results[:krb]).to be false
-        end
-      end
-    end
-
-    context 'with auth_method: ldap' do
-      let(:ldap_cluster) do
-        { protocol: 'https', address: 'vault.example.com', port: 8200,
-          auth_method: 'ldap', connected: false }
-      end
-
-      let(:test_clusters) { { ldap: ldap_cluster } }
-
-      it 'skips ldap clusters' do
-        results = test_object.connect_all_clusters
-        expect(results).not_to have_key(:ldap)
-      end
-    end
-
-    context 'when a token-based cluster connects successfully' do
-      it 'sets Legion::Settings[:crypt][:vault][:connected] in multi-cluster mode' do
-        vault_hash = Legion::Settings[:crypt][:vault]
-        vault_hash[:connected] = false
-
-        test_object.connect_all_clusters
-        expect(vault_hash[:connected]).to be(true)
-      end
-    end
-  end
-
-  describe '#sync_vault_connected (via connect_all_clusters)' do
-    it 'updates the top-level vault connected flag in multi-cluster mode' do
-      vault_hash = Legion::Settings[:crypt][:vault]
-      vault_hash[:connected] = false
-
-      mock_client  = instance_double(Legion::Crypt::Vault::Client)
-      mock_sys     = instance_double(Legion::Crypt::Vault::Client::Sys)
-      mock_health  = double('health', initialized?: true)
-
-      allow(Legion::Crypt::Vault::Client).to receive(:new).and_return(mock_client)
-      allow(mock_client).to receive(:namespace=)
-      allow(mock_client).to receive(:sys).and_return(mock_sys)
-      allow(mock_sys).to receive(:health_status).and_return(mock_health)
-
-      test_object.connect_all_clusters
-      expect(vault_hash[:connected]).to be(true)
     end
   end
 end

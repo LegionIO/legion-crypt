@@ -7,7 +7,6 @@ RSpec.describe Legion::Crypt::Vault::Entity do
   let(:stubs) { Faraday::Adapter::Test::Stubs.new }
   let(:connection) { Faraday.new { |builder| builder.adapter :test, stubs } }
   let(:client) { Legion::Crypt::Vault::Client.new(address: 'http://vault.example:8200', token: 'owner-token', namespace: 'owner') }
-  let(:lease_manager) { instance_double(Legion::Crypt::LeaseManager, vault_logical: client.logical) }
   let(:principal_id) { 'user@example.com' }
   let(:canonical_name) { 'user-example-com' }
   let(:entity_id) { 'ent-abc-123' }
@@ -16,7 +15,7 @@ RSpec.describe Legion::Crypt::Vault::Entity do
   before do
     connection
     allow(Faraday).to receive(:new).and_return(connection)
-    allow(Legion::Crypt::LeaseManager).to receive(:instance).and_return(lease_manager)
+    allow(Legion::Crypt).to receive(:vault_client).and_return(client)
   end
 
   after do

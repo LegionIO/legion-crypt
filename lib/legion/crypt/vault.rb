@@ -3,6 +3,9 @@
 require 'legion/logging/helper'
 require 'legion/crypt/vault/operation'
 require 'legion/crypt/vault/client'
+require 'legion/crypt/vault/auth'
+require 'legion/crypt/vault/leases'
+require 'legion/crypt/vault/session'
 
 module Legion
   module Crypt
@@ -113,7 +116,8 @@ module Legion
         end
       end
 
-      def close_sessions(deadline: nil)
+      # Revokes every tracked session until the deadline or a token rejection; returns whether all were revoked.
+      def close_sessions(deadline: nil, denied_clients: {}.compare_by_identity, **)
         deadline ||= ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + Legion::Crypt::Vault::Operation::SHUTDOWN_TIMEOUT
         pending = session_mutex.synchronize do
           @sessions_stopped = true
@@ -122,17 +126,24 @@ module Legion
           @sessions = []
           detached
         end
+        return true if pending.empty?
+
         log.info 'Closing all Legion::Crypt vault sessions'
-        closed = []
+        client = vault_client
+        closed = 0
         pending.each do |session|
-          break if ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) >= deadline
+          break if ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) >= deadline || denied_clients.key?(client)
 
           Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { close_session(session: session) }
-          closed << session
+          closed += 1
         rescue StandardError => e
+          denied_clients[client] = true if e.is_a?(Legion::Crypt::Vault::HTTPClientError) && e.code == 403
           handle_exception(e, level: :error, operation: 'crypt.vault.close_session')
         end
-        closed
+        return true if closed == pending.size
+
+        log.error "Vault session cleanup incomplete: #{pending.size - closed} of #{pending.size} session(s) not revoked"
+        false
       end
 
       def shutdown_renewer
@@ -164,8 +175,6 @@ module Legion
           [@session_generation, (@sessions || []).dup]
         end
         log.debug 'Vault renewal cycle start'
-        return renew_cluster_tokens(generation: generation) if respond_to?(:connected_clusters) && connected_clusters.any?
-
         renewed = []
         pending.each do |session|
           break unless session_maintenance_active?(generation: generation)
@@ -180,20 +189,6 @@ module Legion
       rescue StandardError => e
         handle_exception(e, level: :error, operation: 'crypt.vault.renew_sessions')
         raise
-      end
-
-      def renew_cluster_tokens(generation: session_mutex.synchronize { @session_generation })
-        renewed = []
-        connected_clusters.each_key do |name|
-          break unless session_maintenance_active?(generation: generation)
-
-          Legion::Crypt::Vault::Operation.with_timeout { vault_client(name).auth_token.renew_self }
-          renewed << name
-          log.info "Vault token renewed for cluster #{name}"
-        rescue StandardError => e
-          log_vault_error(name, e)
-        end
-        renewed
       end
 
       def vault_exists?(name)

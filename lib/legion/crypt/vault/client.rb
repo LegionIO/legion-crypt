@@ -221,14 +221,21 @@ module Legion
         end
 
         class Auth
-          attr_reader :client_token, :lease_duration, :policies, :metadata
+          attr_reader :client_token, :accessor, :policies, :token_policies, :metadata,
+                      :lease_duration, :entity_id, :token_type, :orphan, :num_uses
 
           def initialize(data:, **)
             @client_token = data[:client_token]
-            @lease_duration = data[:lease_duration]
+            @accessor = data[:accessor]
             @policies = data[:policies]
+            @token_policies = data[:token_policies]
             @metadata = data[:metadata]
+            @lease_duration = data[:lease_duration]
             @renewable = data[:renewable]
+            @entity_id = data[:entity_id]
+            @token_type = data[:token_type]
+            @orphan = data[:orphan]
+            @num_uses = data[:num_uses]
           end
 
           def renewable?

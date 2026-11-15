@@ -9,6 +9,8 @@ require 'legion/crypt/vault/operation'
 module Legion
   module Crypt
     module Vault
+      class GrantRejectedError < RuntimeError; end
+
       module Cluster
         include Legion::Logging::Helper
 
@@ -41,27 +43,47 @@ module Legion
           end
         end
 
-        def publish_vault_grant(client:, config:, grant:, auth_method:, issued_at: Time.now, **)
+        # Resolves the configuration by cluster name so settings rebuilds do not reject the grant.
+        def publish_vault_grant(cluster_name:, client:, grant:, auth_method:, issued_at: Time.now, current_token: nil, **)
           token = grant.fetch(:token)
           ttl = grant[:lease_duration].to_f
           expires_at = issued_at + ttl if ttl.positive?
           vault_clients_mutex.synchronize do
-            pair = @vault_clients&.find { |_name, entry| entry[:client].equal?(client) }
-            raise IOError, 'Vault client replaced during authentication' if @retired_vault_clients&.key?(client)
-
-            if pair
-              name, entry = pair
-              current_config = name.nil? ? Legion::Settings[:crypt][:vault] : clusters[name]
-              unless config.equal?(current_config) && current_vault_client?(entry: entry, signature: vault_client_signature(config: current_config))
-                raise IOError, 'Vault client configuration changed during authentication'
-              end
+            config = cluster_name.nil? ? Legion::Settings[:crypt][:vault] : clusters[cluster_name]
+            entry = @vault_clients&.[](cluster_name)
+            unless entry && entry[:client].equal?(client) && current_vault_client?(entry: entry, signature: vault_client_signature(config: config))
+              raise Legion::Crypt::Vault::GrantRejectedError, 'Vault client configuration changed during authentication'
             end
+            raise Legion::Crypt::Vault::GrantRejectedError, 'Vault token changed during authentication' if current_token && config[:token] != current_token
+
             client.token = token
             connected = expires_at.nil? || expires_at > Time.now
             config.merge!(token: token, lease_duration: grant[:lease_duration], renewable: grant[:renewable],
                           expires_at: expires_at, connected: connected, relogin_required: !connected, auth_method: auth_method)
-            entry[:signature][:token] = token&.dup&.freeze if entry
+            entry[:signature][:token] = token.dup.freeze
           end
+          expires_at
+        end
+
+        def disconnect_vault_grant(cluster_name:, token:, relogin_required:, **)
+          vault_clients_mutex.synchronize do
+            config = cluster_name.nil? ? Legion::Settings[:crypt][:vault] : clusters[cluster_name]
+            next false unless config && config[:token] == token
+
+            config.merge!(connected: false, relogin_required: relogin_required)
+            true
+          end
+        end
+
+        # Uses a separate client so the token is revoked with its own credentials, not the client's current token.
+        def revoke_vault_token(client:, token:, deadline: nil, **)
+          revoker = Legion::Crypt::Vault::Client.new(
+            address: client.address, namespace: client.namespace, token: token, timeout: client.timeout,
+            tls: { verify: client.ssl_verify, ca: client.ca, cert: client.cert, key: client.key }
+          )
+          Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { revoker.auth_token.revoke_self }
+        ensure
+          revoker&.shutdown
         end
 
         def clear_vault_clients(deadline: nil, **)
@@ -99,38 +121,6 @@ module Legion
                 (!config[:expires_at] || config[:expires_at] > now)
             end
           end
-        end
-
-        def connect_all_clusters
-          log.info "Vault cluster connect requested configured_clusters=#{clusters.size}"
-          log_vault_debug("connect_all_clusters: #{clusters.size} cluster(s) configured")
-          results = {}
-          clusters.each do |name, config|
-            log_vault_debug("connect_all_clusters: #{name} (auth_method=#{config[:auth_method].inspect})")
-            case config[:auth_method]&.to_s
-            when 'kerberos'
-              results[name] = connect_kerberos_cluster(name, config)
-            when 'ldap'
-              next # handled by ldap_login_all
-            else
-              next unless config[:token]
-
-              client = vault_client(name)
-              config[:connected] = cluster_healthy?(client)
-              results[name] = config[:connected]
-              log_cluster_connected(name, config) if config[:connected]
-            end
-          rescue StandardError => e
-            config[:connected] = false
-            results[name] = false
-            log_vault_error(name, e, operation: 'crypt.vault_cluster.connect_all_clusters')
-          end
-
-          connected = results.select { |_, v| v }
-          log.info "Vault cluster connect complete connected=#{connected.size} attempted=#{results.size}"
-          log_vault_debug("connect_all_clusters: #{connected.size}/#{results.size} connected")
-          sync_vault_connected(connected.any?)
-          results
         end
 
         private
@@ -267,62 +257,6 @@ module Legion
           end
         rescue StandardError => e
           handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.retire_vault_client')
-        end
-
-        def log_vault_error(name, error, operation: 'crypt.vault_cluster.error')
-          handle_exception(error, level: :error, operation: operation, cluster_name: name)
-        end
-
-        def connect_kerberos_cluster(name, config)
-          krb_config = config[:kerberos] || {}
-          spn = krb_config[:service_principal]
-          auth_path = krb_config[:auth_path] || Legion::Crypt::KerberosAuth::DEFAULT_AUTH_PATH
-
-          log_vault_debug("connect_kerberos_cluster[#{name}]: SPN=#{spn}, auth_path=#{auth_path}, namespace=#{config[:namespace].inspect}")
-
-          unless spn
-            log_vault_warn(name, 'Kerberos auth missing service_principal, skipping')
-            config[:connected] = false
-            return false
-          end
-
-          require 'legion/crypt/kerberos_auth'
-          client = vault_client(name)
-          log_vault_debug("connect_kerberos_cluster[#{name}]: client.namespace=#{client.respond_to?(:namespace) ? client.namespace.inspect : 'n/a'}")
-          log.info "Connecting Vault cluster #{name} via Kerberos auth_path=#{auth_path}"
-
-          result = Legion::Crypt::KerberosAuth.login(
-            vault_client:      client,
-            service_principal: spn,
-            auth_path:         auth_path
-          )
-
-          publish_vault_grant(client: client, config: config, grant: result, auth_method: 'kerberos')
-          log_vault_debug("connect_kerberos_cluster[#{name}]: policies=#{result[:policies].inspect}")
-          log_cluster_connected(name, config)
-          true
-        rescue Legion::Crypt::KerberosAuth::GemMissingError => e
-          handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.connect_kerberos_cluster', cluster_name: name)
-          log_vault_warn(name, e.message)
-          config[:connected] = false
-          false
-        rescue Legion::Crypt::KerberosAuth::AuthError => e
-          handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.connect_kerberos_cluster', cluster_name: name)
-          log_vault_warn(name, "Kerberos auth failed: #{e.message}")
-          config[:connected] = false
-          false
-        end
-
-        def log_cluster_connected(name, config)
-          log.info "Vault cluster connected: #{name} at #{config[:address]}"
-        end
-
-        def log_vault_warn(name, message)
-          log.warn("Vault cluster #{name}: #{message}")
-        end
-
-        def log_vault_debug(message)
-          log.debug(message)
         end
       end
     end

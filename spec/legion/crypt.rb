@@ -145,187 +145,6 @@ RSpec.describe Legion::Crypt do
     end
   end
 
-  describe 'LeaseManager integration' do
-    before do
-      Legion::Crypt.shutdown
-      @original_vault_settings = Legion::Settings[:crypt][:vault].dup
-      Legion::Settings[:crypt][:vault][:clusters] = {}
-      allow(Legion::Crypt).to receive(:connect_vault)
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:start)
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:start_renewal_thread)
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:shutdown)
-    end
-
-    after do
-      Legion::Crypt.shutdown
-      Legion::Settings[:crypt][:vault].replace(@original_vault_settings)
-    end
-
-    it 'starts LeaseManager when vault is connected and leases are defined' do
-      Legion::Settings[:crypt][:vault][:connected] = true
-      Legion::Settings[:crypt][:vault][:leases] = { 'test' => { 'path' => 'secret/test' } }
-      Legion::Crypt.start
-      expect(Legion::Crypt::LeaseManager.instance).to have_received(:start)
-    ensure
-      Legion::Settings[:crypt][:vault][:connected] = false
-      Legion::Settings[:crypt][:vault][:leases] = {}
-    end
-
-    it 'does not start LeaseManager when no leases are defined' do
-      Legion::Settings[:crypt][:vault][:leases] = {}
-      Legion::Crypt.start
-      expect(Legion::Crypt::LeaseManager.instance).not_to have_received(:start)
-    end
-
-    it 'does not start LeaseManager when vault is not connected' do
-      Legion::Settings[:crypt][:vault][:connected] = false
-      Legion::Settings[:crypt][:vault][:leases] = { 'test' => { 'path' => 'secret/test' } }
-      Legion::Crypt.start
-      expect(Legion::Crypt::LeaseManager.instance).not_to have_received(:start)
-    ensure
-      Legion::Settings[:crypt][:vault][:leases] = {}
-    end
-
-    it 'shuts down LeaseManager during shutdown' do
-      Legion::Crypt.start
-      Legion::Crypt.shutdown
-      expect(Legion::Crypt::LeaseManager.instance).to have_received(:shutdown)
-    end
-
-    it 'prefers the connected cluster client over the top-level vault flag' do
-      leases = { 'test' => { 'path' => 'secret/test' } }
-      secondary_client = instance_double(Legion::Crypt::Vault::Client)
-      Legion::Settings[:crypt][:vault].merge!(leases: leases, connected: true)
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:fetched_count).and_return(1)
-      allow(Legion::Crypt).to receive(:connected_clusters).and_return({ secondary: { token: 'tok-2', connected: true } })
-      allow(Legion::Crypt).to receive(:selected_connected_cluster_name).and_return(:secondary)
-      allow(Legion::Crypt).to receive(:vault_client).with(:secondary).and_return(secondary_client)
-
-      Legion::Crypt.send(:start_lease_manager)
-
-      expect(Legion::Crypt::LeaseManager.instance).to have_received(:start).with(leases, vault_client: secondary_client)
-    end
-
-    it 'uses the infra PostgreSQL lease without mutating configured runtime leases' do
-      leases = {
-        postgresql: { path: 'postgresql/creds/node' },
-        redis:      { path: 'redis/creds/agent' }
-      }
-      client = instance_double(Legion::Crypt::Vault::Client)
-      Legion::Settings[:crypt][:vault].merge!(leases: leases, connected: true)
-      allow(Legion::Crypt).to receive(:connected_clusters).and_return({})
-      allow(Legion::Crypt).to receive(:vault_client).and_return(client)
-      allow(Legion::Crypt::LeaseManager.instance).to receive(:fetched_count).and_return(2)
-
-      Legion::Crypt.send(:start_lease_manager, mode: :infra)
-
-      expect(Legion::Crypt::LeaseManager.instance).to have_received(:start).with(
-        {
-          postgresql: { path: 'postgresql/creds/infra' },
-          redis:      { path: 'redis/creds/agent' }
-        },
-        vault_client: client
-      )
-      expect(leases[:postgresql][:path]).to eq('postgresql/creds/node')
-    end
-  end
-
-  describe 'cluster token lifecycle' do
-    let(:configuration) { Legion::Crypt::Settings.default.merge(save_private_key: false) }
-    let(:cluster_config) do
-      { protocol: 'https', address: 'vault.example.com', port: 8200, auth_method: 'ldap', connected: false }
-    end
-    let(:client) { described_class.vault_client(:primary) }
-    let(:logical) { instance_double(Legion::Crypt::Vault::Client::Logical) }
-    let(:auth_token) { double('AuthToken', revoke_self: nil) }
-
-    before do
-      described_class.shutdown
-      configuration[:vault].merge!(token: nil, connected: false, clusters: { primary: cluster_config }, leases: {}, operation_timeout: 0.05)
-      Legion::Settings.set_prop(:crypt, configuration)
-      allow(client).to receive(:logical).and_return(logical)
-      allow(client).to receive(:auth_token).and_return(auth_token)
-    end
-
-    after { described_class.shutdown }
-
-    it 'preserves automatic Kerberos reauthentication and revokes the owned token on shutdown' do
-      cluster_config.merge!(auth_method: 'kerberos', kerberos: { service_principal: 'HTTP/vault.example.com' })
-      attempts = 0
-      renewed = Queue.new
-      allow(Legion::Crypt::KerberosAuth).to receive(:login) do
-        attempts += 1
-        renewed << Thread.current if attempts > 1
-        { token: attempts == 1 ? 'initial' : 'reauthenticated', lease_duration: attempts == 1 ? 0.08 : 60,
-          renewable: false, policies: [] }
-      end
-      revoked = []
-      allow(auth_token).to receive(:revoke_self) { revoked << client.token }
-      described_class.start
-      described_class.start
-      worker = Timeout.timeout(1) { renewed.pop }
-      Timeout.timeout(1) { sleep(0.001) until client.token == 'reauthenticated' }
-      expect(described_class.vault_connected?).to be(true)
-      described_class.shutdown
-      expect(worker.alive?).to be(false)
-      expect(revoked).to eq(['reauthenticated'])
-      expect(attempts).to eq(2)
-    end
-
-    it 'replaces a pending LDAP renewal without duplicate workers and stops the replacement on shutdown' do
-      entered = Queue.new
-      blocked = Queue.new
-      first = double('Secret', auth: double('Auth', client_token: 'first', lease_duration: 0.08, renewable?: true, policies: []))
-      second = double('Secret', auth: double('Auth', client_token: 'second', lease_duration: 60, renewable?: false, policies: []))
-      allow(logical).to receive(:write).and_return(first, second)
-      allow(auth_token).to receive(:renew_self) do
-        entered << Thread.current
-        blocked.pop
-      end
-      expect(Legion::Crypt::KerberosAuth).not_to receive(:login)
-      described_class.start
-      described_class.ldap_login(cluster_name: :primary, username: 'user', password: 'one-use')
-      previous = Timeout.timeout(1) { entered.pop }
-      described_class.ldap_login(cluster_name: :primary, username: 'user', password: 'one-use')
-      workers = Thread.list.select { |thread| thread.name == 'vault-renewer-primary' }
-      expect(previous.alive?).to be(false)
-      expect(workers.size).to eq(1)
-      expect(client.token).to eq('second')
-      expect(described_class.vault_connected?).to be(true)
-      described_class.shutdown
-      expect(workers.first.alive?).to be(false)
-    end
-
-    it 'does not install an LDAP login response completing after shutdown' do
-      operation = nil
-      release = nil
-      entered = Queue.new
-      release = Queue.new
-      allow(logical).to receive(:write) do
-        entered << true
-        release.pop
-        double('Secret', auth: double('Auth', client_token: 'late', lease_duration: 60, renewable?: true, policies: []))
-      end
-      described_class.start
-      operation = Thread.new do
-        described_class.ldap_login(cluster_name: :primary, username: 'user', password: 'one-use')
-      rescue StandardError => e
-        e
-      end
-      Timeout.timeout(1) { entered.pop }
-      described_class.shutdown
-      release << true
-      expect(operation.join(1)).to eq(operation)
-      expect(operation.value).to be_a(RuntimeError)
-      expect(cluster_config[:token]).to be_nil
-      expect(described_class.connected_clusters).to be_empty
-      expect(Thread.list.none? { |thread| thread.name == 'vault-renewer-primary' }).to be(true)
-    ensure
-      release << true if release && operation&.alive?
-      operation&.join(1)
-    end
-  end
-
   describe 'failure-isolated shutdown' do
     let(:configuration) do
       Legion::Crypt::Settings.default.merge(save_private_key: false, vault: Legion::Crypt::Settings.vault.merge(token: nil))
@@ -333,7 +152,6 @@ RSpec.describe Legion::Crypt do
 
     before do
       described_class.shutdown
-      Legion::Crypt::LeaseManager.instance.reset!
       Legion::Settings.set_prop(:crypt, configuration)
     end
 
@@ -516,18 +334,17 @@ RSpec.describe Legion::Crypt do
   let(:logical_double) { double('Vault::Logical') }
   let(:sys_double)     { instance_double(Legion::Crypt::Vault::Client::Sys) }
   let(:vault_client) { double('Vault::Client', logical: logical_double, sys: sys_double) }
-  let(:manager) { Legion::Crypt::LeaseManager.instance }
+  let(:manager) { Legion::Crypt::Vault::Leases.new(client: vault_client) }
 
   before do
     allow(Legion::Crypt).to receive(:vault_client).and_return(vault_client)
+    allow(Legion::Crypt).to receive(:default_lease_manager).and_return(manager)
     allow(logical_double).to receive(:read).and_return(vault_response)
     allow(sys_double).to receive(:revoke).and_return(true)
     @transport_settings = Legion::Settings.loader.settings[:transport]
     Legion::Settings.loader.settings[:transport] = { connection: { vhost: '/' } }
     described_class.instance_variable_set(:@bootstrap_lease_id, nil)
     described_class.instance_variable_set(:@bootstrap_lease_expires, nil)
-    manager.reset!
-    manager.start({}, vault_client: vault_client)
   end
 
   after do
@@ -755,7 +572,7 @@ RSpec.describe Legion::Crypt do
 
     context 'with an existing manager lease' do
       before do
-        manager.start({ 'rabbitmq' => { path: 'rabbitmq/creds/previous' } }, vault_client: vault_client)
+        manager.start(definitions: { 'rabbitmq' => { path: 'rabbitmq/creds/previous' } })
       end
 
       shared_examples 'a rejected identity handoff' do
@@ -847,36 +664,6 @@ RSpec.describe Legion::Crypt do
 
       expect(described_class.instance_variable_get(:@bootstrap_lease_id)).to be_nil
       expect(described_class.instance_variable_get(:@bootstrap_lease_expires)).to be_nil
-    end
-  end
-
-  describe 'start_lease_manager with dynamic_rmq_creds guard' do
-    before do
-      Legion::Settings[:crypt][:vault][:connected] = true
-      Legion::Settings[:crypt][:vault][:leases] = {}
-    end
-
-    after do
-      Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
-      Legion::Settings[:crypt][:vault][:connected] = false
-    end
-
-    it 'keeps a renewal worker available for later dynamic leases' do
-      Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = true
-
-      described_class.send(:start_lease_manager)
-
-      expect(manager.renewal_thread_alive?).to be(true)
-      manager.shutdown
-      expect(manager.renewal_thread_alive?).to be(false)
-    end
-
-    it 'does not start a renewal worker without static or dynamic leases' do
-      Legion::Settings[:crypt][:vault][:dynamic_rmq_creds] = false
-
-      described_class.send(:start_lease_manager)
-
-      expect(manager.renewal_thread_alive?).to be(false)
     end
   end
 end
