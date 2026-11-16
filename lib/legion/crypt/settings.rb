@@ -89,6 +89,13 @@ module Legion
             service_principal: nil,
             auth_path:         'auth/kerberos/login'
           },
+          jwt:                 {
+            auth_path: 'auth/jwt/login',
+            role:      'legion-worker'
+          },
+          ldap:                {
+            auth_path: 'auth/ldap/login'
+          },
           tls:                 {
             verify: 'peer'
           },

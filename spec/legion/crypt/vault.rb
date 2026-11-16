@@ -58,10 +58,10 @@ RSpec.describe Legion::Crypt::Vault do
       end
       expect(@vault).to receive(:handle_exception).with(instance_of(IOError), hash_including(level: :error))
 
-      expect(@vault.close_sessions).to eq(['healthy'])
+      expect(@vault.close_sessions).to be(false)
       expect(revoked).to eq(['healthy'])
       expect(@vault.sessions).to eq([])
-      expect(@vault.close_sessions).to eq([])
+      expect(@vault.close_sessions).to be(true)
       expect(revoked).to eq(['healthy'])
     end
 
@@ -75,7 +75,7 @@ RSpec.describe Legion::Crypt::Vault do
       expect(@vault).to receive(:handle_exception).with(instance_of(Timeout::Error), hash_including(level: :error))
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-      expect(@vault.close_sessions).to eq(['healthy'])
+      expect(@vault.close_sessions).to be(false)
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
       expect(revoked).to eq(['healthy'])
     end
@@ -90,11 +90,11 @@ RSpec.describe Legion::Crypt::Vault do
       end
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-      expect(@vault.close_sessions(deadline: started + 0.04)).to eq([])
+      expect(@vault.close_sessions(deadline: started + 0.04)).to be(false)
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
       expect(attempted).to eq(['stalled'])
       expect(@vault.sessions).to eq([])
-      expect(@vault.close_sessions).to eq([])
+      expect(@vault.close_sessions).to be(true)
     end
 
     it 'applies a whole-close deadline even when the caller supplies none' do
@@ -108,7 +108,7 @@ RSpec.describe Legion::Crypt::Vault do
       end
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-      expect(@vault.close_sessions).to eq([])
+      expect(@vault.close_sessions).to be(false)
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
       expect(attempted).to eq(['stalled'])
     end
@@ -122,7 +122,7 @@ RSpec.describe Legion::Crypt::Vault do
         @vault.close_sessions
       end
 
-      expect(@vault.close_sessions).to eq(['active'])
+      expect(@vault.close_sessions).to be(true)
       expect(observed_sessions).to eq([])
       expect(@vault.sessions).to eq([])
     end
@@ -211,27 +211,28 @@ RSpec.describe Legion::Crypt::Vault do
       expect(@vault.sessions).to eq(['new'])
     end
 
-    it 'bounds each cluster token renewal while preserving routing and failure isolation' do
-      @vault.extend(Legion::Crypt::Vault::Cluster)
-      allow(@vault).to receive(:connected_clusters).and_return(stalled: {}, failed: {}, healthy: {})
-      renewed = []
-      %i[stalled failed healthy].each do |name|
-        token = double("token-#{name}")
-        client = instance_double(Legion::Crypt::Vault::Client, auth_token: token)
-        allow(@vault).to receive(:vault_client).with(name).and_return(client)
-        allow(token).to receive(:renew_self) do
-          sleep 5 if name == :stalled
-          raise IOError, 'unavailable' if name == :failed
-
-          renewed << name
-        end
+    it 'stops revoking sessions after Vault rejects the token' do
+      @vault.sessions = %w[first second third]
+      attempted = []
+      allow(vault_sys).to receive(:revoke) do |lease_id:|
+        attempted << lease_id
+        raise Legion::Crypt::Vault::HTTPClientError.new(code: 403, errors: ['permission denied', 'invalid token'])
       end
-      expect(default_client).not_to receive(:auth_token)
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      denied_clients = {}.compare_by_identity
 
-      expect(@vault.renew_sessions).to eq([:healthy])
-      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
-      expect(renewed).to eq([:healthy])
+      expect(@vault.close_sessions(denied_clients: denied_clients)).to be(false)
+      expect(attempted).to eq(['first'])
+      expect(denied_clients).to have_key(default_client)
+    end
+
+    it 'renews tracked sessions rather than cluster tokens when clusters are connected' do
+      @vault.sessions = ['session']
+      allow(@vault).to receive(:connected_clusters).and_return(primary: { token: 'cluster-token', connected: true })
+      allow(vault_sys).to receive(:renew)
+      expect(default_client).not_to receive(:auth_token)
+
+      expect(@vault.renew_sessions).to eq(['session'])
+      expect(vault_sys).to have_received(:renew).with(lease_id: 'session')
     end
   end
 

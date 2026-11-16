@@ -2,7 +2,6 @@
 
 require 'legion/logging/helper'
 require 'legion/crypt/vault/client'
-require 'legion/crypt/lease_manager'
 
 module Legion
   module Crypt
@@ -16,7 +15,7 @@ module Legion
           existing = find_by_name(canonical_name: canonical_name)
           return existing if existing
 
-          response = Legion::Crypt::LeaseManager.instance.vault_logical.write(
+          response = Legion::Crypt.vault_client.logical.write(
             path: 'identity/entity',
             data: {
               name:     "legion-#{canonical_name}",
@@ -36,7 +35,7 @@ module Legion
         # Create an alias linking an auth method mount to the entity.
         # Idempotent — swallows "already exists" 4xx errors.
         def self.ensure_alias(entity_id:, mount_accessor:, alias_name:)
-          Legion::Crypt::LeaseManager.instance.vault_logical.write(
+          Legion::Crypt.vault_client.logical.write(
             path: 'identity/entity-alias',
             data: { name: alias_name, canonical_id: entity_id, mount_accessor: mount_accessor }
           )
@@ -55,7 +54,7 @@ module Legion
         # Look up a Vault entity by its Legion canonical name.
         # Returns the Vault entity ID string, or nil if not found.
         def self.find_by_name(canonical_name:)
-          response = Legion::Crypt::LeaseManager.instance.vault_logical.read(path: "identity/entity/name/legion-#{canonical_name}")
+          response = Legion::Crypt.vault_client.logical.read(path: "identity/entity/name/legion-#{canonical_name}")
           extract_id(response)
         rescue StandardError => e
           handle_exception(e, level: :warn, operation: 'crypt.vault_entity.find_by_name', canonical_name: canonical_name)

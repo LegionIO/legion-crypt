@@ -7,21 +7,19 @@ Core encryption, secrets management, JWT, and HashiCorp Vault integration for Le
 ```
 Legion::Crypt
 ├── Cipher          # AES-256-GCM encryption; legacy CBC decryption; RSA key pair
-├── Vault           # read/write/connect/session renewal through Vault::Client
+├── Vault           # read/write/connect through Vault::Client
 │   ├── Client      # core-owned HTTP client using Faraday and Legion::JSON
-│   ├── Cluster     # client selection, caching, authentication grant publication
+│   ├── Cluster     # client selection, caching, grant publication, connected flags
 │   ├── Operation   # bounded operations and shared shutdown deadlines
 │   ├── Entity      # entity and alias lookup
-│   ├── JwtAuth     # .login / .login! / .worker_login
-│   ├── KerberosAuth # SPNEGO as Authorization header; preserves namespace
-│   └── Renewer     # legacy Every actor for session renewal
+│   ├── Session     # one per cluster: token lifecycle, renew/re-auth handoff, stop
+│   ├── Auth        # login strategies: Auth::Kerberos (SPNEGO), Auth::LDAP, Auth::JWT
+│   ├── Leases      # dynamic-secret leases: acquire, renew at 50% TTL, reissue, revoke
+│   └── Renewer     # legacy Every actor for KV session renewal
 ├── JWT             # issue/verify/decode (HS256 cluster-secret or RS256 RSA)
 ├── JwksClient      # external JWKS endpoint, 1hr TTL cache, thread-safe
 ├── ClusterSecret   # shared AES key distributed across nodes
-├── LeaseManager    # dynamic Vault lease lifecycle
-├── KerberosAuth    # SPNEGO acquisition through the optional lex-kerberos helper
-├── LdapAuth        # cluster-scoped LDAP login and token maintenance
-├── TokenRenewer    # 75% TTL renewal; Kerberos-only re-auth; retry backoff
+├── LeaseManager    # Singleton Vault::Leases; cross-gem contract, exists without Vault
 ├── Ed25519         # key gen, sign, verify, Vault storage
 ├── PartitionKeys   # HKDF per-tenant key derivation, AES-256-GCM
 ├── TLS             # TLS configuration and Vault-backed material resolution
@@ -33,7 +31,9 @@ Legion::Crypt
 └── MockVault       # in-memory mock for local dev
 ```
 
-Vault components live under `lib/legion/crypt/vault/`: `client.rb`, `cluster.rb`, `operation.rb`, `entity.rb`, `jwt_auth.rb`, `kerberos_auth.rb`, and `renewer.rb`. Core `KerberosAuth` and `TokenRenewer` remain directly under `Legion::Crypt`.
+Vault components live under `lib/legion/crypt/vault/`. Only what other gems reach by path or constant stays directly under `Legion::Crypt`: `LeaseManager` (legion-settings, legion-data) and `MockVault` (LegionIO).
+
+Vault is optional. With it disabled or unreachable, boot continues, `LeaseManager.instance` still answers, and `lease://` references stay unresolved until a session acquires the lease and settings are resolved again.
 
 ## Key Design Decisions
 
@@ -41,7 +41,8 @@ Vault components live under `lib/legion/crypt/vault/`: `client.rb`, `cluster.rb`
 - HS256 (cluster secret) for intra-cluster tokens; RS256 (RSA keypair) for externally-verifiable tokens
 - `JwksClient` caches keys for one hour, shares concurrent refreshes, and throttles repeated unknown-key refreshes.
 - Vault connectivity uses the core client; the `vault` gem is not required. Kerberos SPNEGO acquisition requires the optional `lex-kerberos` helper, and authentication preserves the configured Vault namespace.
-- JWT/LDAP token renewal never falls back to Kerberos. Expiry or terminal rejection requires login again; Kerberos grants alone can automatically reauthenticate.
+- A Vault token is renewed only when Vault's last auth response said it is renewable. JWT/LDAP never fall back to Kerberos: expiry or terminal rejection requires login again. Kerberos grants alone re-authenticate automatically, at 75% TTL when not renewable.
+- Lease renewal runs on the `Leases` thread, separate from the session's token thread, and only for the default cluster.
 
 ## Framework Contracts
 
