@@ -189,6 +189,28 @@ RSpec.describe Legion::Crypt do
       expect(revoked).to eq(%w[healthy after-restart])
     end
 
+    it 'revokes tracked sessions while the token is still valid and reports a token that was not revoked' do
+      order = []
+      sys = double('Vault sys')
+      allow(described_class).to receive(:vault_client).and_return(double('core Vault client', sys: sys))
+      allow(sys).to receive(:revoke) { |lease_id:| order << lease_id }
+      session = instance_double(Legion::Crypt::Vault::Session, request_stop: nil)
+      allow(session).to receive(:stop) do
+        order << :session_token
+        false
+      end
+      logger = double('logger').as_null_object
+      allow(described_class).to receive(:log).and_return(logger)
+
+      described_class.start
+      described_class.instance_variable_set(:@vault_sessions, { nil => session })
+      described_class.add_session(path: 'tracked')
+      described_class.shutdown
+
+      expect(order).to eq(['tracked', :session_token])
+      expect(logger).to have_received(:error).with(/incomplete Vault cleanup: stop_vault_sessions/)
+    end
+
     it 'retires cached cluster clients before starting another lifecycle' do
       described_class.start
       configuration[:vault][:clusters][:primary] = {

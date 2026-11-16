@@ -59,7 +59,7 @@ module Legion
 
           results[name] = ldap_login(cluster_name: name, username: username, password: password)
         rescue StandardError => e
-          handle_exception(e, level: :warn, operation: 'crypt.ldap_login_all', cluster_name: name)
+          handle_exception(e, level: :error, operation: 'crypt.ldap_login_all', cluster_name: name)
           message = password.to_s.empty? ? e.message : e.message.gsub(password.to_s, '[REDACTED]')
           results[name] = { error: message }
         end
@@ -247,8 +247,8 @@ module Legion
         components = [
           [self, :stop_svid_rotation, { deadline: deadline }, false],
           [self, :shutdown_renewer, {}, false],
-          [self, :stop_vault_sessions, { deadline: deadline, denied_clients: denied_clients }, true],
           [self, :close_sessions, { deadline: deadline, denied_clients: denied_clients }, true],
+          [self, :stop_vault_sessions, { deadline: deadline, denied_clients: denied_clients }, true],
           [self, :clear_vault_clients, { deadline: deadline }, false]
         ]
         run_shutdown_components(components)
@@ -279,16 +279,16 @@ module Legion
         rescue NameError
           raise # programming error — never swallowed as a Vault outage
         rescue StandardError => e
-          handle_exception(e, level: :warn, operation: 'crypt.start_vault_sessions', cluster_name: name)
+          handle_exception(e, level: :error, operation: 'crypt.start_vault_sessions', cluster_name: name)
         end
       end
 
-      # Stops every session (each stops its token thread, shuts down its leases, and revokes its token).
+      # Stops every session (each stops its token thread, shuts down its leases, and revokes its token);
+      # returns whether every session completed its remote cleanup.
       def stop_vault_sessions(deadline:, denied_clients: {}, **)
         sessions = lifecycle_monitor.synchronize { (@vault_sessions || {}).values.tap { @vault_sessions = {} } }
         sessions.map do |session|
           session.stop(deadline: deadline)
-          true
         rescue StandardError => e
           denied_clients[session.client] = true if e.is_a?(Legion::Crypt::Vault::HTTPClientError) && e.code == 403
           handle_exception(e, level: :error, operation: 'crypt.stop_vault_sessions', cluster_name: session.cluster_name, outcome: 'incomplete')

@@ -78,10 +78,19 @@ RSpec.describe Legion::Crypt::Vault::Session do
   end
 
   describe '#login' do
-    before { Legion::Settings[:crypt][:vault][:clusters] = { primary: { auth_method: 'ldap', token: nil } } }
+    before do
+      Legion::Settings[:crypt][:vault][:clusters] = { primary: { auth_method: 'ldap', token: nil } }
+      allow(Legion::Crypt::Vault::Auth::LDAP).to receive(:new).and_return(strategy)
+    end
+
+    it 'raises a failed login to the caller' do
+      allow(strategy).to receive(:authenticate).and_raise(Legion::Crypt::Vault::Auth::AuthError, 'denied')
+      session.start
+
+      expect { session.login(username: 'mary', password: 'wrong') }.to raise_error(Legion::Crypt::Vault::Auth::AuthError)
+    end
 
     it 'authenticates with the given credentials and returns the grant as a Hash' do
-      allow(Legion::Crypt::Vault::Auth::LDAP).to receive(:new).and_return(strategy)
       session.start
 
       result = session.login(username: 'mary', password: 'secret')
@@ -159,13 +168,29 @@ RSpec.describe Legion::Crypt::Vault::Session do
 
   describe '#stop' do
     let(:leases) { instance_double(Legion::Crypt::Vault::Leases, start: nil, start_renewal_thread: nil, request_stop: nil) }
+    let(:deadline) { Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1 }
+
+    before { session.start }
 
     it 'shuts down the leases and then revokes the minted token' do
-      session.start
-      expect(leases).to receive(:shutdown).with(deadline: anything).ordered
+      expect(leases).to receive(:shutdown).with(deadline: anything).ordered.and_return(true)
       expect(Legion::Crypt).to receive(:revoke_vault_token).with(client: client, token: 'old-token').ordered
 
-      session.stop(deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1)
+      expect(session.stop(deadline: deadline)).to be(true)
+    end
+
+    it 'reports incomplete cleanup when the token could not be revoked' do
+      allow(leases).to receive(:shutdown).and_return(true)
+      allow(Legion::Crypt).to receive(:revoke_vault_token).and_raise(Legion::Crypt::Vault::HTTPClientError.new(code: 403))
+
+      expect(session.stop(deadline: deadline)).to be(false)
+    end
+
+    it 'reports incomplete cleanup when leases were left behind' do
+      allow(leases).to receive(:shutdown).and_return(false)
+
+      expect(session.stop(deadline: deadline)).to be(false)
+      expect(revoked).to eq(['old-token'])
     end
   end
 end

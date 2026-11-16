@@ -44,6 +44,11 @@
   tokens already were.
 - Named clusters keep the top-level `crypt.vault.connected` flag current on
   grant publication and disconnect, since LegionIO and extensions read it directly.
+- Shutdown revokes tracked sessions and leases before the Vault tokens they
+  depend on. A token or lease that could not be revoked is reported as incomplete
+  cleanup instead of a completed stop.
+- Authentication, renewal, re-authentication, and grant-installation failures
+  log at ERROR. A failed LDAP login is reported once, by `ldap_login_all`.
 
 ### Removed
 - The process-wide grant coordinator on `Legion::Crypt`

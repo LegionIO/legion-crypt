@@ -64,11 +64,12 @@ module Legion
           start_maintenance
           true
         rescue Legion::Crypt::Vault::Auth::AuthError, *FAILURES => e
-          handle_exception(e, level: :warn, operation: 'crypt.vault_session.start', cluster_name: @cluster_name)
+          handle_exception(e, level: :error, operation: 'crypt.vault_session.start', cluster_name: @cluster_name)
           false
         end
 
-        # Explicit LDAP/JWT login. Returns the grant Hash (the pre-refactor ldap_login contract).
+        # Explicit LDAP/JWT login. Returns the grant Hash (the pre-refactor ldap_login contract);
+        # a failed login raises to the caller, which owns reporting it.
         def login(**creds)
           return nil if stopped?
 
@@ -76,13 +77,11 @@ module Legion
           commit_grant(grant: grant, minted: true)
           start_maintenance
           grant_hash
-        rescue Legion::Crypt::Vault::Auth::AuthError, *FAILURES => e
-          handle_exception(e, level: :warn, operation: 'crypt.vault_session.login', cluster_name: @cluster_name)
-          raise
         end
 
-        # Stops the maintenance thread, shuts down the leases, and revokes a MINTED (auth-method)
+        # Stops the maintenance thread, shuts down the leases, and then revokes a MINTED (auth-method)
         # token. An adopted static/config token is never revoked — it belongs to the operator.
+        # Returns whether the leases and the token were actually cleaned up in Vault.
         def stop(deadline:, **)
           request_stop
           thread = @state_mutex.synchronize { @thread }
@@ -90,9 +89,14 @@ module Legion
             remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
             thread.join(remaining) if remaining.positive?
           end
-          @leases&.shutdown(deadline: deadline)
-          revoke_token if @state_mutex.synchronize { @minted && revocable_locked? }
-          log.info "Vault session stopped cluster=#{label}"
+          leases_released = @leases.nil? || @leases.shutdown(deadline: deadline)
+          token_released = !@state_mutex.synchronize { @minted && revocable_locked? } || revoke_token
+          if leases_released && token_released
+            log.info "Vault session stopped cluster=#{label}"
+          else
+            log.error "Vault session stopped with incomplete cleanup cluster=#{label} leases=#{leases_released} token=#{token_released}"
+          end
+          leases_released && token_released
         end
 
         # Signals the maintenance thread to stop. Public so Legion::Crypt.shutdown can request an
@@ -225,7 +229,7 @@ module Legion
         rescue Legion::Crypt::Vault::HTTPError => e
           return true if STANDBY_CODES.include?(e.code)
 
-          handle_exception(e, level: :warn, operation: 'crypt.vault_session.health', cluster_name: @cluster_name)
+          handle_exception(e, level: :error, operation: 'crypt.vault_session.health', cluster_name: @cluster_name)
           false
         end
 
@@ -301,7 +305,7 @@ module Legion
           log.info "Vault token renewed cluster=#{label} ttl=#{@state_mutex.synchronize { @lease_duration }}s"
           :renewed
         rescue Legion::Crypt::Vault::GrantRejectedError => e
-          handle_exception(e, level: :warn, operation: 'crypt.vault_session.renew', cluster_name: @cluster_name)
+          handle_exception(e, level: :error, operation: 'crypt.vault_session.renew', cluster_name: @cluster_name)
           :finished
         rescue *FAILURES, Legion::Crypt::Vault::Auth::AuthError => e
           handle_exception(e, level: :error, operation: 'crypt.vault_session.renew', cluster_name: @cluster_name)
@@ -330,7 +334,7 @@ module Legion
           log.error "Vault token re-auth incomplete cluster=#{label}; previous token retained"
           :failed
         rescue Legion::Crypt::Vault::GrantRejectedError => e
-          handle_exception(e, level: :warn, operation: 'crypt.vault_session.handoff', cluster_name: @cluster_name)
+          handle_exception(e, level: :error, operation: 'crypt.vault_session.handoff', cluster_name: @cluster_name)
           :finished
         rescue *FAILURES, Legion::Crypt::Vault::Auth::AuthError => e
           handle_exception(e, level: :error, operation: 'crypt.vault_session.handoff', cluster_name: @cluster_name)
@@ -348,13 +352,16 @@ module Legion
           end
         end
 
+        # Returns whether the token is gone from Vault; a failed revocation is reported, not hidden.
         def revoke_token(token: @state_mutex.synchronize { @current_token })
-          return if token.nil?
+          return true if token.nil?
 
           Legion::Crypt.revoke_vault_token(client: @client, token: token)
+          true
         rescue *FAILURES => e
           handle_exception(e, level: :error, operation: 'crypt.vault_session.revoke', cluster_name: @cluster_name,
                              outcome: 'incomplete')
+          false
         end
 
         def renewal_delay
