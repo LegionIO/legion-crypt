@@ -10,9 +10,10 @@ require 'legion/crypt/vault/operation'
 module Legion
   module Crypt
     module Vault
-      # Maintains the dynamic-secret leases issued under one session's token: acquisition,
-      # renew-at-50%, reissue under a replaced token, settings publication, consumer reconnect,
-      # and revocation. One instance per session; for this PR the default cluster.
+      # Maintains dynamic-secret leases (PostgreSQL, RabbitMQ, Redis, ...): acquisition, renew-at-50%
+      # on its own thread, reissue under a replaced token, settings publication, consumer reconnect,
+      # and revocation. It holds lease:// settings references with or without Vault, so it is built
+      # without a client; the default cluster's session supplies one when it has a token.
       class Leases
         include Legion::Logging::Helper
 
@@ -20,8 +21,8 @@ module Legion
         MINIMUM_SLEEP = 0.01
         MAX_RETRY_DELAY = 60
 
-        def initialize(client:, **)
-          @vault_client = client
+        def initialize(**)
+          @vault_client = nil
           @lease_cache = {}
           @active_leases = {}
           @owned_leases = {}
@@ -39,11 +40,12 @@ module Legion
           @renewal_generation = nil
         end
 
-        def start(definitions:, **)
+        def start(definitions:, client:, **)
           generation = @state_mutex.synchronize do
             return if Legion::Crypt.respond_to?(:stopping) && Legion::Crypt.stopping
 
             @stopped = false
+            @vault_client = client
             @generation
           end
           register_at_exit_hook
@@ -139,11 +141,11 @@ module Legion
         end
 
         def vault_logical
-          @vault_client.logical
+          vault_client.logical
         end
 
         def vault_sys
-          @vault_client.sys
+          vault_client.sys
         end
 
         # Reacquires every active lease issued through the client; returns whether all of them were replaced.
@@ -159,13 +161,14 @@ module Legion
         def register_dynamic_lease(name:, path:, response:, settings_refs:)
           name = name.to_sym
           generation = @state_mutex.synchronize { @generation }
-          ownership = track_ownership(name: name, client: @vault_client, lease_id: response.lease_id)
+          client = vault_client
+          ownership = track_ownership(name: name, client: client, lease_id: response.lease_id)
           register_at_exit_hook
           install_started = false
           with_lease_operation(name: name) do |deadline|
             settings_refs.each { |ref| register_ref(name, ref[:key], ref[:path], generation: generation) }
             install_started = true
-            install_lease(name: name, path: path, response: response, client: @vault_client, generation: generation,
+            install_lease(name: name, path: path, response: response, client: client, generation: generation,
                           deadline: deadline, reconnect: true, ownership: ownership)
           end
         rescue StandardError => e
@@ -176,7 +179,7 @@ module Legion
               entry[:retired] = true if entry && @active_leases[name]&.dig(:ownership) != ownership
             end
           end
-          schedule_retry(name: name, path: path, client: @vault_client, generation: generation)
+          schedule_retry(name: name, path: path, client: client, generation: generation)
           false
         end
 
@@ -261,6 +264,11 @@ module Legion
         end
 
         private
+
+        # The session's client once it has a token; before that, the default cluster's client.
+        def vault_client
+          @state_mutex.synchronize { @vault_client } || Legion::Crypt.vault_client
+        end
 
         def apply_settings_proposal(settings:, proposal:, publish:)
           validate_settings_proposal!(settings: settings, proposal: proposal)

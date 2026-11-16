@@ -61,6 +61,7 @@ module Legion
             config.merge!(token: token, lease_duration: grant[:lease_duration], renewable: grant[:renewable],
                           expires_at: expires_at, connected: connected, relogin_required: !connected, auth_method: auth_method)
             entry[:signature][:token] = token.dup.freeze
+            sync_vault_connected
           end
           expires_at
         end
@@ -71,6 +72,7 @@ module Legion
             next false unless config && config[:token] == token
 
             config.merge!(connected: false, relogin_required: relogin_required)
+            sync_vault_connected
             true
           end
         end
@@ -114,28 +116,24 @@ module Legion
         end
 
         def connected_clusters
-          vault_clients_mutex.synchronize do
-            now = Time.now
-            clusters.select do |_, config|
-              config[:token] && config[:connected] && !config[:relogin_required] &&
-                (!config[:expires_at] || config[:expires_at] > now)
-            end
-          end
+          vault_clients_mutex.synchronize { connected_cluster_configs }
         end
 
         private
 
-        def cluster_healthy?(client)
-          client.sys.health_status.initialized?
-        rescue Legion::Crypt::Vault::HTTPError => e
-          return true if [429, 472, 473].include?(e.code)
-
-          handle_exception(e, level: :warn, operation: 'crypt.vault_cluster.cluster_healthy')
-          raise
+        # Caller holds vault_clients_mutex.
+        def connected_cluster_configs
+          now = Time.now
+          clusters.select do |_, config|
+            config[:token] && config[:connected] && !config[:relogin_required] &&
+              (!config[:expires_at] || config[:expires_at] > now)
+          end
         end
 
-        def sync_vault_connected(connected)
-          Legion::Settings[:crypt][:vault][:connected] = connected
+        # Caller holds vault_clients_mutex. LegionIO and extensions read the top-level flag directly,
+        # so named clusters keep it current; a single cluster publishes straight into the top level.
+        def sync_vault_connected
+          Legion::Settings[:crypt][:vault][:connected] = connected_cluster_configs.any? unless clusters.empty?
         end
 
         def selected_connected_cluster_name(name = nil)

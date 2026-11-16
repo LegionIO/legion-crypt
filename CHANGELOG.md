@@ -14,24 +14,36 @@
   login `auth` response as the source-of-truth grant, reading per-cluster config
   from `Legion::Settings`. Kerberos can re-authenticate from the ticket cache;
   LDAP and JWT require a fresh login once the token is unusable.
-- `Legion::Crypt::Vault::Leases` — the per-session dynamic-secret lease lifecycle
-  (acquisition, 50% renewal, reissue under a replaced token, settings-reference
-  publication, consumer reconnect, and revocation), ported from the former
-  process-wide `LeaseManager`.
-- Spec coverage for `Vault::Session` (handoff commit + rollback, principal,
-  stop), `Vault::Leases` (acquire / reissue / revoke), and the three `Vault::Auth`
-  strategies (authenticate, renew, re-auth, and error wrapping).
+- `Legion::Crypt::Vault::Leases` — the dynamic-secret lease lifecycle
+  (acquisition, 50% renewal on its own thread, reissue under a replaced token,
+  settings-reference publication, consumer reconnect, and revocation), moved from
+  the former `LeaseManager` implementation. It is built without a Vault client so
+  it can hold `lease://` settings references whether or not Vault is enabled.
+- Spec coverage for `Vault::Session` (start, login, renewal policy, handoff
+  commit + rollback, stop), `Vault::Leases` (acquire / reissue / revoke),
+  `LeaseManager` without Vault, and the three `Vault::Auth` strategies.
 
 ### Changed
 - `Legion::Crypt.start` now creates one `Vault::Session` per configured cluster
   (or a single session for the default cluster); `Legion::Crypt.shutdown` stops
   them. The token, lease, and re-authentication lifecycle now lives in the
   per-cluster session rather than a process-wide coordinator on `Legion::Crypt`.
-- `Legion::Crypt::LeaseManager` is now a thin `Singleton` facade that delegates to
-  the default session's `Vault::Leases`. It preserves the
-  `Legion::Crypt::LeaseManager.instance` contract that legion-settings
-  (lease:// resolution) and legion-data (consumer reconnects) depend on, so this
-  ships as a single legion-crypt bump with no cross-gem changes.
+- `Legion::Crypt::LeaseManager` is now the `Singleton` subclass of
+  `Vault::Leases`: the one process-wide lease object, present from load. The
+  default cluster's session supplies its client and starts lease acquisition and
+  renewal once it has a token, with or without static lease definitions. This
+  preserves the `Legion::Crypt::LeaseManager.instance` contract that
+  legion-settings (lease:// resolution) and legion-data (consumer reconnects)
+  depend on, including when Vault is disabled or unreachable.
+- The Vault token is renewed only when Vault's last auth response reported it
+  renewable. A non-renewable Kerberos token is replaced by re-authentication at
+  75% of its TTL; non-renewable LDAP/JWT tokens run to expiry and require a new
+  login. A static configured token is adopted after a health check, is never
+  revoked on shutdown, and is renewed only if its configuration says renewable.
+- Tokens minted by LDAP and JWT logins are now revoked on shutdown, as Kerberos
+  tokens already were.
+- Named clusters keep the top-level `crypt.vault.connected` flag current on
+  grant publication and disconnect, since LegionIO and extensions read it directly.
 
 ### Removed
 - The process-wide grant coordinator on `Legion::Crypt`
@@ -41,8 +53,7 @@
   superseded by the per-session `Vault::Session`.
 - The module-based `Legion::Crypt::Vault::KerberosAuth` and
   `Legion::Crypt::Vault::JwtAuth`, the standalone token-renewer actor, and the
-  process-wide `Legion::Crypt::LeaseManager` implementation (now a facade over
-  `Vault::Leases`).
+  body of `Legion::Crypt::LeaseManager` (now `Vault::Leases`).
 
 ### Compatibility
 - The public `Legion::Crypt` surface consumed by the daemon and other gems

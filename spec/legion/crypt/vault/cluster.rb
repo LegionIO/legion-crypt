@@ -128,6 +128,18 @@ RSpec.describe Legion::Crypt::Vault::Cluster do
       expect(cluster_alpha).to include(token: 'renewed-token', connected: true, relogin_required: false, auth_method: 'kerberos')
     end
 
+    it 'keeps the top-level connected flag current for named clusters' do
+      client = test_object.vault_client(:alpha)
+      expect(Legion::Settings[:crypt][:vault][:connected]).to be(false)
+
+      test_object.publish_vault_grant(cluster_name: :alpha, client: client, auth_method: 'kerberos',
+                                      grant: { token: 'renewed-token', lease_duration: 3600, renewable: true })
+      expect(Legion::Settings[:crypt][:vault][:connected]).to be(true)
+
+      test_object.disconnect_vault_grant(cluster_name: :alpha, token: 'renewed-token', relogin_required: false)
+      expect(Legion::Settings[:crypt][:vault][:connected]).to be(false)
+    end
+
     it 'publishes grants into the live configuration after a settings rebuild' do
       client = test_object.vault_client(:alpha)
       Legion::Settings.loader.mark_dirty!
@@ -191,8 +203,8 @@ RSpec.describe Legion::Crypt::Vault::Cluster do
         end
       end
       allow(client).to receive(:build_connection).and_return(connection)
-      manager = Legion::Crypt::Vault::Leases.new(client: client)
-      manager.start(definitions: { database: { path: 'database/creds/app' } })
+      manager = Legion::Crypt::Vault::Leases.new
+      manager.start(definitions: { database: { path: 'database/creds/app' } }, client: client)
       cluster_alpha[:token] = 'new-token'
       expect(test_object.vault_client(:alpha)).not_to equal(client)
 

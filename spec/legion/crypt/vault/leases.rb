@@ -12,13 +12,13 @@ RSpec.describe Legion::Crypt::Vault::Leases do
            lease_duration: 3600, renewable?: true)
   end
 
-  subject(:leases) { described_class.new(client: client) }
+  subject(:leases) { described_class.new }
 
   describe '#start' do
     it 'acquires each defined lease and exposes its data' do
       expect(logical).to receive(:read).with(path: 'postgresql/creds/node').and_return(lease_response)
 
-      leases.start(definitions: { postgresql: { path: 'postgresql/creds/node' } })
+      leases.start(definitions: { postgresql: { path: 'postgresql/creds/node' } }, client: client)
 
       expect(leases.active_leases.keys).to eq([:postgresql])
       expect(leases.lease_data(:postgresql)).to eq(username: 'db_user', password: 'db_pass')
@@ -27,7 +27,7 @@ RSpec.describe Legion::Crypt::Vault::Leases do
     end
 
     it 'returns nil data for a lease that was not acquired' do
-      leases.start(definitions: {})
+      leases.start(definitions: {}, client: client)
       expect(leases.lease_data(:missing)).to be_nil
       expect(leases.fetch(:missing, :username)).to be_nil
     end
@@ -37,7 +37,7 @@ RSpec.describe Legion::Crypt::Vault::Leases do
     before do
       allow(sys).to receive(:revoke)
       allow(logical).to receive(:read).with(path: 'postgresql/creds/node').and_return(lease_response)
-      leases.start(definitions: { postgresql: { path: 'postgresql/creds/node' } })
+      leases.start(definitions: { postgresql: { path: 'postgresql/creds/node' } }, client: client)
     end
 
     it 're-acquires the leases issued through the client and exposes the new credentials' do
@@ -60,7 +60,7 @@ RSpec.describe Legion::Crypt::Vault::Leases do
   describe '#shutdown' do
     it 'revokes the owned leases' do
       allow(logical).to receive(:read).with(path: 'postgresql/creds/node').and_return(lease_response)
-      leases.start(definitions: { postgresql: { path: 'postgresql/creds/node' } })
+      leases.start(definitions: { postgresql: { path: 'postgresql/creds/node' } }, client: client)
 
       expect(sys).to receive(:revoke).with(lease_id: 'lease-1')
       expect(leases.shutdown).to be(true)

@@ -334,11 +334,11 @@ RSpec.describe Legion::Crypt do
   let(:logical_double) { double('Vault::Logical') }
   let(:sys_double)     { instance_double(Legion::Crypt::Vault::Client::Sys) }
   let(:vault_client) { double('Vault::Client', logical: logical_double, sys: sys_double) }
-  let(:manager) { Legion::Crypt::Vault::Leases.new(client: vault_client) }
+  let(:manager) { Legion::Crypt::LeaseManager.instance }
 
   before do
+    manager.reset!
     allow(Legion::Crypt).to receive(:vault_client).and_return(vault_client)
-    allow(Legion::Crypt).to receive(:default_lease_manager).and_return(manager)
     allow(logical_double).to receive(:read).and_return(vault_response)
     allow(sys_double).to receive(:revoke).and_return(true)
     @transport_settings = Legion::Settings.loader.settings[:transport]
@@ -572,7 +572,7 @@ RSpec.describe Legion::Crypt do
 
     context 'with an existing manager lease' do
       before do
-        manager.start(definitions: { 'rabbitmq' => { path: 'rabbitmq/creds/previous' } })
+        manager.start(definitions: { 'rabbitmq' => { path: 'rabbitmq/creds/previous' } }, client: vault_client)
       end
 
       shared_examples 'a rejected identity handoff' do

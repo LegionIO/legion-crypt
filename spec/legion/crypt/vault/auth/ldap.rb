@@ -4,9 +4,8 @@ require 'spec_helper'
 require 'legion/crypt/vault/auth/ldap'
 
 RSpec.describe Legion::Crypt::Vault::Auth::LDAP do
-  let(:client) { double('Vault client', logical: logical, auth_token: auth_token) }
+  let(:client) { double('Vault client', logical: logical) }
   let(:logical) { double('Vault logical') }
-  let(:auth_token) { double('AuthToken') }
   let(:auth_response) do
     Legion::Crypt::Vault::Client::Auth.new(data: { client_token: 'hvs.ldap-token', lease_duration: 3600, renewable: true,
                                                    policies: %w[admin], metadata: { username: 'mary@example.com' } })
@@ -46,21 +45,5 @@ RSpec.describe Legion::Crypt::Vault::Auth::LDAP do
     allow(logical).to receive(:write).and_raise(Legion::Crypt::Vault::HTTPClientError.new(code: 403))
 
     expect { auth.authenticate(client: client, username: 'mary', password: 'x') }.to raise_error(Legion::Crypt::Vault::Auth::AuthError)
-  end
-
-  context 'after a grant has been issued' do
-    before do
-      allow(logical).to receive(:write).and_return(secret)
-      auth.authenticate(client: client, username: 'mary', password: 'secret')
-    end
-
-    it 'replaces the grant with the renewed auth response on renew' do
-      renewed = Legion::Crypt::Vault::Client::Auth.new(data: { client_token: 'hvs.renewed', lease_duration: 3600, renewable: true })
-      allow(auth_token).to receive(:renew_self).and_return(double('Secret', auth: renewed))
-
-      auth.renew(client: client)
-
-      expect(auth.grant).to equal(renewed)
-    end
   end
 end

@@ -7,29 +7,21 @@ require 'legion/crypt/vault/operation'
 module Legion
   module Crypt
     module Vault
-      # Shared token-lifecycle behavior for a Vault auth method, mixed into the concrete
-      # Vault::Auth::Kerberos / LDAP / JWT classes. Holds @grant — the login auth response,
-      # which is the source of truth for the token's identity and lifetime — and reads this
-      # cluster's config live from Legion::Settings with bracket access.
+      # Shared login behavior for a Vault auth method, mixed into the concrete
+      # Vault::Auth::Kerberos / LDAP / JWT classes. Reads this cluster's config live from
+      # Legion::Settings with bracket access; the token's lifecycle belongs to Vault::Session.
       module Auth
         include Legion::Logging::Helper
 
         class AuthError < StandardError; end
 
-        # The login/renew auth response. Source of truth for the token's identity + lifetime.
+        # The login auth response. The session holds the live grant and renews it; this is the
+        # strategy's own record of what it last issued.
         attr_reader :grant
 
         def initialize(cluster_name:, **)
           @cluster_name = cluster_name
           @grant = nil
-        end
-
-        # Extends the current token. Replaces @grant with the renewed auth response.
-        def renew(client:, **)
-          secret = client.auth_token.renew_self
-          raise AuthError, 'Vault token renewal returned no auth data' unless secret&.auth
-
-          @grant = secret.auth
         end
 
         private

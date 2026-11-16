@@ -34,7 +34,7 @@ module Legion
     }.freeze
 
     class << self
-      attr_reader :sessions, :stopping, :vault_sessions
+      attr_reader :stopping
 
       include Legion::Logging::Helper
       include Legion::Crypt::Cipher
@@ -115,12 +115,11 @@ module Legion
       end
 
       def fetch_bootstrap_rmq_creds(**)
-        lease_manager = default_lease_manager
-        return unless lease_manager && vault_connected? && dynamic_rmq_creds?
+        return unless vault_connected? && dynamic_rmq_creds?
 
         Legion::Settings.merge_settings('transport', Legion::Transport::Settings.default) if defined?(Legion::Transport::Settings)
 
-        response = lease_manager.vault_logical.read(path: 'rabbitmq/creds/legionio-bootstrap')
+        response = Legion::Crypt::LeaseManager.instance.vault_logical.read(path: 'rabbitmq/creds/legionio-bootstrap')
         return unless response&.data
 
         bootstrap_lease_ttl = Legion::Settings[:crypt][:vault][:bootstrap_lease_ttl].to_i
@@ -150,9 +149,10 @@ module Legion
       end
 
       def swap_to_identity_creds(mode:, **)
-        manager = default_lease_manager
-        return unless manager && vault_connected? && dynamic_rmq_creds?
+        return unless vault_connected? && dynamic_rmq_creds?
         return if mode == :lite
+
+        manager = Legion::Crypt::LeaseManager.instance
 
         role = RMQ_ROLE_MAP.fetch(mode, "legionio-#{mode}")
         response = Legion::Crypt::Vault::Operation.with_timeout { manager.vault_logical.read(path: "rabbitmq/creds/#{role}") }
@@ -180,10 +180,9 @@ module Legion
       end
 
       def revoke_bootstrap_lease(**)
-        lease_manager = default_lease_manager
-        return unless @bootstrap_lease_id && lease_manager
+        return unless @bootstrap_lease_id
 
-        lease_manager.vault_sys.revoke(lease_id: @bootstrap_lease_id)
+        Legion::Crypt::LeaseManager.instance.vault_sys.revoke(lease_id: @bootstrap_lease_id)
         log.info "Bootstrap RMQ lease revoked (#{@bootstrap_lease_id[0..7]}...)"
         @bootstrap_lease_id      = nil
         @bootstrap_lease_expires = nil
@@ -264,8 +263,8 @@ module Legion
 
       private
 
-      # Creates one Vault::Session per configured cluster; the default cluster also manages the
-      # dynamic leases. Multi-cluster by construction; a single/default cluster is the one-cluster case.
+      # Creates one Vault::Session per configured cluster; the default cluster's session also drives
+      # the process-wide leases. Multi-cluster by construction; a single cluster is the one-cluster case.
       def start_vault_sessions(mode:)
         default = default_cluster_name
         lease_defs = postgresql_leases_for_mode(leases: Legion::Settings[:crypt][:vault][:leases], mode: mode)
@@ -273,10 +272,12 @@ module Legion
           client = vault_client(name)
           next if client.nil?
 
-          session = Legion::Crypt::Vault::Session.new(cluster_name: name, client: client,
-                                                      lease_defs: name == default ? lease_defs : nil)
+          leases = name == default ? Legion::Crypt::LeaseManager.instance : nil
+          session = Legion::Crypt::Vault::Session.new(cluster_name: name, client: client, leases: leases, lease_defs: lease_defs)
           (@vault_sessions ||= {})[name] = session
           session.start
+        rescue NameError
+          raise # programming error — never swallowed as a Vault outage
         rescue StandardError => e
           handle_exception(e, level: :warn, operation: 'crypt.start_vault_sessions', cluster_name: name)
         end
@@ -322,10 +323,6 @@ module Legion
       def session_for(cluster_name)
         name = cluster_name.nil? ? default_cluster_name : cluster_name.to_sym
         @vault_sessions&.[](name)
-      end
-
-      def default_lease_manager
-        default_session&.leases
       end
 
       def postgresql_leases_for_mode(leases:, mode:)
