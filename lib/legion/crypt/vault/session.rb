@@ -205,6 +205,9 @@ module Legion
           @state_mutex.synchronize do
             return if @stop
 
+            token = grant.client_token
+            lease_duration = grant.lease_duration.to_f
+            renewable = grant.renewable?
             expires_at = Legion::Crypt.publish_vault_grant(cluster_name: @cluster_name, client: @client,
                                                            grant: grant_hash(grant: grant), auth_method: @auth_method,
                                                            issued_at: issued_at, current_token: previous_token)
@@ -213,9 +216,9 @@ module Legion
             @disconnected = false
             @rejected = false
             @backoff = INITIAL_BACKOFF
-            @current_token = grant.client_token
-            @lease_duration = grant.lease_duration.to_f
-            @renewable = grant.renewable?
+            @current_token = token
+            @lease_duration = lease_duration
+            @renewable = renewable
             @expires_at = expires_at
             @current_token
           end
@@ -223,11 +226,9 @@ module Legion
 
         def commit_minted_grant(grant:, previous_token: nil)
           committed = commit_grant(grant: grant, minted: true, previous_token: previous_token)
-          revoke_uninstalled_grant(grant) unless committed
           committed
-        rescue Legion::Crypt::Vault::GrantRejectedError
-          revoke_uninstalled_grant(grant)
-          raise
+        ensure
+          revoke_uninstalled_grant(grant) if grant && !committed
         end
 
         def revoke_uninstalled_grant(grant)

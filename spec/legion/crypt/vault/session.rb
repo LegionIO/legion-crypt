@@ -250,6 +250,18 @@ RSpec.describe Legion::Crypt::Vault::Session do
       expect(revoked).to eq(%w[new-token old-token])
     end
 
+    it 'revokes an uninstalled re-auth grant when publication fails operationally' do
+      session.start
+      previous_expiry = session.instance_variable_get(:@expires_at)
+      allow(strategy).to receive(:reauth).and_return(grant(token: 'new-token'))
+      allow(Legion::Crypt).to receive(:publish_vault_grant).and_raise(IOError, 'publication unavailable')
+
+      expect(session.send(:handoff)).to eq(:failed)
+      expect(revoked).to eq(['new-token'])
+      expect(session.instance_variable_get(:@grant)).to equal(initial_grant)
+      expect(session.instance_variable_get(:@expires_at)).to eq(previous_expiry)
+    end
+
     it 'revokes a login grant rejected after the client is replaced' do
       Legion::Settings[:crypt][:vault][:clusters][:primary][:auth_method] = 'ldap'
       allow(Legion::Crypt::Vault::Auth::LDAP).to receive(:new).and_return(strategy)
