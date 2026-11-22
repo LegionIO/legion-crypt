@@ -52,6 +52,16 @@ module Legion
         session.login(username: username, password: password)
       end
 
+      def jwt_login(cluster_name:, jwt:, **)
+        session = session_for(cluster_name)
+        raise KeyError, "Vault cluster not configured: #{cluster_name.inspect}" if session.nil?
+
+        session.login(jwt: jwt)
+      rescue Legion::Crypt::Vault::Auth::AuthError, Legion::Crypt::Vault::GrantRejectedError => e
+        handle_exception(e, level: :error, operation: 'crypt.jwt_login', cluster_name: cluster_name)
+        raise
+      end
+
       def ldap_login_all(username:, password:, **)
         results = {}
         effective_cluster_configs.each do |name, config|

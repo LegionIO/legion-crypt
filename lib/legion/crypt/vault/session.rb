@@ -59,11 +59,12 @@ module Legion
           return false unless begin_lifecycle
 
           @auth_method = cluster_config[:auth_method]&.to_s
-          authenticate if @auth_method == 'kerberos'
+          return false if (@auth_method == 'kerberos') && !authenticate
+
           adopt_config_token if @auth_method.nil? || @auth_method.empty?
           start_maintenance
           true
-        rescue Legion::Crypt::Vault::Auth::AuthError, *FAILURES => e
+        rescue Legion::Crypt::Vault::Auth::AuthError, Legion::Crypt::Vault::GrantRejectedError, *FAILURES => e
           handle_exception(e, level: :error, operation: 'crypt.vault_session.start', cluster_name: @cluster_name)
           false
         end
@@ -74,7 +75,8 @@ module Legion
           return nil if stopped?
 
           grant = auth.authenticate(client: @client, **creds)
-          commit_grant(grant: grant, minted: true)
+          return nil unless commit_minted_grant(grant: grant)
+
           start_maintenance
           grant_hash
         end
@@ -178,7 +180,7 @@ module Legion
         # Network auth runs outside the mutex; the grant commit is a brief mutex hold.
         def authenticate
           grant = auth.authenticate(client: @client)
-          commit_grant(grant: grant, minted: true)
+          commit_minted_grant(grant: grant)
         end
 
         # Adopts a pre-configured (static) token once Vault answers a health check. It is non-minted,
@@ -196,13 +198,16 @@ module Legion
           commit_grant(grant: grant, minted: false)
         end
 
-        # Brief mutex hold: installs the grant as current and publishes it to the cluster config.
+        # Brief mutex hold: publishes the grant before installing it as current.
         # previous_token guards against a concurrent token change; nil bypasses it (a first auth or a
         # rollback restore). Returns the current token, or nil when the session is stopping.
         def commit_grant(grant:, minted:, previous_token: nil, issued_at: Time.now)
           @state_mutex.synchronize do
             return if @stop
 
+            expires_at = Legion::Crypt.publish_vault_grant(cluster_name: @cluster_name, client: @client,
+                                                           grant: grant_hash(grant: grant), auth_method: @auth_method,
+                                                           issued_at: issued_at, current_token: previous_token)
             @grant = grant
             @minted = minted
             @disconnected = false
@@ -211,15 +216,29 @@ module Legion
             @current_token = grant.client_token
             @lease_duration = grant.lease_duration.to_f
             @renewable = grant.renewable?
-            @expires_at = Legion::Crypt.publish_vault_grant(cluster_name: @cluster_name, client: @client, grant: grant_hash,
-                                                            auth_method: @auth_method, issued_at: issued_at,
-                                                            current_token: previous_token)
+            @expires_at = expires_at
             @current_token
           end
         end
 
-        def grant_hash
-          g = @grant
+        def commit_minted_grant(grant:, previous_token: nil)
+          committed = commit_grant(grant: grant, minted: true, previous_token: previous_token)
+          revoke_uninstalled_grant(grant) unless committed
+          committed
+        rescue Legion::Crypt::Vault::GrantRejectedError
+          revoke_uninstalled_grant(grant)
+          raise
+        end
+
+        def revoke_uninstalled_grant(grant)
+          token = grant.client_token
+          return if @state_mutex.synchronize { @current_token == token }
+
+          revoke_token(token: token)
+        end
+
+        def grant_hash(grant: @grant)
+          g = grant
           { token: g.client_token, lease_duration: g.lease_duration, renewable: g.renewable?,
             policies: g.policies, metadata: g.metadata }
         end
@@ -320,14 +339,19 @@ module Legion
         def handoff
           old_grant, old_expires, old_minted = @state_mutex.synchronize { [@grant, @expires_at, @minted] }
           candidate = @auth.reauth(client: @client)
-          committed = grant_active && commit_grant(grant: candidate, minted: true, previous_token: old_grant.client_token)
+          committed = if grant_active
+                        commit_minted_grant(grant: candidate, previous_token: old_grant.client_token)
+                      else
+                        revoke_uninstalled_grant(candidate)
+                        nil
+                      end
           recovered = committed && (@leases.nil? || @leases.reissue_all(client: @client, active: method(:grant_active)))
           if recovered && grant_active
             revoke_token(token: old_grant.client_token)
             log.info "Vault token re-authenticated cluster=#{label} ttl=#{candidate.lease_duration}s"
             return :renewed
           end
-          revoke_token(token: candidate.client_token)
+          revoke_token(token: candidate.client_token) if committed
           return :finished unless committed
 
           commit_grant(grant: old_grant, minted: old_minted, issued_at: old_expires - old_grant.lease_duration.to_f)

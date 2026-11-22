@@ -1,5 +1,14 @@
 # Legion::Crypt
 
+## [1.6.1] - 2026-11-22
+
+### Added
+- `Legion::Crypt.jwt_login(cluster_name:, jwt:, **)` activates a configured JWT Vault cluster with a caller-supplied JWT. Authentication failures raise and are reported once.
+
+### Fixed
+- Revoke newly issued Vault tokens that cannot be installed after a client or configuration change, or after a session stop. Failed cleanup is reported as incomplete.
+- Preserve the prior session grant, token, and expiry when Vault rejects publication of a replacement grant.
+
 ## [1.6.0] - 2026-11-13
 
 ### Added

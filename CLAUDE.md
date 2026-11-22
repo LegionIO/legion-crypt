@@ -42,6 +42,7 @@ Vault is optional. With it disabled or unreachable, boot continues, `LeaseManage
 - `JwksClient` caches keys for one hour, shares concurrent refreshes, and throttles repeated unknown-key refreshes.
 - Vault connectivity uses the core client; the `vault` gem is not required. Kerberos SPNEGO acquisition requires the optional `lex-kerberos` helper, and authentication preserves the configured Vault namespace.
 - A Vault token is renewed only when Vault's last auth response said it is renewable. JWT/LDAP never fall back to Kerberos: expiry or terminal rejection requires login again. Kerberos grants alone re-authenticate automatically, at 75% TTL when not renewable.
+- `Legion::Crypt.jwt_login(cluster_name:, jwt:, **)` activates a configured JWT cluster with a caller-supplied JWT. It returns the Vault grant, raises on authentication failure, and does not authenticate automatically at startup.
 - Lease renewal runs on the `Leases` thread, separate from the session's token thread, and only for the default cluster.
 
 ## Framework Contracts
