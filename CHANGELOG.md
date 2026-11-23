@@ -8,6 +8,8 @@
 ### Fixed
 - Revoke newly issued Vault tokens that cannot be installed after a client or configuration change, or after a session stop. Failed cleanup is reported as incomplete.
 - Preserve the prior session grant, token, and expiry when Vault rejects publication of a replacement grant.
+- Reject JWT and LDAP logins against clusters configured for another auth method. Repeated logins reissue dependent leases before retiring the old token, and failed handoffs restore the previous grant before revoking the candidate.
+- Report transport failures and stopped JWT logins to callers; disconnect a rejected rollback candidate before cleanup.
 
 ## [1.6.0] - 2026-11-13
 

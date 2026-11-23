@@ -49,6 +49,8 @@ module Legion
         session = session_for(cluster_name)
         raise KeyError, "Vault cluster not configured: #{cluster_name.inspect}" if session.nil?
 
+        validate_vault_auth_method!(session: session, method: 'ldap')
+
         session.login(username: username, password: password)
       end
 
@@ -56,8 +58,11 @@ module Legion
         session = session_for(cluster_name)
         raise KeyError, "Vault cluster not configured: #{cluster_name.inspect}" if session.nil?
 
+        validate_vault_auth_method!(session: session, method: 'jwt')
+
         session.login(jwt: jwt)
-      rescue Legion::Crypt::Vault::Auth::AuthError, Legion::Crypt::Vault::GrantRejectedError => e
+      rescue Legion::Crypt::Vault::Auth::AuthError, Legion::Crypt::Vault::GrantRejectedError,
+             *Legion::Crypt::Vault::Session::FAILURES => e
         handle_exception(e, level: :error, operation: 'crypt.jwt_login', cluster_name: cluster_name)
         raise
       end
@@ -272,6 +277,13 @@ module Legion
       end
 
       private
+
+      def validate_vault_auth_method!(session:, method:, **)
+        configured = effective_cluster_configs.fetch(session.cluster_name)[:auth_method].to_s
+        return if configured == method
+
+        raise ArgumentError, "Vault cluster #{session.cluster_name.inspect} uses #{configured.inspect} auth, expected #{method.inspect}"
+      end
 
       # Creates one Vault::Session per configured cluster; the default cluster's session also drives
       # the process-wide leases. Multi-cluster by construction; a single cluster is the one-cluster case.

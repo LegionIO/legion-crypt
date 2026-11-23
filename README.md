@@ -265,7 +265,7 @@ For a JWT-authenticated Vault cluster, supply a JWT explicitly after startup:
 grant = Legion::Crypt.jwt_login(cluster_name: :primary, jwt: signed_jwt)
 ```
 
-The call returns the Vault grant Hash and raises if authentication fails or the cluster is not configured. JWT clusters do not authenticate automatically at startup. A JWT grant renews only when Vault marks it renewable; after expiry, provide a fresh JWT to log in again.
+The call returns the Vault grant Hash and raises if authentication fails, the session stops during login, the cluster is not configured, or it uses another auth method. JWT clusters do not authenticate automatically at startup. A JWT grant renews only when Vault marks it renewable; after expiry, provide a fresh JWT to log in again. Repeated logins reissue dependent leases under the new token before revoking the previous token.
 
 ## Kerberos Authentication
 

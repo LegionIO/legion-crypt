@@ -155,7 +155,7 @@ RSpec.describe Legion::Crypt::Vault::Session do
 
       expect(session.send(:handoff)).to eq(:failed)
       expect(revoked).to eq(['new-token'])
-      expect(published.last).to include(token: 'old-token', current_token: nil)
+      expect(published.last).to include(token: 'old-token', current_token: 'new-token')
       expect(session.instance_variable_get(:@expires_at)).to be_within(0.001).of(original_expiry)
     end
 
@@ -300,8 +300,67 @@ RSpec.describe Legion::Crypt::Vault::Session do
         grant(token: 'new-token')
       end
 
-      expect(session.login(username: 'user', password: 'secret')).to be_nil
+      expect { session.login(username: 'user', password: 'secret') }.to raise_error(Legion::Crypt::Vault::GrantRejectedError)
       expect(revoked).to eq(['new-token'])
+    end
+
+    it 'reissues leases and revokes the previous token on a repeat login' do
+      Legion::Settings[:crypt][:vault][:clusters][:primary][:auth_method] = 'ldap'
+      allow(Legion::Crypt::Vault::Auth::LDAP).to receive(:new).and_return(strategy)
+      lease_owner = instance_double(Legion::Crypt::Vault::Leases, start: nil, start_renewal_thread: nil,
+                                                                  reissue_all: true)
+      renewing_session = described_class.new(cluster_name: :primary, client: client, leases: lease_owner)
+      renewing_session.start
+      renewing_session.login(username: 'user', password: 'secret')
+      allow(strategy).to receive(:authenticate).and_return(grant(token: 'new-token'))
+
+      result = renewing_session.login(username: 'user', password: 'secret')
+
+      expect(result[:token]).to eq('new-token')
+      expect(lease_owner).to have_received(:reissue_all).with(client: client, active: anything).once
+      expect(revoked).to eq(['old-token'])
+      expect(Legion::Settings[:crypt][:vault][:clusters][:primary][:token]).to eq('new-token')
+    end
+
+    it 'restores the previous login before revoking a replacement whose lease handoff fails' do
+      Legion::Settings[:crypt][:vault][:clusters][:primary][:auth_method] = 'ldap'
+      allow(Legion::Crypt::Vault::Auth::LDAP).to receive(:new).and_return(strategy)
+      lease_owner = instance_double(Legion::Crypt::Vault::Leases, start: nil, start_renewal_thread: nil,
+                                                                  reissue_all: false)
+      renewing_session = described_class.new(cluster_name: :primary, client: client, leases: lease_owner)
+      renewing_session.start
+      renewing_session.login(username: 'user', password: 'secret')
+      old_expiry = renewing_session.instance_variable_get(:@expires_at)
+      allow(strategy).to receive(:authenticate).and_return(grant(token: 'new-token'))
+
+      expect { renewing_session.login(username: 'user', password: 'secret') }
+        .to raise_error(Legion::Crypt::Vault::GrantRejectedError, 'Vault login handoff failed')
+      expect(revoked).to eq(['new-token'])
+      expect(renewing_session.instance_variable_get(:@current_token)).to eq('old-token')
+      expect(renewing_session.instance_variable_get(:@expires_at)).to be_within(0.001).of(old_expiry)
+      expect(Legion::Settings[:crypt][:vault][:clusters][:primary][:token]).to eq('old-token')
+    end
+
+    it 'disconnects the candidate if rollback publication is rejected' do
+      session.start
+      failing_leases = instance_double(Legion::Crypt::Vault::Leases, reissue_all: false)
+      session.instance_variable_set(:@leases, failing_leases)
+      allow(strategy).to receive(:reauth).and_return(grant(token: 'new-token'))
+      allow(Legion::Crypt).to receive(:disconnect_vault_grant).and_call_original
+      allow(failing_leases).to receive(:reissue_all) do
+        replace_cluster_address
+        expect(Legion::Settings[:crypt][:vault][:clusters][:primary][:token]).to eq('new-token')
+        false
+      end
+
+      expect(session.send(:handoff)).to eq(:finished)
+      expect(failing_leases).to have_received(:reissue_all).once
+      expect(Legion::Crypt).to have_received(:disconnect_vault_grant).with(
+        cluster_name: :primary, token: 'new-token', relogin_required: true
+      )
+      expect(revoked).to eq(['new-token'])
+      expect(Legion::Settings[:crypt][:vault][:clusters][:primary][:connected]).to be(false)
+      expect(Legion::Settings[:crypt][:vault][:clusters][:primary][:relogin_required]).to be(true)
     end
 
     it 'reports an incomplete cleanup at error level without raising from handoff' do

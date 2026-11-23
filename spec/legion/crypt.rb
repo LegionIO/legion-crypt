@@ -315,6 +315,43 @@ RSpec.describe Legion::Crypt do
     it 'raises for an unconfigured cluster' do
       expect { described_class.jwt_login(cluster_name: :missing, jwt: 'signed-jwt') }.to raise_error(KeyError)
     end
+
+    it 'rejects a Kerberos cluster without authenticating as Kerberos' do
+      kerberos_strategy = instance_double(Legion::Crypt::Vault::Auth::Kerberos)
+      allow(Legion::Crypt::Vault::Auth::Kerberos).to receive(:new).and_return(kerberos_strategy)
+      allow(kerberos_strategy).to receive(:authenticate)
+      kerberos_session = Legion::Crypt::Vault::Session.new(cluster_name: :kerberos_cluster,
+                                                           client:       described_class.vault_client(:kerberos_cluster))
+      described_class.instance_variable_get(:@vault_sessions)[:kerberos_cluster] = kerberos_session
+
+      expect { described_class.jwt_login(cluster_name: :kerberos_cluster, jwt: 'signed-jwt') }.to raise_error(ArgumentError)
+      expect(kerberos_strategy).not_to have_received(:authenticate)
+    end
+
+    it 'reports a transport failure once and raises it to the caller' do
+      failure = Faraday::ConnectionFailed.new('Vault unavailable')
+      allow(jwt_strategy).to receive(:authenticate).and_raise(failure)
+      expect(described_class).to receive(:handle_exception).once.with(
+        failure, level: :error, operation: 'crypt.jwt_login', cluster_name: :jwt_cluster
+      )
+
+      expect { described_class.jwt_login(cluster_name: :jwt_cluster, jwt: 'signed-jwt') }.to raise_error(failure)
+    end
+
+    it 'raises and revokes the late token when the session stops during login' do
+      allow(jwt_strategy).to receive(:authenticate) do
+        jwt_session.request_stop
+        jwt_grant
+      end
+      expect(described_class).to receive(:revoke_vault_token).with(client: jwt_session.client, token: 'jwt-vault-token')
+      expect(described_class).to receive(:handle_exception).once.with(
+        instance_of(Legion::Crypt::Vault::GrantRejectedError), level: :error,
+        operation: 'crypt.jwt_login', cluster_name: :jwt_cluster
+      )
+
+      expect { described_class.jwt_login(cluster_name: :jwt_cluster, jwt: 'signed-jwt') }
+        .to raise_error(Legion::Crypt::Vault::GrantRejectedError)
+    end
   end
 end
 
