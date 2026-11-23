@@ -257,7 +257,15 @@ LDAP login starts token maintenance immediately, including after `Crypt.start`. 
 
 Repeated login stops the previous token worker before installing its replacement, and shutdown stops all token workers. With clusters configured, unavailable or expired clusters cannot fall back to the legacy global Vault client.
 
-JWT and Kerberos `login!` use the same grant lifecycle: token, TTL, expiry, renewability and authentication strategy replace the previous state together. Existing token workers stop before publication and replacement workers use the new grant's lifetime. JWT tokens renew without Kerberos fallback; a login result completing after shutdown is rejected.
+JWT and Kerberos grants use the same token, TTL, expiry, renewability, and authentication strategy lifecycle. Existing token workers stop before publication and replacement workers use the new grant's lifetime. JWT tokens renew without Kerberos fallback; a login result completing after shutdown is rejected.
+
+For a JWT-authenticated Vault cluster, supply a JWT explicitly after startup:
+
+```ruby
+grant = Legion::Crypt.jwt_login(cluster_name: :primary, jwt: signed_jwt)
+```
+
+The call returns the Vault grant Hash and raises if authentication fails, the session stops during login, the cluster is not configured, or it uses another auth method. JWT clusters do not authenticate automatically at startup. A JWT grant renews only when Vault marks it renewable; after expiry, provide a fresh JWT to log in again. Repeated logins reissue dependent leases under the new token before revoking the previous token.
 
 ## Kerberos Authentication
 

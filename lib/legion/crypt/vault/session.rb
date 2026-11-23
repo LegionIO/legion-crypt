@@ -51,6 +51,7 @@ module Legion
           @started = false
           @thread = nil
           @state_mutex = Mutex.new
+          @transition_mutex = Mutex.new
           @wake = ConditionVariable.new
         end
 
@@ -59,11 +60,12 @@ module Legion
           return false unless begin_lifecycle
 
           @auth_method = cluster_config[:auth_method]&.to_s
-          authenticate if @auth_method == 'kerberos'
+          return false if (@auth_method == 'kerberos') && !authenticate
+
           adopt_config_token if @auth_method.nil? || @auth_method.empty?
           start_maintenance
           true
-        rescue Legion::Crypt::Vault::Auth::AuthError, *FAILURES => e
+        rescue Legion::Crypt::Vault::Auth::AuthError, Legion::Crypt::Vault::GrantRejectedError, *FAILURES => e
           handle_exception(e, level: :error, operation: 'crypt.vault_session.start', cluster_name: @cluster_name)
           false
         end
@@ -71,12 +73,21 @@ module Legion
         # Explicit LDAP/JWT login. Returns the grant Hash (the pre-refactor ldap_login contract);
         # a failed login raises to the caller, which owns reporting it.
         def login(**creds)
-          return nil if stopped?
+          @transition_mutex.synchronize do
+            raise Legion::Crypt::Vault::GrantRejectedError, 'Vault session stopped during login' if stopped?
 
-          grant = auth.authenticate(client: @client, **creds)
-          commit_grant(grant: grant, minted: true)
-          start_maintenance
-          grant_hash
+            grant = auth.authenticate(client: @client, **creds)
+            previous, expires_at, minted = @state_mutex.synchronize { [@grant, @expires_at, @minted] }
+            if previous
+              installed = replace_grant(candidate: grant, old_grant: previous, old_expires: expires_at, old_minted: minted)
+              raise Legion::Crypt::Vault::GrantRejectedError, 'Vault login handoff failed' unless installed
+            else
+              raise Legion::Crypt::Vault::GrantRejectedError, 'Vault session stopped during login' unless commit_minted_grant(grant: grant)
+            end
+
+            start_maintenance
+            grant_hash
+          end
         end
 
         # Stops the maintenance thread, shuts down the leases, and then revokes a MINTED (auth-method)
@@ -177,8 +188,10 @@ module Legion
 
         # Network auth runs outside the mutex; the grant commit is a brief mutex hold.
         def authenticate
-          grant = auth.authenticate(client: @client)
-          commit_grant(grant: grant, minted: true)
+          @transition_mutex.synchronize do
+            grant = auth.authenticate(client: @client)
+            commit_minted_grant(grant: grant)
+          end
         end
 
         # Adopts a pre-configured (static) token once Vault answers a health check. It is non-minted,
@@ -196,30 +209,48 @@ module Legion
           commit_grant(grant: grant, minted: false)
         end
 
-        # Brief mutex hold: installs the grant as current and publishes it to the cluster config.
+        # Brief mutex hold: publishes the grant before installing it as current.
         # previous_token guards against a concurrent token change; nil bypasses it (a first auth or a
         # rollback restore). Returns the current token, or nil when the session is stopping.
         def commit_grant(grant:, minted:, previous_token: nil, issued_at: Time.now)
           @state_mutex.synchronize do
             return if @stop
 
+            token = grant.client_token
+            lease_duration = grant.lease_duration.to_f
+            renewable = grant.renewable?
+            expires_at = Legion::Crypt.publish_vault_grant(cluster_name: @cluster_name, client: @client,
+                                                           grant: grant_hash(grant: grant), auth_method: @auth_method,
+                                                           issued_at: issued_at, current_token: previous_token)
             @grant = grant
             @minted = minted
             @disconnected = false
             @rejected = false
             @backoff = INITIAL_BACKOFF
-            @current_token = grant.client_token
-            @lease_duration = grant.lease_duration.to_f
-            @renewable = grant.renewable?
-            @expires_at = Legion::Crypt.publish_vault_grant(cluster_name: @cluster_name, client: @client, grant: grant_hash,
-                                                            auth_method: @auth_method, issued_at: issued_at,
-                                                            current_token: previous_token)
+            @current_token = token
+            @lease_duration = lease_duration
+            @renewable = renewable
+            @expires_at = expires_at
             @current_token
           end
         end
 
-        def grant_hash
-          g = @grant
+        def commit_minted_grant(grant:, previous_token: nil)
+          committed = commit_grant(grant: grant, minted: true, previous_token: previous_token)
+          committed
+        ensure
+          revoke_uninstalled_grant(grant) if grant && !committed
+        end
+
+        def revoke_uninstalled_grant(grant)
+          token = grant.client_token
+          return if @state_mutex.synchronize { @current_token == token }
+
+          revoke_token(token: token)
+        end
+
+        def grant_hash(grant: @grant)
+          g = grant
           { token: g.client_token, lease_duration: g.lease_duration, renewable: g.renewable?,
             policies: g.policies, metadata: g.metadata }
         end
@@ -294,16 +325,20 @@ module Legion
 
         # Renewal uses the client directly so it works for both minted and adopted (static) tokens.
         def renew_token
-          deadline, minted, previous_token = @state_mutex.synchronize do
-            remaining = @expires_at ? @expires_at - Time.now : 0
-            [::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + [remaining, 0].max, @minted, @current_token]
-          end
-          renewed = Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { @client.auth_token.renew_self }&.auth
-          raise Legion::Crypt::Vault::Auth::AuthError, 'Vault token renewal returned no auth data' if renewed.nil?
+          @transition_mutex.synchronize do
+            deadline, minted, previous_token = @state_mutex.synchronize do
+              return :pending unless @renewable && @expires_at && @expires_at > Time.now
 
-          commit_grant(grant: renewed, minted: minted, previous_token: previous_token)
-          log.info "Vault token renewed cluster=#{label} ttl=#{@state_mutex.synchronize { @lease_duration }}s"
-          :renewed
+              remaining = @expires_at ? @expires_at - Time.now : 0
+              [::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + [remaining, 0].max, @minted, @current_token]
+            end
+            renewed = Legion::Crypt::Vault::Operation.with_timeout(deadline: deadline) { @client.auth_token.renew_self }&.auth
+            raise Legion::Crypt::Vault::Auth::AuthError, 'Vault token renewal returned no auth data' if renewed.nil?
+
+            commit_grant(grant: renewed, minted: minted, previous_token: previous_token)
+            log.info "Vault token renewed cluster=#{label} ttl=#{@state_mutex.synchronize { @lease_duration }}s"
+            :renewed
+          end
         rescue Legion::Crypt::Vault::GrantRejectedError => e
           handle_exception(e, level: :error, operation: 'crypt.vault_session.renew', cluster_name: @cluster_name)
           :finished
@@ -314,31 +349,64 @@ module Legion
           rejected ? :rejected : :failed
         end
 
-        # The atomic re-auth handoff: re-auth, publish the candidate grant, reissue the leases under
-        # it, then commit (commit the expiry, revoke the old token) or roll back (revoke the
-        # candidate, restore the prior grant and its expiry).
+        # Re-authenticate, publish the candidate, reissue leases, then revoke the old token.
+        # On failure, restore the previous grant before revoking the candidate.
         def handoff
-          old_grant, old_expires, old_minted = @state_mutex.synchronize { [@grant, @expires_at, @minted] }
-          candidate = @auth.reauth(client: @client)
-          committed = grant_active && commit_grant(grant: candidate, minted: true, previous_token: old_grant.client_token)
-          recovered = committed && (@leases.nil? || @leases.reissue_all(client: @client, active: method(:grant_active)))
-          if recovered && grant_active
-            revoke_token(token: old_grant.client_token)
-            log.info "Vault token re-authenticated cluster=#{label} ttl=#{candidate.lease_duration}s"
-            return :renewed
-          end
-          revoke_token(token: candidate.client_token)
-          return :finished unless committed
+          @transition_mutex.synchronize do
+            old_grant, old_expires, old_minted = @state_mutex.synchronize { [@grant, @expires_at, @minted] }
+            candidate = @auth.reauth(client: @client)
+            unless grant_active
+              revoke_uninstalled_grant(candidate)
+              return :finished
+            end
 
-          commit_grant(grant: old_grant, minted: old_minted, issued_at: old_expires - old_grant.lease_duration.to_f)
-          log.error "Vault token re-auth incomplete cluster=#{label}; previous token retained"
-          :failed
+            if replace_grant(candidate: candidate, old_grant: old_grant, old_expires: old_expires, old_minted: old_minted)
+              log.info "Vault token re-authenticated cluster=#{label} ttl=#{candidate.lease_duration}s"
+              :renewed
+            else
+              :failed
+            end
+          end
         rescue Legion::Crypt::Vault::GrantRejectedError => e
           handle_exception(e, level: :error, operation: 'crypt.vault_session.handoff', cluster_name: @cluster_name)
           :finished
         rescue *FAILURES, Legion::Crypt::Vault::Auth::AuthError => e
           handle_exception(e, level: :error, operation: 'crypt.vault_session.handoff', cluster_name: @cluster_name)
           :failed
+        end
+
+        def replace_grant(candidate:, old_grant:, old_expires:, old_minted:)
+          committed = commit_minted_grant(grant: candidate, previous_token: old_grant.client_token)
+          raise Legion::Crypt::Vault::GrantRejectedError, 'Vault session stopped during grant handoff' unless committed
+
+          recovered = begin
+            grant_active && (@leases.nil? || @leases.reissue_all(client: @client, active: method(:grant_active)))
+          rescue StandardError
+            restore_previous_grant(candidate: candidate, old_grant: old_grant, old_expires: old_expires, old_minted: old_minted)
+            raise
+          end
+          if recovered && grant_active
+            revoke_token(token: old_grant.client_token) if old_minted
+            return true
+          end
+
+          restore_previous_grant(candidate: candidate, old_grant: old_grant, old_expires: old_expires, old_minted: old_minted)
+          false
+        end
+
+        def restore_previous_grant(candidate:, old_grant:, old_expires:, old_minted:)
+          restored = commit_grant(grant: old_grant, minted: old_minted, previous_token: candidate.client_token,
+                                  issued_at: old_expires - old_grant.lease_duration.to_f)
+          raise Legion::Crypt::Vault::GrantRejectedError, 'Vault session stopped during grant restore' unless restored
+
+          revoke_token(token: candidate.client_token)
+          log.error "Vault token handoff incomplete cluster=#{label}; previous token retained"
+        rescue Legion::Crypt::Vault::GrantRejectedError
+          Legion::Crypt.disconnect_vault_grant(cluster_name: @cluster_name, token: candidate.client_token,
+                                               relogin_required: true)
+          @state_mutex.synchronize { @disconnected = true if @current_token == candidate.client_token }
+          revoke_token(token: candidate.client_token)
+          raise
         end
 
         def disconnect_token(reason:)
